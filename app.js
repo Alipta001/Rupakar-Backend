@@ -1,0 +1,145 @@
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import morgan from 'morgan';
+import mongoose from 'mongoose';
+import Redis from 'ioredis';
+import swaggerUi from 'swagger-ui-express';
+import swaggerJsdoc from 'swagger-jsdoc';
+import { env } from './app/config/env.js';
+import { securityMiddleware } from './app/middleware/security.js';
+import { requestIdMiddleware } from './app/middleware/request-id.js';
+import { errorHandler, notFoundHandler } from './app/middleware/error-handler.js';
+import authRoutes from './app/routers/auth.routes.js';
+import userRoutes from './app/routers/user.routes.js';
+import vendorRoutes from './app/routers/vendor.routes.js';
+import categoryRoutes from './app/routers/category.routes.js';
+import brandRoutes from './app/routers/brand.routes.js';
+import productRoutes from './app/routers/product.routes.js';
+import inventoryRoutes from './app/routers/inventory.routes.js';
+import cartRoutes from './app/routers/cart.routes.js';
+import wishlistRoutes from './app/routers/wishlist.routes.js';
+import checkoutRoutes from './app/routers/checkout.routes.js';
+import orderRoutes from './app/routers/order.routes.js';
+import shipmentRoutes from './app/routers/shipment.routes.js';
+import returnRoutes from './app/routers/return.routes.js';
+import paymentRoutes from './app/routers/payment.routes.js';
+import invoiceRoutes from './app/routers/invoice.routes.js';
+import notificationRoutes from './app/routers/notification.routes.js';
+import adminRoutes from './app/routers/admin.routes.js';
+
+export function createApp() {
+  const app = express();
+  let redis = null;
+
+  if (env.REDIS_ENABLED) {
+    redis = new Redis(env.REDIS_URL, {
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true,
+      lazyConnect: true,
+    });
+
+    redis.on('error', () => {
+      // Redis is optional for local development. API requests continue without cache.
+    });
+  }
+
+  app.use('/api/v1/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
+  app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+  app.use(cookieParser());
+  app.use(requestIdMiddleware);
+  app.use(morgan('combined'));
+  app.use(...securityMiddleware);
+
+  app.use('/api/v1/auth', authRoutes);
+  app.use('/api/v1/users', userRoutes);
+  app.use('/api/v1/vendors', vendorRoutes);
+  app.use('/api/v1/categories', categoryRoutes);
+  app.use('/api/v1/brands', brandRoutes);
+  app.use('/api/v1', productRoutes);
+  app.use('/api/v1', inventoryRoutes);
+  app.use('/api/v1', cartRoutes);
+  app.use('/api/v1/wishlist', wishlistRoutes);
+  app.use('/api/v1/checkout', checkoutRoutes);
+  app.use('/api/v1/orders', orderRoutes);
+  app.use('/api/v1', shipmentRoutes);
+  app.use('/api/v1', returnRoutes);
+  app.use('/api/v1/payments', paymentRoutes);
+  app.use('/api/v1/invoices', invoiceRoutes);
+  app.use('/api/v1/notifications', notificationRoutes);
+  app.use('/api/v1/admin', adminRoutes);
+
+  app.get('/api/v1/health', (_req, res) => {
+    res.status(200).json({
+      success: true,
+      data: { api: 'ok', timestamp: new Date().toISOString() },
+      message: 'Service healthy',
+      requestId: String(_req.headers['x-request-id'] ?? ''),
+    });
+  });
+
+  app.get('/api/v1/health/live', (_req, res) => {
+    res.status(200).json({
+      success: true,
+      data: { status: 'live' },
+      message: 'Application is live',
+      requestId: String(_req.headers['x-request-id'] ?? ''),
+    });
+  });
+
+  app.get('/api/v1/health/ready', async (_req, res) => {
+    try {
+      const mongoState = mongoose.connection.readyState === 1 ? 'ready' : 'not-ready';
+      const activeRedis = app.locals.redis ?? redis;
+      const redisState = activeRedis && activeRedis.status === 'ready' ? 'ready' : (env.REDIS_ENABLED ? 'not-ready' : 'disabled');
+      const workerHeartbeat = redisState === 'ready' ? await activeRedis.get('rupakar:worker:heartbeat') : null;
+      const workerState = env.REDIS_ENABLED ? (workerHeartbeat ? 'ready' : 'not-ready') : 'disabled';
+      const ready = mongoState === 'ready' && redisState !== 'not-ready' && workerState !== 'not-ready';
+
+      res.status(ready ? 200 : 503).json({
+        success: ready,
+        data: { mongo: mongoState, redis: redisState, worker: workerState },
+        message: ready ? 'Service ready' : 'Service not ready',
+        requestId: String(_req.headers['x-request-id'] ?? ''),
+      });
+    } catch (_error) {
+      res.status(503).json({
+        success: false,
+        error: { code: 'READINESS_CHECK_FAILED', message: 'Health checks failed' },
+        requestId: String(_req.headers['x-request-id'] ?? ''),
+      });
+    }
+  });
+
+  app.get('/', (_req, res) => {
+    res.redirect('/api/v1/health');
+  });
+
+  if (process.env.NODE_ENV !== 'production') {
+    const swaggerDefinition = {
+      openapi: '3.0.0',
+      info: {
+        title: 'Rupakar Marketplace API',
+        version: '1.0.0',
+        description: 'Production-ready marketplace backend foundation',
+      },
+      servers: [{ url: '/api/v1' }],
+    };
+
+    const swaggerSpec = swaggerJsdoc({
+      definition: swaggerDefinition,
+      apis: ['./app/**/*.js'],
+    });
+
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+  }
+
+  app.use(notFoundHandler);
+  app.use(errorHandler);
+
+  app.locals.redis = redis;
+  return app;
+}
+
+const app = createApp();
+export default app;
