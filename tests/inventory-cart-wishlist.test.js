@@ -212,6 +212,13 @@ describe('cart service', () => {
     expect(result.items[0].quantity).toBe(1);
 
     await expect(service.addItem({ userId, productId, variantId, quantity: 999 })).rejects.toMatchObject({ code: 'INVALID_QUANTITY' });
+
+    Cart.findOne.mockResolvedValue({
+      items: [{ productId, variantId, quantity: 1 }],
+      save: jest.fn(),
+    });
+    await expect(service.addItem({ userId, productId, variantId, quantity: 1 }))
+      .rejects.toMatchObject({ code: 'CART_ITEM_EXISTS' });
   });
 
   it('merges guest cart items into the authenticated cart without exceeding stock', async () => {

@@ -128,15 +128,7 @@ export class CartService {
 
     const existingItem = cart.items.find((item) => String(item.variantId) === String(normalized.variantId));
     if (existingItem) {
-      const nextQuantity = existingItem.quantity + normalized.quantity;
-      if (nextQuantity > MAX_CART_QUANTITY) {
-        throw new AppError(400, 'INVALID_QUANTITY', `Quantity cannot exceed ${MAX_CART_QUANTITY}`);
-      }
-      const available = await inventoryService.getAvailableStock(normalized.variantId);
-      if (nextQuantity > available) {
-        throw new AppError(409, 'INSUFFICIENT_STOCK', 'Requested quantity exceeds available stock');
-      }
-      existingItem.quantity = nextQuantity;
+      throw new AppError(409, 'CART_ITEM_EXISTS', 'This product is already in your cart');
     } else {
       cart.items.push({ productId: normalized.productId, variantId: normalized.variantId, quantity: normalized.quantity });
     }
