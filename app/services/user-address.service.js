@@ -4,6 +4,7 @@ import { AppError } from '../utils/app-error.js';
 
 export class UserAddressService {
   async createAddress(userId, payload) {
+    this.assertUserId(userId);
     const address = await UserAddress.create({
       ...payload,
       userId,
@@ -13,6 +14,7 @@ export class UserAddressService {
   }
 
   async listAddresses(userId) {
+    this.assertUserId(userId);
     return UserAddress.find({ userId, isDeleted: false }).sort({ createdAt: -1, _id: -1 }).limit(100).lean();
   }
 
@@ -73,6 +75,12 @@ export class UserAddressService {
   assertAddressId(addressId) {
     if (!mongoose.isValidObjectId(addressId)) {
       throw new AppError(400, 'INVALID_ADDRESS_ID', 'Address id is invalid');
+    }
+  }
+
+  assertUserId(userId) {
+    if (!mongoose.isValidObjectId(userId)) {
+      throw new AppError(401, 'INVALID_AUTHENTICATION', 'Authenticated user id is invalid');
     }
   }
 }

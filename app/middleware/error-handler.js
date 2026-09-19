@@ -14,6 +14,16 @@ export const errorHandler = (err, req, res, _next) => {
     return;
   }
 
+  if (err?.name === 'CastError') {
+    sendError(res, 400, 'INVALID_ID', 'A supplied identifier is invalid', requestId);
+    return;
+  }
+
+  if (err?.name === 'ValidationError') {
+    sendError(res, 400, 'DATABASE_VALIDATION_ERROR', 'Request data failed validation', requestId);
+    return;
+  }
+
   if (err instanceof AppError) {
     sendError(res, err.statusCode, err.code, err.message, requestId);
     return;

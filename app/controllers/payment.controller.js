@@ -53,17 +53,18 @@ export const getPaymentByOrder = async (req, res, next) => {
 
 export const getPaymentConfig = async (_req, res, next) => {
   try {
+    const razorpayEnabled = paymentService.isRazorpayEnabled();
     res.status(200).json({
       success: true,
       data: {
-        razorpayEnabled: paymentService.isRazorpayEnabled(),
+        razorpayEnabled,
         mockEnabled: env.PAYMENT_MOCK_ENABLED,
-        publicKey: paymentService.isRazorpayEnabled() ? env.RAZORPAY_KEY_ID : null,
+        publicKey: razorpayEnabled ? env.RAZORPAY_KEY_ID : null,
       },
       message: 'Payment configuration loaded',
     });
-  } catch (error) {
-    next(error);
+  } catch {
+    next(new AppError(503, 'PAYMENT_CONFIGURATION_UNAVAILABLE', 'Payment configuration is temporarily unavailable'));
   }
 };
 

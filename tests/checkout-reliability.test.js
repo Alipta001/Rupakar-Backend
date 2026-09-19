@@ -130,6 +130,12 @@ describe('checkout reliability', () => {
     expect(summary.items[0]).toMatchObject({ productId, variantId, unitPrice: 2199, lineTotal: 2199 });
   });
 
+  it('rejects malformed product and variant ids before Mongoose queries', async () => {
+    await expect(pricingService.buildPriceSummary({
+      items: [{ productId: 'product-1', variantId: 'variant-1', quantity: 1 }],
+    })).rejects.toMatchObject({ code: 'INVALID_PRODUCT_ID', statusCode: 400 });
+  });
+
   it('fails the order, vendor order, and reservations when payment creation fails', async () => {
     const { customerId, productId, variantId, vendorId } = ids();
     const paymentError = new Error('payment provider unavailable');

@@ -40,6 +40,15 @@ describe('address API contract', () => {
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_ADDRESS_ID', statusCode: 400 }));
   });
 
+  it('rejects an invalid authenticated user id before querying MongoDB', async () => {
+    const listSpy = jest.spyOn(userAddressService, 'listAddresses');
+
+    await expect(userAddressService.listAddresses('not-an-object-id'))
+      .rejects.toMatchObject({ code: 'INVALID_AUTHENTICATION', statusCode: 401 });
+
+    expect(listSpy).toHaveBeenCalledWith('not-an-object-id');
+  });
+
   it('creates an address with the canonical fields required by MongoDB', async () => {
     const createdAddress = { _id: new mongoose.Types.ObjectId(), fullName: 'Customer', district: 'Kolkata' };
     const createSpy = jest.spyOn(userAddressService, 'createAddress').mockResolvedValue(createdAddress);

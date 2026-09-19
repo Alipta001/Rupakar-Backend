@@ -6,6 +6,7 @@ import { shippingService } from './shipping.service.js';
 import { couponService } from './coupon.service.js';
 import { inventoryService } from './inventory.service.js';
 import { userAddressService } from './user-address.service.js';
+import mongoose from 'mongoose';
 
 const toPlain = (doc) => {
   if (!doc) return doc;
@@ -29,6 +30,13 @@ export class PricingService {
 
       if (!productId || !variantId) {
         throw new AppError(400, 'INVALID_CHECKOUT_ITEM', 'Each line item requires productId and variantId');
+      }
+
+      if (!mongoose.isValidObjectId(productId)) {
+        throw new AppError(400, 'INVALID_PRODUCT_ID', 'Product id is invalid');
+      }
+      if (!mongoose.isValidObjectId(variantId)) {
+        throw new AppError(400, 'INVALID_VARIANT_ID', 'Variant id is invalid');
       }
 
       if (!Number.isInteger(quantity) || quantity <= 0) {
