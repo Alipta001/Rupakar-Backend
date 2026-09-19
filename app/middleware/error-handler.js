@@ -9,6 +9,11 @@ export const notFoundHandler = (req, res) => {
 export const errorHandler = (err, req, res, _next) => {
   const requestId = String(req.headers['x-request-id'] ?? '');
 
+  if (err?.name === 'ZodError') {
+    sendError(res, 400, 'VALIDATION_ERROR', 'Request validation failed', requestId);
+    return;
+  }
+
   if (err instanceof AppError) {
     sendError(res, err.statusCode, err.code, err.message, requestId);
     return;

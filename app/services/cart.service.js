@@ -3,6 +3,7 @@ import { Cart } from '../models/cart.model.js';
 import { Product } from '../models/product.model.js';
 import { ProductVariant } from '../models/product-variant.model.js';
 import { inventoryService } from './inventory.service.js';
+import mongoose from 'mongoose';
 
 const MAX_CART_QUANTITY = 20;
 const toPlain = (doc) => {
@@ -77,6 +78,18 @@ export class CartService {
   }
 
   async normalizeCartItem(productId, variantId, quantity) {
+    const normalizedQuantity = Number(quantity);
+    if (!Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0 || normalizedQuantity > MAX_CART_QUANTITY) {
+      throw new AppError(400, 'INVALID_QUANTITY', `Quantity must be a positive integer no greater than ${MAX_CART_QUANTITY}`);
+    }
+
+    if (!mongoose.isValidObjectId(productId)) {
+      throw new AppError(400, 'INVALID_PRODUCT_ID', 'Product id is invalid');
+    }
+    if (!mongoose.isValidObjectId(variantId)) {
+      throw new AppError(400, 'INVALID_VARIANT_ID', 'Variant id is invalid');
+    }
+
     const productDoc = await Product.findOne({ _id: productId, status: 'PUBLISHED', deletedAt: null });
     const product = toPlain(productDoc);
     if (!product) throw new AppError(404, 'PRODUCT_UNAVAILABLE', 'Product is not available for cart');
@@ -84,14 +97,6 @@ export class CartService {
     const variantDoc = await ProductVariant.findOne({ _id: variantId, productId, status: 'ACTIVE' });
     const variant = toPlain(variantDoc);
     if (!variant) throw new AppError(404, 'VARIANT_NOT_FOUND', 'Variant not found for this product');
-
-    const normalizedQuantity = Number(quantity);
-    if (!Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) {
-      throw new AppError(400, 'INVALID_QUANTITY', 'Quantity must be a positive integer');
-    }
-    if (normalizedQuantity > MAX_CART_QUANTITY) {
-      throw new AppError(400, 'INVALID_QUANTITY', `Quantity cannot exceed ${MAX_CART_QUANTITY}`);
-    }
 
     const available = await inventoryService.getAvailableStock(variantId);
     if (normalizedQuantity > available) {
@@ -109,9 +114,9 @@ export class CartService {
   }
 
   async addItem({ userId, guestSessionId, productId, variantId, quantity }) {
+    const normalized = await this.normalizeCartItem(productId, variantId, quantity);
     const cartQuery = userId ? { userId } : { guestSessionId };
     const cart = await Cart.findOne(cartQuery);
-    const normalized = await this.normalizeCartItem(productId, variantId, quantity);
 
     if (!cart) {
       const newCart = await Cart.create({

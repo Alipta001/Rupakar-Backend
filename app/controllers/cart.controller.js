@@ -1,5 +1,6 @@
 import { cartService } from '../services/cart.service.js';
 import { sendSuccess } from '../utils/response.js';
+import { cartItemSchema, cartQuantitySchema } from '../validators/cart.validators.js';
 
 export const getCart = async (req, res, next) => {
   try {
@@ -18,12 +19,13 @@ export const addCartItem = async (req, res, next) => {
   try {
     const userId = req.user?.sub ?? null;
     const sessionId = req.headers['x-guest-session-id'] ?? req.query.guestSessionId ?? null;
+    const payload = cartItemSchema.parse(req.body ?? {});
     const cart = await cartService.addItem({
       userId,
       guestSessionId: sessionId,
-      productId: req.body.productId,
-      variantId: req.body.variantId,
-      quantity: req.body.quantity,
+      productId: payload.productId,
+      variantId: payload.variantId,
+      quantity: payload.quantity,
     });
     sendSuccess(res, cart, 'Item added to cart', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
@@ -35,11 +37,12 @@ export const updateCartItem = async (req, res, next) => {
   try {
     const userId = req.user?.sub ?? null;
     const sessionId = req.headers['x-guest-session-id'] ?? req.query.guestSessionId ?? null;
+    const payload = cartQuantitySchema.parse(req.body ?? {});
     const cart = await cartService.updateItemQuantity({
       userId,
       guestSessionId: sessionId,
       variantId: req.params.variantId,
-      quantity: req.body.quantity,
+      quantity: payload.quantity,
     });
     sendSuccess(res, cart, 'Cart item updated', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {

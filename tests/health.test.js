@@ -28,4 +28,11 @@ describe('Health endpoints', () => {
     expect(userResponse.status).toBe(401);
     expect(vendorResponse.status).toBe(401);
   });
+
+  it('should protect checkout behind authentication', async () => {
+    const response = await request(app).post('/api/v1/checkout').send({ paymentMethod: 'cod' });
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
 });
