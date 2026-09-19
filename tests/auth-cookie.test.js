@@ -3,6 +3,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 import app from '../app.js';
 import { authService } from '../app/services/auth.service.js';
 import { getRefreshCookieOptions } from '../app/routers/auth.routes.js';
+import { env } from '../app/config/env.js';
 
 describe('cross-origin refresh authentication', () => {
   it('uses cross-site-safe production refresh cookie attributes', () => {
@@ -15,12 +16,35 @@ describe('cross-origin refresh authentication', () => {
   });
 
   it('keeps local refresh cookies usable without HTTPS', () => {
-    expect(getRefreshCookieOptions('development')).toMatchObject({
-      httpOnly: true,
-      secure: false,
-      sameSite: 'lax',
-      path: '/api/v1/auth',
-    });
+    const originalFrontendUrl = env.FRONTEND_URL;
+    env.FRONTEND_URL = 'http://localhost:3000';
+
+    try {
+      expect(getRefreshCookieOptions('development')).toMatchObject({
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/api/v1/auth',
+      });
+    } finally {
+      env.FRONTEND_URL = originalFrontendUrl;
+    }
+  });
+
+  it('uses cross-site-safe cookies when an HTTPS frontend is configured', () => {
+    const originalFrontendUrl = env.FRONTEND_URL;
+    env.FRONTEND_URL = 'https://rupakar-frontend.vercel.app';
+
+    try {
+      expect(getRefreshCookieOptions('development')).toMatchObject({
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        path: '/api/v1/auth',
+      });
+    } finally {
+      env.FRONTEND_URL = originalFrontendUrl;
+    }
   });
 
   it('sets the refresh cookie and allows the production frontend origin', async () => {

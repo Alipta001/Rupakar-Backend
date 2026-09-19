@@ -7,8 +7,8 @@ const router = Router();
 
 export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV) => ({
   httpOnly: true,
-  secure: nodeEnv === 'production',
-  sameSite: nodeEnv === 'production' ? 'none' : 'lax',
+  secure: nodeEnv === 'production' || /^https:\/\//.test(env.FRONTEND_URL),
+  sameSite: nodeEnv === 'production' || /^https:\/\//.test(env.FRONTEND_URL) ? 'none' : 'lax',
   path: '/api/v1/auth',
   maxAge: 7 * 24 * 60 * 60 * 1000,
 });
