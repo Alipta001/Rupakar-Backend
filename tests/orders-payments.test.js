@@ -20,6 +20,7 @@ import { pricingService } from '../app/services/pricing.service.js';
 import { inventoryReservationService } from '../app/services/inventory-reservation.service.js';
 import { OrderStatusHistory } from '../app/models/order-status-history.model.js';
 import { RazorpayProvider } from '../app/services/payment-providers/razorpay.provider.js';
+import { env } from '../app/config/env.js';
 
 describe('order service', () => {
   beforeEach(() => {
@@ -205,6 +206,69 @@ describe('order service', () => {
       currency: 'INR',
     }));
     expect(result.amount).toBe(0.5);
+  });
+
+  it('creates a ₹1 Razorpay payment and returns the provider order for checkout', async () => {
+    const service = new PaymentService();
+    const originalKeyId = env.RAZORPAY_KEY_ID;
+    env.RAZORPAY_KEY_ID = 'rzp_test_checkout_regression';
+    const order = {
+      _id: new mongoose.Types.ObjectId(),
+      orderNumber: 'ORD-ONE-RUPEE',
+      total: 1,
+      currency: 'INR',
+    };
+    const providerOrder = {
+      providerOrderId: 'order_razorpay_one_rupee',
+      providerPaymentId: null,
+      amount: 1,
+      currency: 'INR',
+      status: 'created',
+    };
+    jest.spyOn(service, 'isRazorpayEnabled').mockReturnValue(true);
+    jest.spyOn(service.provider, 'createPayment').mockResolvedValue(providerOrder);
+    jest.spyOn(Payment, 'findOne').mockResolvedValue(null);
+    jest.spyOn(Payment, 'create').mockResolvedValue({
+      _id: 'payment-1',
+      orderId: order._id,
+      providerOrderId: providerOrder.providerOrderId,
+      amount: 1,
+      currency: 'INR',
+      status: 'PENDING',
+      toObject: () => ({
+        _id: 'payment-1',
+        orderId: order._id,
+        providerOrderId: providerOrder.providerOrderId,
+        amount: 1,
+        currency: 'INR',
+        status: 'PENDING',
+      }),
+    });
+    jest.spyOn(PaymentTransaction, 'create').mockResolvedValue({ _id: 'transaction-1' });
+
+    try {
+      const result = await service.createPayment({
+        order,
+        customerId: new mongoose.Types.ObjectId(),
+        amount: 1,
+        method: 'razorpay',
+        provider: 'razorpay',
+      });
+
+      expect(service.provider.createPayment).toHaveBeenCalledWith(expect.objectContaining({
+        amount: 1,
+        currency: 'INR',
+      }));
+      expect(result).toMatchObject({
+        providerOrderId: 'order_razorpay_one_rupee',
+        amount: 1,
+        currency: 'INR',
+        status: 'PENDING',
+        publicKey: 'rzp_test_checkout_regression',
+      });
+    } finally {
+      env.RAZORPAY_KEY_ID = originalKeyId;
+    }
   });
 
   it('cancels a customer-owned order and releases its reservation inventory', async () => {
