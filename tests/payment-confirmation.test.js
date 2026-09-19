@@ -6,6 +6,7 @@ import { Cart } from '../app/models/cart.model.js';
 import { paymentService } from '../app/services/payment.service.js';
 import { inventoryReservationService } from '../app/services/inventory-reservation.service.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
+import { PaymentEvent } from '../app/models/payment-event.model.js';
 
 const runConfirm = async () => {
   const order = {
@@ -96,4 +97,64 @@ it('returns an idempotent success for a repeated confirmation with the same paym
 
   expect(next).not.toHaveBeenCalled();
   expect(json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ duplicate: true, paymentStatus: 'PAID' }) }));
+});
+
+it('settles a captured webhook when the payment record only has the Razorpay order ID', async () => {
+  const payment = {
+    _id: 'payment-1',
+    orderId: 'order-1',
+    provider: 'razorpay',
+    providerOrderId: 'order_razorpay_test',
+    amount: 1,
+    currency: 'INR',
+    status: 'PENDING',
+  };
+  jest.spyOn(paymentService.provider, 'verifyWebhookSignature').mockReturnValue(true);
+  jest.spyOn(Payment, 'findOne').mockResolvedValue(payment);
+  jest.spyOn(PaymentEvent, 'create').mockResolvedValue({ toObject: () => ({ eventType: 'payment.captured' }) });
+  jest.spyOn(Payment, 'findOneAndUpdate').mockImplementation(async (_filter, update) => ({
+    ...payment,
+    ...update.$set,
+  }));
+  jest.spyOn(Order, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue({ _id: 'order-1', items: [] }) });
+  jest.spyOn(Order, 'updateOne').mockResolvedValue({ acknowledged: true });
+  jest.spyOn(VendorOrder, 'updateMany').mockResolvedValue({ acknowledged: true });
+  jest.spyOn(inventoryReservationService, 'consumeOrderReservations').mockResolvedValue([]);
+
+  const payload = {
+    event: 'payment.captured',
+    payload: {
+      payment: {
+        entity: {
+          id: 'pay_test_1',
+          order_id: 'order_razorpay_test',
+          amount: 100,
+          currency: 'INR',
+        },
+      },
+    },
+  };
+  const result = await paymentService.processWebhook({
+    provider: 'razorpay',
+    payload,
+    signature: 'valid-signature',
+    rawBody: Buffer.from(JSON.stringify(payload)),
+  });
+
+  expect(result.success).toBe(true);
+  expect(Payment.findOne).toHaveBeenCalledWith({
+    $or: [
+      { providerPaymentId: 'pay_test_1' },
+      { providerOrderId: 'order_razorpay_test' },
+    ],
+  });
+  expect(Payment.findOneAndUpdate).toHaveBeenCalledWith(
+    { _id: 'payment-1', status: 'PENDING' },
+    expect.objectContaining({ $set: expect.objectContaining({ status: 'CAPTURED', providerPaymentId: 'pay_test_1' }) }),
+    { new: true },
+  );
+  expect(Order.updateOne).toHaveBeenCalledWith(
+    { _id: 'order-1' },
+    { $set: { paymentStatus: 'PAID', status: 'CONFIRMED' } },
+  );
 });

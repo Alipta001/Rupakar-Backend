@@ -75,6 +75,8 @@ describe('checkout reliability', () => {
 
   it('uses the selected address when calculating server totals', async () => {
     const { productId, variantId, customerId } = ids();
+    const originalShippingEnabled = env.SHIPPING_ENABLED;
+    env.SHIPPING_ENABLED = true;
     jest.spyOn(ProductVariant, 'findOne').mockResolvedValue({
       _id: variantId,
       productId,
@@ -95,14 +97,18 @@ describe('checkout reliability', () => {
       city: 'Kolkata',
     });
 
-    const summary = await pricingService.buildPriceSummary({
-      userId: customerId,
-      items: [{ productId, variantId, quantity: 1 }],
-      shippingAddressId: 'address-1',
-    });
+    try {
+      const summary = await pricingService.buildPriceSummary({
+        userId: customerId,
+        items: [{ productId, variantId, quantity: 1 }],
+        shippingAddressId: 'address-1',
+      });
 
-    expect(summary.shipping).toBe(40);
-    expect(summary.total).toBe(summary.subtotal + summary.tax + summary.shipping - summary.discount);
+      expect(summary.shipping).toBe(40);
+      expect(summary.total).toBe(summary.subtotal + summary.tax + summary.shipping - summary.discount);
+    } finally {
+      env.SHIPPING_ENABLED = originalShippingEnabled;
+    }
   });
 
   it('calculates a non-zero subtotal from the persisted variant price and quantity', async () => {

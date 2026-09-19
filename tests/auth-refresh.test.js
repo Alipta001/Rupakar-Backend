@@ -58,6 +58,58 @@ describe('refresh token sessions', () => {
     await expect(service.refreshToken(token)).rejects.toMatchObject({ code: 'INVALID_REFRESH_TOKEN' });
   });
 
+  it('replaces an expired access token with a new access token from the refresh session', async () => {
+    const service = new AuthService();
+    const expiredAccessToken = jwt.sign({ sub: userId, role: 'customer' }, env.JWT_ACCESS_SECRET, { expiresIn: -1 });
+    const refreshToken = createRefreshToken();
+    jest.spyOn(RefreshSession, 'findOne').mockResolvedValue({
+      _id: 'session-1',
+      userId,
+      familyId: 'family-1',
+      tokenHash: service.hashToken(refreshToken),
+      expiresAt: new Date(Date.now() + 60_000),
+      revokedAt: null,
+    });
+    jest.spyOn(RefreshSession, 'create').mockResolvedValue({});
+    jest.spyOn(RefreshSession, 'updateOne').mockResolvedValue({ modifiedCount: 1 });
+    jest.spyOn(User, 'findById').mockReturnValue(userQuery({ _id: userId, role: 'customer', isActive: true }));
+
+    expect(() => jwt.verify(expiredAccessToken, env.JWT_ACCESS_SECRET)).toThrow();
+    const result = await service.refreshToken(refreshToken);
+    expect(() => jwt.verify(result.accessToken, env.JWT_ACCESS_SECRET)).not.toThrow();
+    expect(result.accessToken).not.toBe(expiredAccessToken);
+  });
+
+  it('allows only one of simultaneous refreshes to rotate the same session', async () => {
+    const service = new AuthService();
+    const token = createRefreshToken();
+    jest.spyOn(RefreshSession, 'findOne').mockResolvedValue({
+      _id: 'session-1',
+      userId,
+      familyId: 'family-1',
+      tokenHash: service.hashToken(token),
+      expiresAt: new Date(Date.now() + 60_000),
+      revokedAt: null,
+    });
+    jest.spyOn(RefreshSession, 'create').mockResolvedValue({});
+    let updateCount = 0;
+    jest.spyOn(RefreshSession, 'updateOne').mockImplementation(async () => {
+      updateCount += 1;
+      return { modifiedCount: updateCount === 1 ? 1 : 0 };
+    });
+    jest.spyOn(RefreshSession, 'updateMany').mockResolvedValue({ modifiedCount: 1 });
+    jest.spyOn(User, 'findById').mockReturnValue(userQuery({ _id: userId, role: 'customer', isActive: true }));
+
+    const results = await Promise.allSettled([
+      service.refreshToken(token),
+      service.refreshToken(token),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected').reason).toMatchObject({ code: 'REFRESH_TOKEN_REUSED' });
+  });
+
   it('rejects revoked tokens and revokes the rest of the token family on reuse', async () => {
     const service = new AuthService();
     const token = createRefreshToken();

@@ -332,6 +332,10 @@ describe('payment webhook handling', () => {
 
     expect(result.success).toBe(true);
     expect(createSpy).toHaveBeenCalled();
+    expect(Order.updateOne).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ $set: expect.objectContaining({ paymentStatus: 'PAID', status: 'CONFIRMED' }) }),
+    );
     expect(VendorOrder.updateMany).toHaveBeenCalledWith(expect.any(Object), { $set: { status: 'CONFIRMED' } });
     expect(inventoryReservationService.consumeOrderReservations).toHaveBeenCalled();
   }, 10000);

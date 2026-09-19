@@ -300,8 +300,12 @@ export class PaymentService {
 
     const paymentEntity = eventPayload?.payload?.payment?.entity || eventPayload?.payload?.payment || {};
     const paymentId = paymentEntity?.id || paymentEntity?.providerPaymentId;
-    const currentPayment = paymentId ? await Payment.findOne({ providerPaymentId: paymentId }) : null;
-    if (paymentId && !currentPayment) {
+    const providerOrderId = paymentEntity?.order_id || paymentEntity?.orderId;
+    const paymentLookup = paymentId || providerOrderId
+      ? { $or: [{ providerPaymentId: paymentId }, { providerOrderId }] }
+      : null;
+    const currentPayment = paymentLookup ? await Payment.findOne(paymentLookup) : null;
+    if ((paymentId || providerOrderId) && !currentPayment) {
       return { success: false, retryable: true, error: 'PAYMENT_NOT_FOUND', eventId: providerEventId };
     }
 
@@ -344,6 +348,7 @@ export class PaymentService {
       const updatedPayment = await Payment.findOneAndUpdate({ _id: currentPayment._id, status: currentPayment.status }, {
         $set: {
           status: nextStatus,
+          ...(paymentId ? { providerPaymentId: paymentId } : {}),
           paidAt: nextStatus === 'CAPTURED' ? new Date() : undefined,
           providerEventId,
         },
