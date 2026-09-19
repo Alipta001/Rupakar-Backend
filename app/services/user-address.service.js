@@ -1,4 +1,6 @@
 import { UserAddress } from '../models/user-address.model.js';
+import mongoose from 'mongoose';
+import { AppError } from '../utils/app-error.js';
 
 export class UserAddressService {
   async createAddress(userId, payload) {
@@ -15,10 +17,12 @@ export class UserAddressService {
   }
 
   async getAddress(userId, addressId) {
+    this.assertAddressId(addressId);
     return UserAddress.findOne({ _id: addressId, userId, isDeleted: false }).lean();
   }
 
   async updateAddress(userId, addressId, payload) {
+    this.assertAddressId(addressId);
     const address = await UserAddress.findOneAndUpdate(
       { _id: addressId, userId, isDeleted: false },
       { $set: payload },
@@ -29,6 +33,7 @@ export class UserAddressService {
   }
 
   async deleteAddress(userId, addressId) {
+    this.assertAddressId(addressId);
     return UserAddress.findOneAndUpdate(
       { _id: addressId, userId, isDeleted: false },
       { $set: { isDeleted: true, deletedAt: new Date() } },
@@ -37,6 +42,7 @@ export class UserAddressService {
   }
 
   async setDefaultAddress(userId, addressId, field) {
+    this.assertAddressId(addressId);
     if (!(field === 'isDefaultShipping' || field === 'isDefaultBilling')) {
       throw new Error('Invalid default address field');
     }
@@ -62,6 +68,12 @@ export class UserAddressService {
 
     await address.save();
     return address.toObject();
+  }
+
+  assertAddressId(addressId) {
+    if (!mongoose.isValidObjectId(addressId)) {
+      throw new AppError(400, 'INVALID_ADDRESS_ID', 'Address id is invalid');
+    }
   }
 }
 
