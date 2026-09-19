@@ -139,6 +139,8 @@ describe('checkout reliability', () => {
 
   it('keeps ₹0.50 checkout money in rupees and applies configured shipping once', async () => {
     const { productId, variantId } = ids();
+    const originalShippingEnabled = env.SHIPPING_ENABLED;
+    env.SHIPPING_ENABLED = true;
     jest.spyOn(ProductVariant, 'findOne').mockResolvedValue({
       _id: variantId,
       productId,
@@ -155,21 +157,27 @@ describe('checkout reliability', () => {
     });
     jest.spyOn(inventoryService, 'getAvailableStock').mockResolvedValue(5);
 
-    const summary = await pricingService.buildPriceSummary({
-      items: [{ productId, variantId, quantity: 1 }],
-    });
+    try {
+      const summary = await pricingService.buildPriceSummary({
+        items: [{ productId, variantId, quantity: 1 }],
+      });
 
-    expect(summary.subtotal).toBe(0.5);
-    expect(summary.shipping).toBe(50);
-    expect(summary.discount).toBe(0);
-    expect(summary.tax).toBe(0);
-    expect(summary.total).toBe(50.5);
+      expect(summary.subtotal).toBe(0.5);
+      expect(summary.shipping).toBe(50);
+      expect(summary.discount).toBe(0);
+      expect(summary.tax).toBe(0);
+      expect(summary.total).toBe(50.5);
+    } finally {
+      env.SHIPPING_ENABLED = originalShippingEnabled;
+    }
   });
 
   it('supports configured free shipping for a ₹1 test product without payment mocks', async () => {
     const { productId, variantId } = ids();
+    const originalShippingEnabled = env.SHIPPING_ENABLED;
     const originalShippingFee = env.SHIPPING_BASE_FEE;
-    env.SHIPPING_BASE_FEE = 0;
+    env.SHIPPING_ENABLED = false;
+    env.SHIPPING_BASE_FEE = 200;
 
     try {
       jest.spyOn(ProductVariant, 'findOne').mockResolvedValue({
@@ -190,6 +198,7 @@ describe('checkout reliability', () => {
 
       const summary = await pricingService.buildPriceSummary({
         items: [{ productId, variantId, quantity: 1 }],
+        shippingAddress: { state: 'West Bengal', postalCode: '700001' },
       });
 
       expect(summary.subtotal).toBe(1);
@@ -198,6 +207,7 @@ describe('checkout reliability', () => {
       expect(summary.tax).toBe(0);
       expect(summary.total).toBe(1);
     } finally {
+      env.SHIPPING_ENABLED = originalShippingEnabled;
       env.SHIPPING_BASE_FEE = originalShippingFee;
     }
   });

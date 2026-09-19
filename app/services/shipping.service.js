@@ -4,6 +4,14 @@ import { env } from '../config/env.js';
 
 export class ShippingService {
   calculateShipping({ subtotal = 0, items = [], shippingAddress = null }) {
+    if (!env.SHIPPING_ENABLED) {
+      return {
+        amount: 0,
+        currency: 'INR',
+        method: 'disabled',
+      };
+    }
+
     const itemCount = Array.isArray(items) ? items.length : 0;
     const safeSubtotal = Number(subtotal) || 0;
 
