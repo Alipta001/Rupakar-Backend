@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import mongoose from 'mongoose';
-import { listAddresses, updateAddress } from '../app/controllers/user.controller.js';
+import { createAddress, listAddresses, updateAddress } from '../app/controllers/user.controller.js';
 import { userAddressService } from '../app/services/user-address.service.js';
 
 const response = () => {
@@ -38,5 +38,39 @@ describe('address API contract', () => {
 
     expect(updateSpy).toHaveBeenCalledWith(expect.any(String), 'not-an-object-id', { city: 'Kolkata' });
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_ADDRESS_ID', statusCode: 400 }));
+  });
+
+  it('creates an address with the canonical fields required by MongoDB', async () => {
+    const createdAddress = { _id: new mongoose.Types.ObjectId(), fullName: 'Customer', district: 'Kolkata' };
+    const createSpy = jest.spyOn(userAddressService, 'createAddress').mockResolvedValue(createdAddress);
+    const { res, json } = response();
+    const next = jest.fn();
+
+    await createAddress({
+      user: { sub: new mongoose.Types.ObjectId().toHexString() },
+      body: {
+        fullName: 'Customer',
+        addressLine1: '1 Artisan Street',
+        addressLine2: '',
+        city: 'Kolkata',
+        district: 'Kolkata',
+        state: 'West Bengal',
+        postalCode: '700001',
+        phone: '9876543210',
+      },
+      headers: {},
+    }, res, next);
+
+    expect(createSpy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      fullName: 'Customer',
+      addressLine1: '1 Artisan Street',
+      city: 'Kolkata',
+      district: 'Kolkata',
+      state: 'West Bengal',
+      postalCode: '700001',
+      phone: '9876543210',
+    }));
+    expect(next).not.toHaveBeenCalled();
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ data: createdAddress }));
   });
 });

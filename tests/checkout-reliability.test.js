@@ -104,6 +104,32 @@ describe('checkout reliability', () => {
     expect(summary.total).toBe(summary.subtotal + summary.tax + summary.shipping - summary.discount);
   });
 
+  it('calculates a non-zero subtotal from the persisted variant price and quantity', async () => {
+    const { productId, variantId } = ids();
+    jest.spyOn(ProductVariant, 'findOne').mockResolvedValue({
+      _id: variantId,
+      productId,
+      price: 2199,
+      sku: 'SKU-2199',
+      status: 'ACTIVE',
+    });
+    jest.spyOn(Product, 'findOne').mockResolvedValue({
+      _id: productId,
+      name: 'Persisted product',
+      status: 'PUBLISHED',
+      deletedAt: null,
+    });
+    jest.spyOn(inventoryService, 'getAvailableStock').mockResolvedValue(5);
+
+    const summary = await pricingService.buildPriceSummary({
+      items: [{ productId, variantId, quantity: 1 }],
+    });
+
+    expect(summary.subtotal).toBe(2199);
+    expect(summary.total).toBeGreaterThan(0);
+    expect(summary.items[0]).toMatchObject({ productId, variantId, unitPrice: 2199, lineTotal: 2199 });
+  });
+
   it('fails the order, vendor order, and reservations when payment creation fails', async () => {
     const { customerId, productId, variantId, vendorId } = ids();
     const paymentError = new Error('payment provider unavailable');
