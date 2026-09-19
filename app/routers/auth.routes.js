@@ -5,18 +5,26 @@ import { authService } from '../services/auth.service.js';
 
 const router = Router();
 
+export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV) => ({
+  httpOnly: true,
+  secure: nodeEnv === 'production',
+  sameSite: nodeEnv === 'production' ? 'none' : 'lax',
+  path: '/api/v1/auth',
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+});
+
 const setRefreshCookie = (res, refreshToken) => {
-  res.cookie('refresh_token', refreshToken, {
-    httpOnly: true,
-    secure: env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/api/v1/auth',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+  res.cookie('refresh_token', refreshToken, getRefreshCookieOptions());
 };
 
 const clearRefreshCookie = (res) => {
-  res.clearCookie('refresh_token', { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax', path: '/api/v1/auth' });
+  const options = getRefreshCookieOptions();
+  res.clearCookie('refresh_token', {
+    httpOnly: options.httpOnly,
+    secure: options.secure,
+    sameSite: options.sameSite,
+    path: options.path,
+  });
 };
 
 const registerSchema = z.object({
