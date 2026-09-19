@@ -1,16 +1,17 @@
 import { Shipment } from '../models/shipment.model.js';
 import { AppError } from '../utils/app-error.js';
+import { env } from '../config/env.js';
 
 export class ShippingService {
   calculateShipping({ subtotal = 0, items = [], shippingAddress = null }) {
     const itemCount = Array.isArray(items) ? items.length : 0;
     const safeSubtotal = Number(subtotal) || 0;
 
-    let amount = 5000;
-    if (itemCount > 2) amount += 2000;
-    if (safeSubtotal >= 150000) amount = 0;
+    let amount = env.SHIPPING_BASE_FEE;
+    if (itemCount > 2) amount += env.SHIPPING_EXTRA_ITEM_FEE;
+    if (safeSubtotal >= env.FREE_SHIPPING_THRESHOLD) amount = 0;
     if (shippingAddress && shippingAddress.state && /west bengal|wb/i.test(shippingAddress.state)) {
-      amount = Math.max(0, amount - 1000);
+      amount = Math.max(0, amount - env.WEST_BENGAL_SHIPPING_DISCOUNT);
     }
 
     return {

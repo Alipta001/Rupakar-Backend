@@ -100,7 +100,7 @@ describe('checkout reliability', () => {
       shippingAddressId: 'address-1',
     });
 
-    expect(summary.shipping).toBe(4000);
+    expect(summary.shipping).toBe(40);
     expect(summary.total).toBe(summary.subtotal + summary.tax + summary.shipping - summary.discount);
   });
 
@@ -134,6 +134,35 @@ describe('checkout reliability', () => {
     await expect(pricingService.buildPriceSummary({
       items: [{ productId: 'product-1', variantId: 'variant-1', quantity: 1 }],
     })).rejects.toMatchObject({ code: 'INVALID_PRODUCT_ID', statusCode: 400 });
+  });
+
+  it('keeps ₹0.50 checkout money in rupees and applies configured shipping once', async () => {
+    const { productId, variantId } = ids();
+    jest.spyOn(ProductVariant, 'findOne').mockResolvedValue({
+      _id: variantId,
+      productId,
+      price: 0.5,
+      sku: 'SKU-050',
+      status: 'ACTIVE',
+    });
+    jest.spyOn(Product, 'findOne').mockResolvedValue({
+      _id: productId,
+      name: 'Half rupee product',
+      status: 'PUBLISHED',
+      deletedAt: null,
+      tax: { taxable: false },
+    });
+    jest.spyOn(inventoryService, 'getAvailableStock').mockResolvedValue(5);
+
+    const summary = await pricingService.buildPriceSummary({
+      items: [{ productId, variantId, quantity: 1 }],
+    });
+
+    expect(summary.subtotal).toBe(0.5);
+    expect(summary.shipping).toBe(50);
+    expect(summary.discount).toBe(0);
+    expect(summary.tax).toBe(0);
+    expect(summary.total).toBe(50.5);
   });
 
   it('fails the order, vendor order, and reservations when payment creation fails', async () => {

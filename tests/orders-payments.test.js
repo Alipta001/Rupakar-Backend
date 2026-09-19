@@ -19,6 +19,7 @@ import { userAddressService } from '../app/services/user-address.service.js';
 import { pricingService } from '../app/services/pricing.service.js';
 import { inventoryReservationService } from '../app/services/inventory-reservation.service.js';
 import { OrderStatusHistory } from '../app/models/order-status-history.model.js';
+import { RazorpayProvider } from '../app/services/payment-providers/razorpay.provider.js';
 
 describe('order service', () => {
   beforeEach(() => {
@@ -181,6 +182,29 @@ describe('order service', () => {
 
     expect(payment.amount).toBe(2500);
     expect(payment.amount).toBeGreaterThan(0);
+  });
+
+  it('sends a ₹0.50 server total to Razorpay as 50 paise', async () => {
+    const provider = Object.create(RazorpayProvider.prototype);
+    provider.enabled = true;
+    provider.client = { orders: { create: jest.fn().mockResolvedValue({
+      id: 'order_razorpay_half_rupee',
+      amount: 50,
+      currency: 'INR',
+      status: 'created',
+    }) } };
+
+    const result = await provider.createPayment({
+      order: { orderNumber: 'ORD-HALF-RUPEE', total: 0.5 },
+      amount: 0.5,
+      currency: 'INR',
+    });
+
+    expect(provider.client.orders.create).toHaveBeenCalledWith(expect.objectContaining({
+      amount: 50,
+      currency: 'INR',
+    }));
+    expect(result.amount).toBe(0.5);
   });
 
   it('cancels a customer-owned order and releases its reservation inventory', async () => {
