@@ -1,6 +1,7 @@
 import { cartService } from '../services/cart.service.js';
 import { sendSuccess } from '../utils/response.js';
 import { cartItemSchema, cartQuantitySchema } from '../validators/cart.validators.js';
+import { AppError } from '../utils/app-error.js';
 
 export const getCart = async (req, res, next) => {
   try {
@@ -71,6 +72,25 @@ export const clearCart = async (req, res, next) => {
     const sessionId = req.headers['x-guest-session-id'] ?? req.query.guestSessionId ?? null;
     const cart = await cartService.clearCart({ userId, guestSessionId: sessionId });
     sendSuccess(res, cart, 'Cart cleared', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const mergeCart = async (req, res, next) => {
+  try {
+    const userId = req.user?.sub ?? null;
+    const sessionId = req.headers['x-guest-session-id'] ?? req.body?.guestSessionId ?? null;
+    if (!userId) {
+      throw new AppError(401, 'UNAUTHORIZED', 'Authentication required to merge cart');
+    }
+    await cartService.mergeGuestCart({
+      userId,
+      guestSessionId: sessionId,
+      items: req.body?.items ?? [],
+    });
+    const formatted = await cartService.getCartForUser(userId);
+    sendSuccess(res, formatted, 'Cart merged successfully', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { authService } from '../services/auth.service.js';
+import { cartService } from '../services/cart.service.js';
 
 const router = Router();
 
@@ -132,6 +133,16 @@ router.post('/login', async (req, res, next) => {
     const result = await authService.login(payload);
     setRefreshCookie(res, result.refreshToken);
     delete result.refreshToken;
+
+    const guestSessionId = req.headers['x-guest-session-id'] || req.body?.guestSessionId;
+    if (guestSessionId && result.user?.id) {
+      try {
+        await cartService.mergeGuestCart({ userId: result.user.id, guestSessionId });
+      } catch (mergeErr) {
+        console.warn('[LOGIN_CART_MERGE_WARNING]', mergeErr.message);
+      }
+    }
+
     res.status(200).json({
       success: true,
       data: result,
