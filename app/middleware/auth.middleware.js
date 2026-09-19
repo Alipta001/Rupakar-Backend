@@ -15,6 +15,10 @@ export const requireAuth = (req, _res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
+    if (error?.name === 'TokenExpiredError' || error?.name === 'JsonWebTokenError' || error?.name === 'NotBeforeError') {
+      next(new AppError(401, 'UNAUTHORIZED', 'Authentication token is invalid or expired'));
+      return;
+    }
     next(error);
   }
 };
