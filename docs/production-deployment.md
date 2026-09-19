@@ -124,8 +124,8 @@ Start the frontend separately from `rupakar-v0`:
 
 ```bash
 pnpm install --frozen-lockfile
-NEXT_API_URL=https://api.staging.example.com/api/v1 pnpm build
-NEXT_API_URL=https://api.staging.example.com/api/v1 pnpm start
+NEXT_PUBLIC_API_URL=https://api.staging.example.com/api/v1 pnpm build
+NEXT_PUBLIC_API_URL=https://api.staging.example.com/api/v1 pnpm start
 ```
 
 ### 4. HTTPS
@@ -200,8 +200,8 @@ Start the frontend separately with a staging-only environment file:
 ```bash
 cd rupakar-v0
 pnpm install --frozen-lockfile
-NEXT_API_URL=https://api.staging.example.com/api/v1 pnpm build
-NEXT_API_URL=https://api.staging.example.com/api/v1 pnpm start
+NEXT_PUBLIC_API_URL=https://api.staging.example.com/api/v1 pnpm build
+NEXT_PUBLIC_API_URL=https://api.staging.example.com/api/v1 pnpm start
 ```
 
 Put the frontend behind the same HTTPS ingress or an approved HTTPS origin listed in `CORS_ALLOWED_ORIGINS`. Do not use `http://localhost` for staging.

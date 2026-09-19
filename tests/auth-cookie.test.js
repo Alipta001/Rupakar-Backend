@@ -40,6 +40,8 @@ describe('cross-origin refresh authentication', () => {
     expect(response.headers['access-control-allow-credentials']).toBe('true');
     expect(response.headers['set-cookie'][0]).toContain('refresh_token=refresh-token');
     expect(response.headers['set-cookie'][0]).toContain('HttpOnly');
+    expect(response.body.data.accessToken).toBe('access-token');
+    expect(response.body.data.refreshToken).toBeUndefined();
     expect(loginSpy).toHaveBeenCalledTimes(1);
     loginSpy.mockRestore();
   });
@@ -60,5 +62,20 @@ describe('cross-origin refresh authentication', () => {
     expect(refreshSpy).toHaveBeenCalledWith('refresh-token');
     expect(response.body.data.accessToken).toBe('new-access-token');
     refreshSpy.mockRestore();
+  });
+
+  it('clears the same refresh cookie on logout', async () => {
+    const revokeSpy = jest.spyOn(authService, 'revokeRefreshToken').mockResolvedValue();
+
+    const response = await request(app)
+      .post('/api/v1/auth/logout')
+      .set('Origin', 'https://rupakar-frontend.vercel.app')
+      .set('Cookie', 'refresh_token=refresh-token');
+
+    expect(response.status).toBe(200);
+    expect(revokeSpy).toHaveBeenCalledWith('refresh-token', 'LOGOUT');
+    expect(response.headers['set-cookie'][0]).toContain('refresh_token=;');
+    expect(response.headers['set-cookie'][0]).toContain('Path=/api/v1/auth');
+    revokeSpy.mockRestore();
   });
 });
