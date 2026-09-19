@@ -21,6 +21,7 @@ Set these in a secret manager or deployment environment, never in source control
 - `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASSWORD`: production SMTP provider.
 - `STORAGE_BUCKET`: private production bucket if invoice/PDF storage is enabled.
 - `PAYMENT_MOCK_ENABLED`: omit or set `false`; production rejects `true`.
+- `SHIPPING_ENABLED`: set `false` during the ₹1 checkout test phase; restore `true` to enable normal shipping rules.
 
 The API and worker must receive the same MongoDB, Redis, JWT, Razorpay, email, and storage settings. Production startup rejects missing dependencies, non-HTTPS origins, test Razorpay keys, and mock payments. When `WORKER_ENABLED=false`, readiness reports Redis `ready` and worker `disabled`; when a worker is deployed, set it to `true` and require the heartbeat.
 
