@@ -228,7 +228,7 @@ export class AuthService {
       { $set: { revokedAt: new Date(), replacedByHash: replacementHash, revokeReason: 'ROTATED' } },
     );
     if (rotated.modifiedCount !== 1) {
-      await this.revokeUserSessions(user._id, 'REFRESH_TOKEN_REUSE');
+      await this.revokeSessionFamily(session.familyId, 'REFRESH_TOKEN_REUSE');
       throw new AppError(401, 'REFRESH_TOKEN_REUSED', 'Refresh token has already been used');
     }
     return {
@@ -253,6 +253,13 @@ export class AuthService {
   async revokeUserSessions(userId, reason = 'SECURITY_EVENT') {
     if (!userId) return;
     await RefreshSession.updateMany({ userId, revokedAt: null }, {
+      $set: { revokedAt: new Date(), revokeReason: reason },
+    });
+  }
+
+  async revokeSessionFamily(familyId, reason = 'SECURITY_EVENT') {
+    if (!familyId) return;
+    await RefreshSession.updateMany({ familyId, revokedAt: null }, {
       $set: { revokedAt: new Date(), revokeReason: reason },
     });
   }

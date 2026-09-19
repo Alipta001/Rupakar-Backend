@@ -110,6 +110,30 @@ describe('refresh token sessions', () => {
     expect(results.find((result) => result.status === 'rejected').reason).toMatchObject({ code: 'REFRESH_TOKEN_REUSED' });
   });
 
+  it('revokes only the reused refresh-token family after a rotation race', async () => {
+    const service = new AuthService();
+    const token = createRefreshToken();
+    jest.spyOn(RefreshSession, 'findOne').mockResolvedValue({
+      _id: 'session-1',
+      userId,
+      familyId: 'family-1',
+      tokenHash: service.hashToken(token),
+      expiresAt: new Date(Date.now() + 60_000),
+      revokedAt: null,
+    });
+    jest.spyOn(RefreshSession, 'create').mockResolvedValue({});
+    jest.spyOn(RefreshSession, 'updateOne').mockResolvedValue({ modifiedCount: 0 });
+    const revokeFamilySpy = jest.spyOn(RefreshSession, 'updateMany').mockResolvedValue({ modifiedCount: 1 });
+    jest.spyOn(User, 'findById').mockReturnValue(userQuery({ _id: userId, role: 'customer', isActive: true }));
+
+    await expect(service.refreshToken(token)).rejects.toMatchObject({ code: 'REFRESH_TOKEN_REUSED' });
+
+    expect(revokeFamilySpy).toHaveBeenCalledWith(
+      { familyId: 'family-1', revokedAt: null },
+      expect.objectContaining({ $set: expect.objectContaining({ revokeReason: 'REFRESH_TOKEN_REUSE' }) }),
+    );
+  });
+
   it('rejects revoked tokens and revokes the rest of the token family on reuse', async () => {
     const service = new AuthService();
     const token = createRefreshToken();

@@ -27,7 +27,7 @@ The API and worker must receive the same MongoDB, Redis, JWT, Razorpay, email, a
 
 ## HTTPS and edge security
 
-Terminate TLS at a managed load balancer or reverse proxy. Redirect HTTP to HTTPS, forward the original protocol safely, restrict inbound API access to the edge, and set HSTS only after HTTPS is confirmed. Refresh cookies are `HttpOnly`, `Secure`, `SameSite=Lax`, and scoped to the auth path.
+Terminate TLS at a managed load balancer or reverse proxy. Redirect HTTP to HTTPS, forward the original protocol safely, restrict inbound API access to the edge, and set HSTS only after HTTPS is confirmed. Refresh cookies are `HttpOnly`, `Secure`, `SameSite=None`, and scoped to `/api/v1/auth` so the Vercel frontend can send them to the Render API.
 
 ## Startup and health
 
