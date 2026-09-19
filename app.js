@@ -92,8 +92,8 @@ export function createApp() {
       const mongoState = mongoose.connection.readyState === 1 ? 'ready' : 'not-ready';
       const activeRedis = app.locals.redis ?? redis;
       const redisState = activeRedis && activeRedis.status === 'ready' ? 'ready' : (env.REDIS_ENABLED ? 'not-ready' : 'disabled');
-      const workerHeartbeat = redisState === 'ready' ? await activeRedis.get('rupakar:worker:heartbeat') : null;
-      const workerState = env.REDIS_ENABLED ? (workerHeartbeat ? 'ready' : 'not-ready') : 'disabled';
+      const workerHeartbeat = env.WORKER_ENABLED && redisState === 'ready' ? await activeRedis.get('rupakar:worker:heartbeat') : null;
+      const workerState = !env.WORKER_ENABLED ? 'disabled' : env.REDIS_ENABLED ? (workerHeartbeat ? 'ready' : 'not-ready') : 'disabled';
       const ready = mongoState === 'ready' && redisState !== 'not-ready' && workerState !== 'not-ready';
 
       res.status(ready ? 200 : 503).json({

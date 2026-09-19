@@ -4,6 +4,11 @@ import { connectMongo, disconnectMongo } from './app/database/connection.js';
 async function startWorkers() {
   console.log('Starting BullMQ workers...');
 
+  if (!process.env.WORKER_ENABLED || process.env.WORKER_ENABLED === 'false') {
+    console.log('BullMQ workers disabled by WORKER_ENABLED=false');
+    return;
+  }
+
   try {
     await connectMongo();
     await ensureQueueConnection();

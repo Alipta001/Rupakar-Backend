@@ -52,6 +52,7 @@ export const env = {
   MONGODB_URI: (process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/rupakar').trim(),
   REDIS_URL: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
   REDIS_ENABLED: isProduction || process.env.REDIS_ENABLED === 'true',
+  WORKER_ENABLED: process.env.WORKER_ENABLED !== 'false',
   JWT_ACCESS_SECRET: process.env.JWT_ACCESS_SECRET ?? process.env.JWT_SECRET ?? 'dev-access-secret',
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET ?? (process.env.JWT_SECRET ? `${process.env.JWT_SECRET}_refresh` : 'dev-refresh-secret'),
   FRONTEND_URL: process.env.FRONTEND_URL ?? 'http://localhost:3000',

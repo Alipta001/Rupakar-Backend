@@ -11,6 +11,7 @@ Set these in a secret manager or deployment environment, never in source control
 - `MONGODB_URI`: TLS-enabled production MongoDB URI with a least-privilege application user.
 - `REDIS_URL`: production Redis endpoint reachable by API and worker.
 - `REDIS_ENABLED=true`
+- `WORKER_ENABLED=false` on Render API when no paid background worker is deployed; Redis remains required.
 - `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET`: independent random secrets, at least 32 bytes.
 - `RAZORPAY_KEY_ID`: `rzp_live_...` only.
 - `RAZORPAY_KEY_SECRET`: matching live secret.
@@ -21,7 +22,7 @@ Set these in a secret manager or deployment environment, never in source control
 - `STORAGE_BUCKET`: private production bucket if invoice/PDF storage is enabled.
 - `PAYMENT_MOCK_ENABLED`: omit or set `false`; production rejects `true`.
 
-The API and worker must receive the same MongoDB, Redis, JWT, Razorpay, email, and storage settings. Production startup rejects missing dependencies, non-HTTPS origins, test Razorpay keys, and mock payments.
+The API and worker must receive the same MongoDB, Redis, JWT, Razorpay, email, and storage settings. Production startup rejects missing dependencies, non-HTTPS origins, test Razorpay keys, and mock payments. When `WORKER_ENABLED=false`, readiness reports Redis `ready` and worker `disabled`; when a worker is deployed, set it to `true` and require the heartbeat.
 
 ## HTTPS and edge security
 
@@ -150,7 +151,7 @@ curl --fail https://api.staging.example.com/api/v1/health/live
 curl --fail https://api.staging.example.com/api/v1/health/ready
 ```
 
-Readiness must report MongoDB, Redis, and worker as `ready`. The worker is ready only after its Redis heartbeat exists.
+Readiness must report MongoDB and Redis as `ready`. Worker status must be `ready` after its Redis heartbeat when a worker is deployed, or `disabled` when `WORKER_ENABLED=false`.
 
 ### 7. Razorpay Test Mode webhook test
 
@@ -183,16 +184,16 @@ This checklist prepares staging verification only. It does not verify staging or
 
 Prepare a private staging secret file outside Git with the required variables above. Do not use the local development `.env`, test data, or live credentials.
 
-Start the API, MongoDB, Redis, and worker from the backend directory:
+Start MongoDB, Redis, and API from the backend directory when using Render's `WORKER_ENABLED=false` policy:
 
 ```bash
-docker compose up -d --build mongodb redis api worker
+docker compose up -d --build mongodb redis api
 docker compose ps
 curl --fail https://api.staging.example.com/api/v1/health/live
 curl --fail https://api.staging.example.com/api/v1/health/ready
 ```
 
-The API should report MongoDB, Redis, and worker as `ready`. The worker is healthy only after its Redis heartbeat is present. MongoDB and Redis are internal Compose services and are not published on host ports by this production configuration.
+The API should report MongoDB and Redis as `ready`, with worker `disabled` when no worker is deployed. For a Compose deployment that includes the worker, use `docker compose up -d --build mongodb redis api worker` and require worker `ready`. MongoDB and Redis are internal Compose services and are not published on host ports by this production configuration.
 
 Start the frontend separately with a staging-only environment file:
 

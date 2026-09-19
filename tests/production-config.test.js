@@ -9,6 +9,7 @@ const envFor = (overrides = {}) => ({
   JWT_ACCESS_SECRET: 'a'.repeat(40),
   JWT_REFRESH_SECRET: 'b'.repeat(40),
   REDIS_ENABLED: 'true',
+  WORKER_ENABLED: 'false',
   PAYMENT_MOCK_ENABLED: 'false',
   CORS_ALLOWED_ORIGINS: 'https://staging.example.com',
   FRONTEND_URL: 'https://staging.example.com',

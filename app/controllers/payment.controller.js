@@ -112,6 +112,18 @@ export const confirmPayment = async (req, res, next) => {
     if (payment.provider !== 'razorpay') {
       throw new AppError(400, 'PAYMENT_PROVIDER_UNSUPPORTED', 'Payment provider confirmation is not configured');
     }
+    if (payment.status === 'CAPTURED') {
+      if (payment.providerPaymentId === razorpay_payment_id) {
+        res.status(200).json({
+          success: true,
+          data: { orderId: order._id, status: order.status, paymentStatus: order.paymentStatus, duplicate: true },
+          message: 'Payment was already confirmed',
+          requestId: String(req.headers['x-request-id'] ?? ''),
+        });
+        return;
+      }
+      throw new AppError(409, 'PAYMENT_ALREADY_CONFIRMED', 'Payment has already been confirmed with a different payment ID');
+    }
     if (!razorpay_order_id || razorpay_order_id !== payment.providerOrderId) {
       throw new AppError(400, 'INVALID_PAYMENT_ORDER', 'Payment order could not be verified');
     }
@@ -133,10 +145,24 @@ export const confirmPayment = async (req, res, next) => {
       throw new AppError(400, 'INVALID_PAYMENT_AMOUNT', 'Payment amount does not match the order total');
     }
 
-    payment.status = 'CAPTURED';
-    payment.providerPaymentId = razorpay_payment_id;
-    payment.paidAt = new Date();
-    await payment.save();
+    const capturedPayment = await Payment.findOneAndUpdate(
+      { _id: payment._id, status: { $in: ['PENDING', 'AUTHORIZED'] }, providerPaymentId: null },
+      { $set: { status: 'CAPTURED', providerPaymentId: razorpay_payment_id, paidAt: new Date() } },
+      { new: true },
+    );
+    if (!capturedPayment) {
+      const currentPayment = await Payment.findById(payment._id).lean();
+      if (currentPayment?.status === 'CAPTURED' && currentPayment.providerPaymentId === razorpay_payment_id) {
+        res.status(200).json({
+          success: true,
+          data: { orderId: order._id, status: order.status, paymentStatus: order.paymentStatus, duplicate: true },
+          message: 'Payment was already confirmed',
+          requestId: String(req.headers['x-request-id'] ?? ''),
+        });
+        return;
+      }
+      throw new AppError(409, 'PAYMENT_CONFIRMATION_CONFLICT', 'Payment confirmation is already being processed or has changed');
+    }
 
     await Cart.updateOne(
       { userId: req.user.sub },

@@ -27,6 +27,10 @@ const runConfirm = async () => {
   };
   jest.spyOn(Order, 'findOne').mockResolvedValue(order);
   jest.spyOn(Payment, 'findOne').mockResolvedValue(payment);
+  jest.spyOn(Payment, 'findOneAndUpdate').mockImplementation(async (_filter, update) => {
+    Object.assign(payment, update.$set);
+    return payment;
+  });
   jest.spyOn(paymentService.provider, 'verifyPayment').mockReturnValue(true);
   jest.spyOn(paymentService.provider, 'getPaymentStatus').mockResolvedValue({
     order_id: 'order_razorpay_test',
@@ -78,4 +82,18 @@ it('rejects a provider currency mismatch', async () => {
   await confirmPayment({ user: { sub: 'customer-1' }, body: { orderId: 'order-1', razorpay_order_id: 'order_razorpay_test', razorpay_payment_id: 'pay-1', razorpay_signature: 'sig' }, headers: {} }, { status: () => ({ json: jest.fn() }) }, next);
 
   expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_PAYMENT_CURRENCY' }));
+});
+
+it('returns an idempotent success for a repeated confirmation with the same payment ID', async () => {
+  const order = { _id: 'order-1', customerId: 'customer-1', status: 'CONFIRMED', paymentStatus: 'PAID' };
+  const payment = { _id: 'payment-1', provider: 'razorpay', providerOrderId: 'order_razorpay_test', providerPaymentId: 'pay_test_1', status: 'CAPTURED', amount: 100, currency: 'INR' };
+  jest.spyOn(Order, 'findOne').mockResolvedValue(order);
+  jest.spyOn(Payment, 'findOne').mockResolvedValue(payment);
+  const json = jest.fn();
+  const next = jest.fn();
+
+  await confirmPayment({ user: { sub: 'customer-1' }, body: { orderId: 'order-1', razorpay_order_id: 'order_razorpay_test', razorpay_payment_id: 'pay_test_1', razorpay_signature: 'unused' }, headers: {} }, { status: () => ({ json }) }, next);
+
+  expect(next).not.toHaveBeenCalled();
+  expect(json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ duplicate: true, paymentStatus: 'PAID' }) }));
 });
