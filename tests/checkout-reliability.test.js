@@ -16,6 +16,7 @@ import { OrderStatusHistory } from '../app/models/order-status-history.model.js'
 import { inventoryReservationService } from '../app/services/inventory-reservation.service.js';
 import { paymentService } from '../app/services/payment.service.js';
 import { OrderService } from '../app/services/order.service.js';
+import { env } from '../app/config/env.js';
 
 const ids = () => ({
   customerId: new mongoose.Types.ObjectId().toHexString(),
@@ -163,6 +164,42 @@ describe('checkout reliability', () => {
     expect(summary.discount).toBe(0);
     expect(summary.tax).toBe(0);
     expect(summary.total).toBe(50.5);
+  });
+
+  it('supports configured free shipping for a ₹1 test product without payment mocks', async () => {
+    const { productId, variantId } = ids();
+    const originalShippingFee = env.SHIPPING_BASE_FEE;
+    env.SHIPPING_BASE_FEE = 0;
+
+    try {
+      jest.spyOn(ProductVariant, 'findOne').mockResolvedValue({
+        _id: variantId,
+        productId,
+        price: 1,
+        sku: 'SKU-100',
+        status: 'ACTIVE',
+      });
+      jest.spyOn(Product, 'findOne').mockResolvedValue({
+        _id: productId,
+        name: 'One rupee test product',
+        status: 'PUBLISHED',
+        deletedAt: null,
+        tax: { taxable: false },
+      });
+      jest.spyOn(inventoryService, 'getAvailableStock').mockResolvedValue(5);
+
+      const summary = await pricingService.buildPriceSummary({
+        items: [{ productId, variantId, quantity: 1 }],
+      });
+
+      expect(summary.subtotal).toBe(1);
+      expect(summary.shipping).toBe(0);
+      expect(summary.discount).toBe(0);
+      expect(summary.tax).toBe(0);
+      expect(summary.total).toBe(1);
+    } finally {
+      env.SHIPPING_BASE_FEE = originalShippingFee;
+    }
   });
 
   it('fails the order, vendor order, and reservations when payment creation fails', async () => {
