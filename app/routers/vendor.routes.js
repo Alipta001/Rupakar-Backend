@@ -5,6 +5,7 @@ import {
   getMyVendor,
   updateMyVendor,
   getMyVendorStatus,
+  getMyVendorVerification,
   addDocument,
   addBankAccount,
   listAdminVendors,
@@ -30,6 +31,7 @@ router.post('/apply', applyVendor);
 router.get('/me', getMyVendor);
 router.patch('/me', updateMyVendor);
 router.get('/me/status', getMyVendorStatus);
+router.get('/me/verification', getMyVendorVerification);
 router.post('/documents', addDocument);
 router.post('/bank-account', addBankAccount);
 

@@ -102,21 +102,33 @@ export const cancelOrder = async (req, res, next) => {
 
 export const listVendorOrders = async (req, res, next) => {
   try {
-    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null });
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
     if (!vendor) {
-      throw new AppError(403, 'FORBIDDEN', 'Vendor profile is required to view orders');
+      throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can view orders');
     }
 
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
-    const filter = { vendorId: vendor._id };
+    const filter = { vendorId: vendor._id, deletedAt: null };
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.search && String(req.query.search).trim()) {
+      const escaped = String(req.query.search).trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const parentOrderIds = await Order.find({ orderNumber: { $regex: escaped, $options: 'i' } }).distinct('_id');
+      filter.$or = [
+        { 'items.productName': { $regex: escaped, $options: 'i' } },
+        { 'items.sku': { $regex: escaped, $options: 'i' } },
+        { parentOrderId: { $in: parentOrderIds } },
+      ];
+    }
     const [orders, total] = await Promise.all([
       VendorOrder.find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       VendorOrder.countDocuments(filter),
     ]);
+    const parentOrders = await Order.find({ _id: { $in: orders.map((order) => order.parentOrderId) } }).select('paymentStatus status shippingAddressSnapshot createdAt updatedAt').lean();
+    const parentById = new Map(parentOrders.map((order) => [String(order._id), order]));
     res.status(200).json({
       success: true,
-      data: { items: orders, page, limit, total },
+      data: { items: orders.map((order) => ({ ...order, parent: parentById.get(String(order.parentOrderId)) || null })), page, limit, total },
       message: 'Vendor orders loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
@@ -127,19 +139,23 @@ export const listVendorOrders = async (req, res, next) => {
 
 export const getVendorOrder = async (req, res, next) => {
   try {
-    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null });
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
     if (!vendor) {
       throw new AppError(403, 'FORBIDDEN', 'Vendor profile is required to view orders');
     }
 
-    const vendorOrder = await VendorOrder.findOne({ _id: req.params.id, vendorId: vendor._id }).lean();
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
+    }
+    const vendorOrder = await VendorOrder.findOne({ _id: req.params.id, vendorId: vendor._id, deletedAt: null }).lean();
     if (!vendorOrder) {
       throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
     }
 
+    const parent = await Order.findOne({ _id: vendorOrder.parentOrderId }).select('paymentStatus status shippingAddressSnapshot createdAt updatedAt').lean();
     res.status(200).json({
       success: true,
-      data: vendorOrder,
+      data: { ...vendorOrder, parent: parent || null },
       message: 'Vendor order loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });

@@ -69,7 +69,12 @@ export const createVendorProduct = async (req, res, next) => {
 
 export const listVendorProducts = async (req, res, next) => {
   try {
-    const result = await productService.listForVendor(req.user.sub, { page: Number(req.query.page ?? 1), limit: Number(req.query.limit ?? 20) });
+    const result = await productService.listForVendor(req.user.sub, {
+      page: Number(req.query.page ?? 1),
+      limit: Number(req.query.limit ?? 20),
+      status: req.query.status,
+      search: req.query.search,
+    });
     res.status(200).json({
       success: true,
       data: result,

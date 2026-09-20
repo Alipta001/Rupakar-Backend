@@ -5,6 +5,7 @@ import { ProductService } from '../app/services/product.service.js';
 import { Category } from '../app/models/category.model.js';
 import { Brand } from '../app/models/brand.model.js';
 import { Product, ProductVariant } from '../app/models/product.model.js';
+import { Vendor } from '../app/models/vendor.model.js';
 
 describe('catalog services', () => {
   beforeEach(() => {
@@ -44,6 +45,25 @@ describe('catalog services', () => {
 
     expect(result.data[0].vendorId).toBe('vendor-1');
     expect(findSpy).toHaveBeenCalledWith({ vendorId: 'vendor-1', deletedAt: null });
+  });
+
+  it('applies seller product status and search filters server-side', async () => {
+    const findSpy = jest.spyOn(Product, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    });
+    jest.spyOn(Product, 'countDocuments').mockResolvedValue(0);
+    jest.spyOn(ProductService.prototype, 'resolveVendorIdForUser').mockResolvedValue('vendor-1');
+
+    await new ProductService().listForVendor('user-1', { status: 'DRAFT', search: 'terracotta' });
+
+    expect(findSpy).toHaveBeenCalledWith(expect.objectContaining({
+      vendorId: 'vendor-1',
+      status: 'DRAFT',
+      name: { $regex: 'terracotta', $options: 'i' },
+    }));
   });
 
   it('only returns published products in the public catalog', async () => {
@@ -103,5 +123,31 @@ describe('catalog services', () => {
       categoryId: 'cat-1',
       variants: [{ sku: 'SKU-1', price: 1000 }],
     })).rejects.toMatchObject({ code: 'SKU_ALREADY_EXISTS' });
+  });
+
+  it('requires an approved vendor to create products', async () => {
+    const service = new ProductService();
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue(null);
+
+    await expect(service.createProduct('customer-1', { name: 'Saree' })).rejects.toMatchObject({
+      code: 'VENDOR_NOT_ALLOWED',
+    });
+  });
+
+  it('does not let vendors bypass product review workflow', async () => {
+    const service = new ProductService();
+    jest.spyOn(service, 'resolveVendorIdForUser').mockResolvedValue('vendor-1');
+    const product = {
+      _id: 'product-1',
+      vendorId: 'vendor-1',
+      status: 'DRAFT',
+      save: jest.fn(),
+    };
+    jest.spyOn(Product, 'findOne').mockResolvedValue(product);
+
+    await expect(service.updateProduct('user-1', 'product-1', { status: 'APPROVED' })).rejects.toMatchObject({
+      code: 'INVALID_PRODUCT_STATUS',
+    });
+    expect(product.save).not.toHaveBeenCalled();
   });
 });

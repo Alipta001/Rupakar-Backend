@@ -7,6 +7,7 @@ import { env } from '../config/env.js';
 import { z } from 'zod';
 import { inventoryReservationService } from '../services/inventory-reservation.service.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
+import { vendorLedgerService } from '../services/vendor-ledger.service.js';
 
 export const paymentWebhook = async (req, res, next) => {
   try {
@@ -115,6 +116,7 @@ export const confirmPayment = async (req, res, next) => {
     }
     if (payment.status === 'CAPTURED') {
       if (payment.providerPaymentId === razorpay_payment_id) {
+        await vendorLedgerService.recordCapturedPayment({ orderId: order._id, paymentId: payment._id, payment });
         res.status(200).json({
           success: true,
           data: { orderId: order._id, status: order.status, paymentStatus: order.paymentStatus, duplicate: true },
@@ -175,6 +177,7 @@ export const confirmPayment = async (req, res, next) => {
     await order.save();
     await inventoryReservationService.consumeOrderReservations({ orderId: order._id, items: order.items });
     await VendorOrder.updateMany({ parentOrderId: order._id }, { $set: { status: 'CONFIRMED' } });
+    await vendorLedgerService.recordCapturedPayment({ orderId: order._id, paymentId: capturedPayment._id, payment: capturedPayment });
 
     res.status(200).json({
       success: true,

@@ -11,6 +11,8 @@ const toPlain = (doc) => {
   return doc;
 };
 
+const inventoryStatus = (availableQuantity, lowStockThreshold) => Number(availableQuantity) <= Number(lowStockThreshold) ? 'LOW_STOCK' : 'ACTIVE';
+
 export class InventoryService {
   async ensureVendorOwnsVariant(vendorUserId, variantId) {
     const variantDoc = await ProductVariant.findById(variantId);
@@ -43,8 +45,8 @@ export class InventoryService {
 
   async initializeInventory({ productId, variantId, availableQuantity = 0, lowStockThreshold = 0, actorId = 'system' }) {
     if (!productId || !variantId) throw new AppError(400, 'INVALID_INVENTORY', 'productId and variantId are required');
-    if (!Number.isFinite(Number(availableQuantity)) || Number(availableQuantity) < 0) {
-      throw new AppError(400, 'INVALID_QUANTITY', 'Available quantity must be non-negative');
+    if (!Number.isInteger(Number(availableQuantity)) || Number(availableQuantity) < 0) {
+      throw new AppError(400, 'INVALID_QUANTITY', 'Available quantity must be a non-negative whole number');
     }
 
     const existing = await Inventory.findOne({ variantId, deletedAt: null });
@@ -88,6 +90,8 @@ export class InventoryService {
     );
 
     if (!inventory) throw new AppError(404, 'INVENTORY_NOT_FOUND', 'Inventory not found');
+    inventory.status = inventoryStatus(inventory.availableQuantity, inventory.lowStockThreshold);
+    if (typeof inventory.save === 'function') await inventory.save();
 
     await InventoryMovement.create({
       productId: inventory.productId,
@@ -121,6 +125,8 @@ export class InventoryService {
       if (!current) throw new AppError(404, 'INVENTORY_NOT_FOUND', 'Inventory not found');
       throw new AppError(409, 'INSUFFICIENT_STOCK', 'Not enough stock available');
     }
+    inventory.status = inventoryStatus(inventory.availableQuantity, inventory.lowStockThreshold);
+    if (typeof inventory.save === 'function') await inventory.save();
 
     await InventoryMovement.create({
       productId: inventory.productId,
@@ -141,7 +147,7 @@ export class InventoryService {
 
   async adjustStock(variantId, delta, { reason = 'ADJUSTMENT', actorId = 'system', referenceType = 'ADJUSTMENT', referenceId = null } = {}) {
     const normalized = Number(delta);
-    if (!Number.isFinite(normalized)) throw new AppError(400, 'INVALID_QUANTITY', 'Adjustment must be numeric');
+    if (!Number.isInteger(normalized)) throw new AppError(400, 'INVALID_QUANTITY', 'Adjustment must be a whole number');
 
     const inventory = await Inventory.findOne({ variantId, deletedAt: null });
     if (!inventory) throw new AppError(404, 'INVENTORY_NOT_FOUND', 'Inventory not found');
@@ -151,7 +157,7 @@ export class InventoryService {
 
     const updated = await Inventory.findOneAndUpdate(
       { _id: inventory._id },
-      { $set: { availableQuantity: nextAvailable }, $inc: { soldQuantity: normalized < 0 ? Math.abs(normalized) : 0 } },
+      { $set: { availableQuantity: nextAvailable, status: inventoryStatus(nextAvailable, inventory.lowStockThreshold) }, $inc: { soldQuantity: normalized < 0 ? Math.abs(normalized) : 0 } },
       { new: true, runValidators: true },
     );
 

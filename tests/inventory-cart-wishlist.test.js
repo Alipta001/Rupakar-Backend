@@ -171,6 +171,31 @@ describe('inventory service', () => {
     const service = new InventoryService();
     await expect(service.ensureVendorOwnsVariant(myUserId, variantId)).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
+
+  it('allows an approved owner to adjust inventory', async () => {
+    const productId = new mongoose.Types.ObjectId().toHexString();
+    const variantId = new mongoose.Types.ObjectId().toHexString();
+    const vendorId = new mongoose.Types.ObjectId().toHexString();
+    const userId = new mongoose.Types.ObjectId().toHexString();
+    jest.spyOn(ProductVariant, 'findById').mockResolvedValue({ _id: variantId, productId });
+    jest.spyOn(Product, 'findOne').mockResolvedValue({ _id: productId, vendorId, deletedAt: null });
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorId, ownerUserId: userId, status: 'APPROVED' });
+    jest.spyOn(Inventory, 'findOne').mockResolvedValue({ _id: 'inventory-1', productId, variantId, availableQuantity: 4, lowStockThreshold: 2, save: jest.fn() });
+    jest.spyOn(Inventory, 'findOneAndUpdate').mockResolvedValue({ _id: 'inventory-1', productId, variantId, availableQuantity: 9, lowStockThreshold: 2, toObject: () => ({ availableQuantity: 9 }) });
+    jest.spyOn(InventoryMovement, 'create').mockResolvedValue({ _id: 'movement-1' });
+
+    await inventoryService.ensureVendorOwnsVariant(userId, variantId);
+    const result = await inventoryService.adjustStock(variantId, 5, { actorId: userId });
+
+    expect(result.availableQuantity).toBe(9);
+  });
+
+  it('rejects invalid or negative inventory adjustments', async () => {
+    const service = new InventoryService();
+    await expect(service.adjustStock('variant-1', Number.NaN)).rejects.toMatchObject({ code: 'INVALID_QUANTITY' });
+    jest.spyOn(Inventory, 'findOne').mockResolvedValue({ availableQuantity: 2, lowStockThreshold: 1 });
+    await expect(service.adjustStock('variant-1', -3)).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
+  });
 });
 
 describe('cart service', () => {

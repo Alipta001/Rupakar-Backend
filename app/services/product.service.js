@@ -5,6 +5,7 @@ import { Product, ProductImage } from '../models/product.model.js';
 import { ProductVariant } from '../models/product-variant.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { auditService } from './audit.service.js';
+import { inventoryService } from './inventory.service.js';
 
 const normalizeSlug = (value) => {
   const slug = String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
@@ -113,6 +114,11 @@ export class ProductService {
         }));
         product.variants = savedVariants.map((item) => item._id);
         await product.save();
+        await Promise.all(savedVariants.map((variant) => inventoryService.initializeInventory({
+          productId: product._id,
+          variantId: variant._id,
+          actorId: userId,
+        })));
       }
 
       if (input.images && input.images.length > 0) {
@@ -139,9 +145,14 @@ export class ProductService {
     }
   }
 
-  async listForVendor(userId, { page = 1, limit = 20 } = {}) {
+  async listForVendor(userId, { page = 1, limit = 20, status, search } = {}) {
     const vendorId = await this.resolveVendorIdForUser(userId);
     const query = { vendorId, deletedAt: null };
+    if (status) query.status = status;
+    if (search && String(search).trim()) {
+      const escaped = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.name = { $regex: escaped, $options: 'i' };
+    }
     const data = await Product.find(query).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean();
     const total = await Product.countDocuments(query);
     return { data, page, limit, total };
@@ -178,8 +189,48 @@ export class ProductService {
     for (const field of allowed) {
       if (input[field] !== undefined) product[field] = input[field];
     }
-    if (input.status && ['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'REJECTED', 'UNPUBLISHED'].includes(input.status)) {
+    if (input.status && input.status !== product.status) {
+      const allowedTransitions = {
+        DRAFT: ['SUBMITTED'],
+        REJECTED: ['DRAFT', 'SUBMITTED'],
+        UNPUBLISHED: ['DRAFT', 'SUBMITTED'],
+      };
+      if (!(allowedTransitions[product.status] ?? []).includes(input.status)) {
+        throw new AppError(400, 'INVALID_PRODUCT_STATUS', `Cannot transition from ${product.status} to ${input.status}`);
+      }
       product.status = input.status;
+    }
+    if (input.variants !== undefined) {
+      const savedVariants = [];
+      for (const variant of input.variants) {
+        const existing = await ProductVariant.findOne({ productId: product._id, sku: normalizeSku(variant.sku) });
+        if (existing) {
+          Object.assign(existing, {
+            ...variant,
+            sku: normalizeSku(variant.sku),
+            price: parsePrice(variant.price),
+            compareAtPrice: variant.compareAtPrice == null ? null : Number(variant.compareAtPrice),
+            costPrice: variant.costPrice == null ? null : Number(variant.costPrice),
+            weight: variant.weight == null ? null : Number(variant.weight),
+          });
+          await existing.save();
+          savedVariants.push(existing);
+        } else {
+          const created = await ProductVariant.create({ productId: product._id, ...variant, sku: await buildUniqueSku(variant.sku), price: parsePrice(variant.price) });
+          savedVariants.push(created);
+          await inventoryService.initializeInventory({ productId: product._id, variantId: created._id, actorId: userId });
+        }
+      }
+      const submittedSkus = savedVariants.map((variant) => normalizeSku(variant.sku));
+      await ProductVariant.updateMany({ productId: product._id, sku: { $nin: submittedSkus } }, { $set: { status: 'INACTIVE' } });
+      const existingVariantIds = Array.isArray(product.variants) ? product.variants : [];
+      const variantIds = [...existingVariantIds, ...savedVariants.map((variant) => variant._id)];
+      product.variants = variantIds.filter((id, index, all) => all.findIndex((candidate) => String(candidate) === String(id)) === index);
+    }
+    if (input.images !== undefined) {
+      await ProductImage.updateMany({ productId: product._id, status: 'ACTIVE' }, { $set: { status: 'INACTIVE' } });
+      const savedImages = await Promise.all(input.images.map((image) => ProductImage.create({ productId: product._id, ...image })));
+      product.images = savedImages.map((image) => image._id);
     }
     await product.save();
     return product.toObject();

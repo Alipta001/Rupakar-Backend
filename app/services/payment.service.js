@@ -10,6 +10,7 @@ import { AppError } from '../utils/app-error.js';
 import { env } from '../config/env.js';
 import { RazorpayProvider } from './payment-providers/razorpay.provider.js';
 import { inventoryReservationService } from './inventory-reservation.service.js';
+import { vendorLedgerService } from './vendor-ledger.service.js';
 
 const PAYMENT_STATUS_TRANSITIONS = {
   PENDING: ['AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED'],
@@ -188,6 +189,7 @@ export class PaymentService {
     if (!payment) throw new AppError(404, 'PAYMENT_NOT_FOUND', 'Mock payment not found');
 
     if (['CAPTURED', 'FAILED', 'CANCELLED'].includes(payment.status)) {
+      if (payment.status === 'CAPTURED') await vendorLedgerService.recordCapturedPayment({ orderId, paymentId: payment._id, payment });
       return {
         outcome: payment.status === 'CAPTURED' ? 'success' : payment.status === 'FAILED' ? 'failure' : 'cancel',
         status: payment.status,
@@ -205,7 +207,7 @@ export class PaymentService {
       reason: `LOCAL_MOCK_${outcome.toUpperCase()}`,
     });
 
-    await Payment.findOneAndUpdate(
+    const capturedPayment = await Payment.findOneAndUpdate(
       { _id: payment._id, status: payment.status },
       { $set: { status: nextStatus, providerPaymentId: nextStatus === 'CAPTURED' ? `mock_payment_${payment._id}` : undefined, paidAt: nextStatus === 'CAPTURED' ? new Date() : null, failureReason: nextStatus === 'FAILED' ? 'LOCAL_MOCK_FAILURE' : null } },
       { new: true },
@@ -218,6 +220,7 @@ export class PaymentService {
     if (order && nextStatus !== 'CAPTURED') await inventoryReservationService.releaseOrderReservations({ orderId, items: order.items, reason: `LOCAL_MOCK_${outcome.toUpperCase()}` });
     await Order.updateOne({ _id: orderId, customerId }, { $set: { status: orderStatus, paymentStatus } });
     await VendorOrder.updateMany({ parentOrderId: orderId }, { $set: { status: orderStatus } });
+    if (nextStatus === 'CAPTURED' && capturedPayment) await vendorLedgerService.recordCapturedPayment({ orderId, paymentId: capturedPayment._id, payment: capturedPayment });
 
     if (nextStatus === 'CAPTURED') {
       if (order) await Cart.updateOne({ userId: customerId }, { $pull: { items: { variantId: { $in: order.items.map((item) => item.variantId) } } } });
@@ -339,7 +342,12 @@ export class PaymentService {
         || (nextStatus === 'REFUNDED' && ['CAPTURED', 'REFUND_PENDING', 'PARTIALLY_REFUNDED'].includes(currentPayment.status))
         || (nextStatus === 'PARTIALLY_REFUNDED' && ['CAPTURED', 'REFUND_PENDING', 'PARTIALLY_REFUNDED'].includes(currentPayment.status))
       );
-      if (!canApply) return { success: true, duplicate: false, ignored: true, eventId: providerEventId };
+      if (!canApply) {
+        if (nextStatus === 'CAPTURED' && currentPayment?.status === 'CAPTURED') {
+          await vendorLedgerService.recordCapturedPayment({ orderId: currentPayment.orderId, paymentId: currentPayment._id, payment: currentPayment });
+        }
+        return { success: true, duplicate: false, ignored: true, eventId: providerEventId };
+      }
 
       if (eventType === 'payment.captured' && (Number(paymentEntity?.amount ?? 0) !== Math.round(Number(currentPayment.amount) * 100) || paymentEntity?.currency !== currentPayment.currency)) {
         return { success: false, retryable: false, error: 'PAYMENT_DATA_MISMATCH', eventId: providerEventId };
@@ -367,6 +375,7 @@ export class PaymentService {
           },
         });
         if (orderStatus) await VendorOrder.updateMany({ parentOrderId: updatedPayment.orderId }, { $set: { status: orderStatus } });
+        if (nextStatus === 'CAPTURED') await vendorLedgerService.recordCapturedPayment({ orderId: updatedPayment.orderId, paymentId: updatedPayment._id, payment: updatedPayment });
       }
     }
 

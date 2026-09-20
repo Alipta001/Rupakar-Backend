@@ -2,6 +2,7 @@ import { AppError } from '../utils/app-error.js';
 import { vendorApplySchema, vendorUpdateSchema, adminVendorDecisionSchema, bankAccountSchema } from '../validators/vendor.validator.js';
 import { vendorService } from '../services/vendor.service.js';
 import { VendorBankAccount } from '../models/vendor-bank.model.js';
+import { vendorVerificationService } from '../services/vendor-verification.service.js';
 
 const sanitizeVendor = (vendor) => ({
   id: vendor._id,
@@ -93,6 +94,20 @@ export const getMyVendorStatus = async (req, res, next) => {
   }
 };
 
+export const getMyVendorVerification = async (req, res, next) => {
+  try {
+    const verification = await vendorVerificationService.getForOwner(req.user.sub);
+    res.status(200).json({
+      success: true,
+      data: verification,
+      message: 'Vendor verification loaded',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const addDocument = async (req, res, next) => {
   try {
     const vendor = await vendorService.getVendorForOwner(req.user.sub);
@@ -104,7 +119,14 @@ export const addDocument = async (req, res, next) => {
 
     res.status(201).json({
       success: true,
-      data: document,
+      data: {
+        id: document._id,
+        documentType: document.documentType,
+        status: document.status,
+        submittedAt: document.submittedAt,
+        verifiedAt: document.verifiedAt,
+        rejectionReason: document.rejectionReason || null,
+      },
       message: 'Document submitted',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });

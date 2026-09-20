@@ -3,6 +3,8 @@ import { InventoryReservation } from '../models/inventory-reservation.model.js';
 import { AppError } from '../utils/app-error.js';
 import { scheduleReservationExpiry } from '../jobs/reservation-expiry.js';
 
+const inventoryStatus = (availableQuantity, lowStockThreshold) => Number(availableQuantity) <= Number(lowStockThreshold) ? 'LOW_STOCK' : 'ACTIVE';
+
 export class InventoryReservationService {
   async validateReservationQuantity(availableQuantity, requestedQuantity) {
     const safeAvailable = Number(availableQuantity) || 0;
@@ -43,6 +45,8 @@ export class InventoryReservationService {
     if (!updated) {
       throw new AppError(409, 'INSUFFICIENT_STOCK', 'Inventory changed while reserving stock');
     }
+    updated.status = inventoryStatus(updated.availableQuantity, updated.lowStockThreshold);
+    if (typeof updated.save === 'function') await updated.save();
 
     const reservation = await InventoryReservation.create({
       orderId,
@@ -74,7 +78,7 @@ export class InventoryReservationService {
 
     await Inventory.findOneAndUpdate(
       { _id: inventory._id },
-      { $inc: { availableQuantity: reservation.quantity, reservedQuantity: -reservation.quantity } },
+      { $inc: { availableQuantity: reservation.quantity, reservedQuantity: -reservation.quantity }, $set: { status: inventoryStatus(inventory.availableQuantity + reservation.quantity, inventory.lowStockThreshold) } },
       { new: true },
     );
 

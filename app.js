@@ -26,6 +26,7 @@ import paymentRoutes from './app/routers/payment.routes.js';
 import invoiceRoutes from './app/routers/invoice.routes.js';
 import notificationRoutes from './app/routers/notification.routes.js';
 import adminRoutes from './app/routers/admin.routes.js';
+import financeRoutes from './app/routers/finance.routes.js';
 
 export function createApp() {
   const app = express();
@@ -68,6 +69,7 @@ export function createApp() {
   app.use('/api/v1/invoices', invoiceRoutes);
   app.use('/api/v1/notifications', notificationRoutes);
   app.use('/api/v1/admin', adminRoutes);
+  app.use('/api/v1', financeRoutes);
 
   app.get('/api/v1/health', (_req, res) => {
     res.status(200).json({

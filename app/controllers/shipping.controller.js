@@ -63,8 +63,8 @@ export const getShipmentTracking = async (req, res, next) => {
 
 export const listVendorOrders = async (req, res, next) => {
   try {
-    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null });
-    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Vendor profile is required');
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
+    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can manage orders');
 
     const { page, limit, skip } = getPagination(req.query);
     const vendorOrders = await VendorOrder.find({ vendorId: vendor._id }).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
@@ -76,8 +76,8 @@ export const listVendorOrders = async (req, res, next) => {
 
 export const getVendorOrder = async (req, res, next) => {
   try {
-    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null });
-    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Vendor profile is required');
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
+    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can manage orders');
 
     const vendorOrder = await VendorOrder.findOne({ _id: req.params.id, vendorId: vendor._id }).lean();
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
@@ -98,6 +98,9 @@ export const packVendorOrder = async (req, res, next) => {
 
     const order = await Order.findById(vendorOrder.parentOrderId);
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
+    if (!['PAID', 'CAPTURED'].includes(order.paymentStatus) || !['PAID', 'CONFIRMED', 'PROCESSING', 'READY_TO_SHIP'].includes(vendorOrder.status)) {
+      throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order is not ready to be packed');
+    }
 
     const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id }) || await shippingService.createShipment({
       orderId: order._id,
@@ -128,14 +131,17 @@ export const packVendorOrder = async (req, res, next) => {
 
 export const shipVendorOrder = async (req, res, next) => {
   try {
-    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null });
-    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Vendor profile is required');
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
+    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can manage orders');
 
     const vendorOrder = await VendorOrder.findOne({ _id: req.params.id, vendorId: vendor._id });
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
 
     const order = await Order.findById(vendorOrder.parentOrderId);
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
+    if (!['PAID', 'CAPTURED'].includes(order.paymentStatus) || vendorOrder.status !== 'PACKED') {
+      throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order must be packed before it can be shipped');
+    }
 
     let shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
     if (!shipment) {
