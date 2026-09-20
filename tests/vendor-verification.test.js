@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import mongoose from 'mongoose';
+import request from 'supertest';
+import app from '../app.js';
 import { getMyVendorVerification } from '../app/controllers/vendor.controller.js';
 import { Vendor } from '../app/models/vendor.model.js';
 import { VendorDocument } from '../app/models/vendor-document.model.js';
@@ -35,5 +37,11 @@ describe('seller verification access', () => {
     const result = response();
     await getMyVendorVerification({ user: { sub: id() }, headers: {} }, result.response, result.next);
     expect(result.next).toHaveBeenCalledWith(expect.objectContaining({ code: 'VENDOR_NOT_FOUND' }));
+  });
+
+  it('protects the vendor dashboard endpoint behind authentication', async () => {
+    const response = await request(app).get('/api/v1/vendor/dashboard');
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 });

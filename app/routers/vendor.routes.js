@@ -8,6 +8,7 @@ import {
   getMyVendorVerification,
   addDocument,
   addBankAccount,
+  getVendorDashboard,
   listAdminVendors,
   getAdminVendor,
   approveVendor,
@@ -32,6 +33,7 @@ router.get('/me', getMyVendor);
 router.patch('/me', updateMyVendor);
 router.get('/me/status', getMyVendorStatus);
 router.get('/me/verification', getMyVendorVerification);
+router.get('/dashboard', getVendorDashboard);
 router.post('/documents', addDocument);
 router.post('/bank-account', addBankAccount);
 

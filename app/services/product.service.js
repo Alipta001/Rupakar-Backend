@@ -6,6 +6,7 @@ import { ProductVariant } from '../models/product-variant.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { auditService } from './audit.service.js';
 import { inventoryService } from './inventory.service.js';
+import { storageService } from './storage.service.js';
 
 const normalizeSlug = (value) => {
   const slug = String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
@@ -51,6 +52,8 @@ const parsePrice = (value) => {
   return number;
 };
 
+const MAX_PRODUCT_IMAGES = 20;
+
 export class ProductService {
   async resolveVendorIdForUser(userId) {
     const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null, status: 'APPROVED' });
@@ -62,6 +65,118 @@ export class ProductService {
     const vendor = await Vendor.findOne({ _id: vendorId, deletedAt: null, status: 'APPROVED' });
     if (!vendor) throw new AppError(403, 'VENDOR_NOT_ALLOWED', 'Only approved vendors can manage products');
     return vendor;
+  }
+
+  async assertVendorOwnsProduct(userId, productId) {
+    const vendorId = await this.resolveVendorIdForUser(userId);
+    const product = await Product.findOne({ _id: productId, vendorId, deletedAt: null });
+
+    if (!product || String(product.vendorId) !== String(vendorId)) {
+      throw new AppError(403, 'VENDOR_PRODUCT_MISMATCH', 'This product does not belong to the authenticated vendor');
+    }
+
+    return { vendorId, product };
+  }
+
+  async uploadProductImage(userId, productId, file, metadata = {}) {
+    const { product } = await this.assertVendorOwnsProduct(userId, productId);
+
+    if (!file) {
+      throw new AppError(400, 'IMAGE_REQUIRED', 'An image file is required');
+    }
+
+    storageService.validateImageFile(file);
+    const activeImageCount = await ProductImage.countDocuments({ productId: product._id, status: 'ACTIVE' });
+    if (activeImageCount >= MAX_PRODUCT_IMAGES) {
+      throw new AppError(400, 'IMAGE_LIMIT_REACHED', 'A product cannot have more than 20 images');
+    }
+
+    const uploadMetadata = await storageService.uploadImage({
+      file,
+      folder: `products/${String(product._id)}`,
+      altText: metadata.altText ?? '',
+    });
+
+    const existingPrimaryResult = await ProductImage.findOne({ productId: product._id, isPrimary: true, status: 'ACTIVE' });
+    const existingPrimary = existingPrimaryResult && typeof existingPrimaryResult.lean === 'function'
+      ? existingPrimaryResult.lean()
+      : existingPrimaryResult;
+    const nextIsPrimary = existingPrimary ? Boolean(metadata.isPrimary) : true;
+    const newImage = await ProductImage.create({
+      productId: product._id,
+      variantId: metadata.variantId ?? null,
+      storageKey: uploadMetadata.storageKey,
+      url: uploadMetadata.url,
+      altText: uploadMetadata.altText || metadata.altText || '',
+      sortOrder: Number(metadata.sortOrder ?? 0),
+      isPrimary: nextIsPrimary,
+      width: uploadMetadata.width,
+      height: uploadMetadata.height,
+      fileSize: uploadMetadata.fileSize,
+      mimeType: uploadMetadata.mimeType,
+      status: 'ACTIVE',
+    });
+
+    if (!Array.isArray(product.images)) {
+      product.images = [];
+    }
+    product.images.push(newImage._id);
+    await product.save();
+
+    return newImage.toObject();
+  }
+
+  async deleteProductImage(userId, productId, imageId) {
+    const { product } = await this.assertVendorOwnsProduct(userId, productId);
+
+    const image = await ProductImage.findOne({ _id: imageId, productId: product._id });
+    if (!image) {
+      throw new AppError(404, 'IMAGE_NOT_FOUND', 'Product image not found');
+    }
+
+    try {
+      const deleted = await storageService.deleteImage(image.storageKey);
+      if (!deleted && image.storageKey) {
+        throw new AppError(502, 'IMAGE_DELETE_FAILED', 'Cloudinary image deletion failed');
+      }
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(502, 'IMAGE_DELETE_FAILED', 'Cloudinary image deletion failed');
+    }
+
+    await ProductImage.deleteOne({ _id: imageId, productId: product._id });
+    product.images = (product.images || []).filter((item) => String(item) !== String(imageId));
+    await product.save();
+
+    return { deleted: true, imageId: String(imageId) };
+  }
+
+  async updateProductImage(userId, productId, imageId, payload = {}) {
+    const { product } = await this.assertVendorOwnsProduct(userId, productId);
+
+    const image = await ProductImage.findOne({ _id: imageId, productId: product._id });
+    if (!image) {
+      throw new AppError(404, 'IMAGE_NOT_FOUND', 'Product image not found');
+    }
+
+    if (payload.altText !== undefined) image.altText = String(payload.altText).trim().slice(0, 160);
+    if (payload.sortOrder !== undefined) image.sortOrder = Number(payload.sortOrder) || 0;
+    if (payload.isPrimary === true) {
+      await ProductImage.updateMany({ productId: product._id, _id: { $ne: imageId } }, { $set: { isPrimary: false } });
+      image.isPrimary = true;
+    } else if (payload.isPrimary === false) {
+      image.isPrimary = false;
+    }
+
+    await image.save();
+    if (typeof image.toObject === 'function') {
+      return image.toObject();
+    }
+
+    return {
+      ...image,
+      _id: image._id,
+    };
   }
 
   async createProduct(userId, input) {

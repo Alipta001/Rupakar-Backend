@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Router } from 'express';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import mongoose from 'mongoose';
@@ -9,6 +9,8 @@ import { env } from './app/config/env.js';
 import { securityMiddleware } from './app/middleware/security.js';
 import { requestIdMiddleware } from './app/middleware/request-id.js';
 import { errorHandler, notFoundHandler } from './app/middleware/error-handler.js';
+import { requireAuth } from './app/middleware/auth.middleware.js';
+import { getVendorDashboard } from './app/controllers/vendor.controller.js';
 import authRoutes from './app/routers/auth.routes.js';
 import userRoutes from './app/routers/user.routes.js';
 import vendorRoutes from './app/routers/vendor.routes.js';
@@ -25,6 +27,7 @@ import returnRoutes from './app/routers/return.routes.js';
 import paymentRoutes from './app/routers/payment.routes.js';
 import invoiceRoutes from './app/routers/invoice.routes.js';
 import notificationRoutes from './app/routers/notification.routes.js';
+import reviewRoutes from './app/routers/review.routes.js';
 import adminRoutes from './app/routers/admin.routes.js';
 import financeRoutes from './app/routers/finance.routes.js';
 
@@ -54,6 +57,9 @@ export function createApp() {
 
   app.use('/api/v1/auth', authRoutes);
   app.use('/api/v1/users', userRoutes);
+  const vendorDashboardRouter = Router();
+  vendorDashboardRouter.get('/dashboard', requireAuth, getVendorDashboard);
+  app.use('/api/v1/vendor', vendorDashboardRouter);
   app.use('/api/v1/vendors', vendorRoutes);
   app.use('/api/v1/categories', categoryRoutes);
   app.use('/api/v1/brands', brandRoutes);
@@ -68,6 +74,7 @@ export function createApp() {
   app.use('/api/v1/payments', paymentRoutes);
   app.use('/api/v1/invoices', invoiceRoutes);
   app.use('/api/v1/notifications', notificationRoutes);
+  app.use('/api/v1/reviews', reviewRoutes);
   app.use('/api/v1/admin', adminRoutes);
   app.use('/api/v1', financeRoutes);
 

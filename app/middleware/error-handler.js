@@ -14,6 +14,11 @@ export const errorHandler = (err, req, res, _next) => {
     return;
   }
 
+  if (err?.name === 'MulterError' || err?.code === 'LIMIT_FILE_SIZE' || err?.code === 'LIMIT_UNEXPECTED_FILE') {
+    sendError(res, 400, 'INVALID_IMAGE_FILE', 'Only JPG, PNG, WEBP, GIF, and BMP images up to 2 MB are allowed', requestId);
+    return;
+  }
+
   if (err?.name === 'CastError') {
     sendError(res, 400, 'INVALID_ID', 'A supplied identifier is invalid', requestId);
     return;

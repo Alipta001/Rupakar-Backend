@@ -3,6 +3,14 @@ import { vendorApplySchema, vendorUpdateSchema, adminVendorDecisionSchema, bankA
 import { vendorService } from '../services/vendor.service.js';
 import { VendorBankAccount } from '../models/vendor-bank.model.js';
 import { vendorVerificationService } from '../services/vendor-verification.service.js';
+import { Vendor } from '../models/vendor.model.js';
+import { Product } from '../models/product.model.js';
+import { Inventory } from '../models/inventory.model.js';
+import { VendorOrder } from '../models/vendor-order.model.js';
+import { Order } from '../models/order.model.js';
+import { Notification } from '../models/notification.model.js';
+import { vendorLedgerService } from '../services/vendor-ledger.service.js';
+import { settlementService } from '../services/settlement.service.js';
 
 const sanitizeVendor = (vendor) => ({
   id: vendor._id,
@@ -54,6 +62,113 @@ export const getMyVendor = async (req, res, next) => {
       success: true,
       data: sanitizeVendor(vendor),
       message: 'Vendor profile loaded',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getVendorDashboard = async (req, res, next) => {
+  try {
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null }).lean();
+    if (!vendor) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor profile not found');
+    }
+
+    const productQuery = { vendorId: vendor._id, deletedAt: null };
+    const productCountPromise = Product.countDocuments(productQuery);
+    const publishedCountPromise = Product.countDocuments({ ...productQuery, status: 'PUBLISHED' });
+    const lowStockItemPromise = Inventory.find({ productId: { $in: await Product.distinct('_id', productQuery) }, deletedAt: null, status: 'LOW_STOCK' }).populate({ path: 'productId', select: 'name' }).sort({ updatedAt: -1 }).limit(5).lean();
+    const lowStockCountPromise = Inventory.countDocuments({ productId: { $in: await Product.distinct('_id', productQuery) }, deletedAt: null, status: 'LOW_STOCK' });
+    const activeOrderStatuses = ['PENDING_PAYMENT', 'PAID', 'CONFIRMED', 'PROCESSING', 'READY_TO_SHIP', 'PACKED', 'SHIPPED', 'OUT_FOR_DELIVERY'];
+    const activeOrdersPromise = VendorOrder.countDocuments({ vendorId: vendor._id, deletedAt: null, status: { $in: activeOrderStatuses } });
+    const recentOrdersPromise = VendorOrder.find({ vendorId: vendor._id, deletedAt: null }).sort({ createdAt: -1, _id: -1 }).limit(5).lean();
+    const totalSalesPromise = VendorOrder.aggregate([
+      { $match: { vendorId: vendor._id, deletedAt: null } },
+      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } },
+    ]);
+    const ledgerSummaryPromise = vendorLedgerService.summaryForVendor(vendor._id);
+    const balancePromise = settlementService.balanceForVendor(vendor._id);
+    const unreadCountPromise = Notification.countDocuments({ userId: req.user.sub, readAt: null });
+
+    const [productCount, publishedCount, lowStockItems, lowStockCount, activeOrders, recentOrders, totalSales, ledgerSummary, balance, unreadCount] = await Promise.all([
+      productCountPromise,
+      publishedCountPromise,
+      lowStockItemPromise,
+      lowStockCountPromise,
+      activeOrdersPromise,
+      recentOrdersPromise,
+      totalSalesPromise,
+      ledgerSummaryPromise,
+      balancePromise,
+      unreadCountPromise,
+    ]);
+
+    const parentOrderIds = [...new Set(recentOrders.map((order) => String(order.parentOrderId)))];
+    const parentOrders = parentOrderIds.length ? await Order.find({ _id: { $in: parentOrderIds } }).select('_id status paymentStatus createdAt').lean() : [];
+    const parentById = new Map(parentOrders.map((order) => [String(order._id), order]));
+
+    const salesTrend = await VendorOrder.aggregate([
+      { $match: { vendorId: vendor._id, deletedAt: null, createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, revenue: { $sum: '$total' }, orders: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+      { $project: { date: '$_id', revenue: 1, orders: 1, _id: 0 } },
+    ]).then((points) => points.map((point) => ({ ...point, label: new Date(`${point.date}T00:00:00Z`).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }) })));
+
+    const normalizedRecentOrders = recentOrders.map((order) => ({
+      _id: order._id,
+      status: order.status,
+      total: Number(order.total || 0),
+      createdAt: order.createdAt,
+      itemCount: Array.isArray(order.items) ? order.items.length : 0,
+      itemNames: Array.isArray(order.items) ? order.items.slice(0, 3).map((item) => item.productName).filter(Boolean) : [],
+      parent: parentById.get(String(order.parentOrderId)) || null,
+    }));
+
+    const normalizedLowStockItems = lowStockItems.map((item) => ({
+      _id: item._id,
+      productId: item.productId?._id || item.productId,
+      productName: item.productId?.name || 'Unknown product',
+      availableQuantity: Number(item.availableQuantity || 0),
+      lowStockThreshold: Number(item.lowStockThreshold || 0),
+    }));
+
+    const grossSales = Number(totalSales[0]?.total || 0);
+    const dashboard = {
+      vendor: {
+        id: vendor._id,
+        businessName: vendor.businessName,
+        status: vendor.status,
+        verificationStatus: vendor.verificationStatus,
+      },
+      metrics: {
+        totalProducts: productCount,
+        publishedProducts: publishedCount,
+        activeOrders,
+        lowStockCount,
+        totalSales: grossSales,
+        netEarnings: Number(ledgerSummary?.netAmount || 0),
+        unreadNotifications: unreadCount,
+        settlementLabel: balance.readiness.eligible ? 'Ready for settlement' : 'Review status',
+      },
+      finance: {
+        ledgerNet: Number(balance?.ledgerNet || 0),
+        eligibleAmount: Number(balance?.eligibleAmount || 0),
+        availableAmount: Number(balance?.availableAmount || 0),
+        pendingAmount: Number(balance?.pendingAmount || 0),
+        settledAmount: Number(balance?.settledAmount || 0),
+        readiness: balance.readiness,
+      },
+      recentOrders: normalizedRecentOrders,
+      lowStockItems: normalizedLowStockItems,
+      salesTrend,
+    };
+
+    res.status(200).json({
+      success: true,
+      data: dashboard,
+      message: 'Vendor dashboard loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
   } catch (error) {

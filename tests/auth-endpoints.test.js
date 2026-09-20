@@ -1,10 +1,78 @@
 import request from 'supertest';
 import { describe, expect, it, jest } from '@jest/globals';
+import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import app from '../app.js';
 import { env } from '../app/config/env.js';
 import { authService } from '../app/services/auth.service.js';
 import { cartService } from '../app/services/cart.service.js';
+import { User } from '../app/models/user.model.js';
+import { Vendor } from '../app/models/vendor.model.js';
+import { RefreshSession } from '../app/models/refresh-session.model.js';
+import { emailService } from '../app/services/email.service.js';
+
+describe('registration role assignment', () => {
+  it('creates a customer account with CUSTOMER role during customer registration', async () => {
+    const customerId = new mongoose.Types.ObjectId().toString();
+    const user = { _id: customerId, name: 'Alice Customer', email: 'alice@example.com', role: 'customer', isEmailVerified: false };
+    jest.spyOn(User, 'findOne').mockResolvedValue(null);
+    jest.spyOn(User, 'create').mockResolvedValue(user);
+    jest.spyOn(RefreshSession, 'create').mockResolvedValue({});
+    jest.spyOn(authService, 'issueTokens').mockResolvedValue({ accessToken: 'customer-access-token', refreshToken: 'customer-refresh-token' });
+    jest.spyOn(emailService, 'sendOtpEmail').mockResolvedValue();
+
+    const result = await authService.register({ name: 'Alice Customer', email: 'alice@example.com', password: 'Password123' });
+
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({ role: 'customer' }));
+    expect(result.user.role).toBe('customer');
+  });
+
+  it('creates a seller account with VENDOR role and a pending vendor profile during seller registration', async () => {
+    const sellerId = new mongoose.Types.ObjectId().toString();
+    const vendorId = new mongoose.Types.ObjectId().toString();
+    const user = { _id: sellerId, name: 'Seller Name', email: 'seller@example.com', role: 'vendor', isEmailVerified: false };
+    jest.spyOn(User, 'findOne').mockResolvedValue(null);
+    jest.spyOn(User, 'create').mockResolvedValue(user);
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue(null);
+    jest.spyOn(RefreshSession, 'create').mockResolvedValue({});
+    jest.spyOn(authService, 'issueTokens').mockResolvedValue({ accessToken: 'vendor-access-token', refreshToken: 'vendor-refresh-token' });
+    jest.spyOn(Vendor, 'create').mockResolvedValue({
+      _id: vendorId,
+      ownerUserId: sellerId,
+      businessName: 'Rupakar Studio',
+      email: 'seller@example.com',
+      phone: '9876543210',
+      status: 'PENDING',
+      verificationStatus: 'UNVERIFIED',
+      toObject: () => ({
+        _id: vendorId,
+        ownerUserId: sellerId,
+        businessName: 'Rupakar Studio',
+        email: 'seller@example.com',
+        phone: '9876543210',
+        status: 'PENDING',
+        verificationStatus: 'UNVERIFIED',
+      }),
+    });
+    jest.spyOn(emailService, 'sendOtpEmail').mockResolvedValue();
+
+    const result = await authService.registerSeller({
+      name: 'Seller Name',
+      email: 'seller@example.com',
+      password: 'Password123',
+      storeName: 'Rupakar Studio',
+      mobile: '9876543210',
+    });
+
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({ role: 'vendor' }));
+    expect(Vendor.create).toHaveBeenCalledWith(expect.objectContaining({
+      businessName: 'Rupakar Studio',
+      status: 'PENDING',
+      verificationStatus: 'UNVERIFIED',
+    }));
+    expect(result.user.role).toBe('vendor');
+  });
+});
 
 describe('authenticated endpoint error handling', () => {
   it('returns 401 instead of 500 for an expired access token on /users/me', async () => {

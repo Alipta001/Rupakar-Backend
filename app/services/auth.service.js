@@ -4,12 +4,14 @@ import { env } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
 import { User } from '../models/user.model.js';
 import { RefreshSession } from '../models/refresh-session.model.js';
+import { Vendor } from '../models/vendor.model.js';
 import { emailService } from './email.service.js';
 import crypto from 'node:crypto';
 
 export class AuthService {
-  async register(data) {
+  async register(data, options = {}) {
     const email = data.email.toLowerCase().trim();
+    const forceRole = options.role === 'vendor' ? 'vendor' : 'customer';
     let user = await User.findOne({ email });
 
     if (user && user.isEmailVerified) {
@@ -23,7 +25,10 @@ export class AuthService {
     if (user) {
       user.name = data.name.trim();
       user.password = hashedPassword;
-      user.role = user.role ?? 'customer';
+      user.role = user.role ?? forceRole;
+      if (forceRole === 'vendor') {
+        user.role = 'vendor';
+      }
       user.otp = otp;
       user.otpExpiresAt = otpExpiresAt;
       user.isEmailVerified = false;
@@ -33,7 +38,7 @@ export class AuthService {
         name: data.name.trim(),
         email,
         password: hashedPassword,
-        role: 'customer',
+        role: forceRole,
         otp,
         otpExpiresAt,
         isEmailVerified: false,
@@ -63,6 +68,39 @@ export class AuthService {
       },
       ...tokens,
       message: 'Verification code sent to your email address',
+    };
+  }
+
+  async registerSeller(data) {
+    const result = await this.register(
+      {
+        name: data.name,
+        email: data.email,
+        password: data.password,
+      },
+      { role: 'vendor' },
+    );
+
+    const userId = result.user.id;
+    const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null });
+    if (!vendor) {
+      await Vendor.create({
+        ownerUserId: userId,
+        businessName: data.storeName.trim(),
+        legalName: data.storeName.trim(),
+        email: data.email.toLowerCase().trim(),
+        phone: data.mobile?.trim() || '',
+        status: 'PENDING',
+        verificationStatus: 'UNVERIFIED',
+      });
+    }
+
+    return {
+      ...result,
+      user: {
+        ...result.user,
+        role: 'vendor',
+      },
     };
   }
 

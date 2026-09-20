@@ -13,11 +13,11 @@
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "test:cov": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "seed:mock-products": "node seed.js"
-
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "bullmq": "^6.3.3",
+    "cloudinary": "^2.11.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
@@ -28,6 +28,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.9.0",
     "morgan": "^1.10.0",
+    "multer": "^2.4.0",
     "nodemailer": "^10.0.10",
     "razorpay": "^2.9.8",
     "swagger-jsdoc": "^6.3.0",

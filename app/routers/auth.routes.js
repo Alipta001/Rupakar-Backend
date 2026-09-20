@@ -34,6 +34,14 @@ const registerSchema = z.object({
   password: z.string().min(8).max(128),
 });
 
+const registerSellerSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  email: z.string().email(),
+  password: z.string().min(8).max(128),
+  storeName: z.string().trim().min(2).max(160),
+  mobile: z.string().trim().min(7).max(20).optional().or(z.literal('')),
+});
+
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8).max(128),
@@ -73,6 +81,23 @@ router.post('/register', async (req, res, next) => {
       success: true,
       data: result,
       message: 'User registered successfully. Verification code sent to email.',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/register-seller', async (req, res, next) => {
+  try {
+    const payload = registerSellerSchema.parse(req.body);
+    const result = await authService.registerSeller(payload);
+    setRefreshCookie(res, result.refreshToken);
+    delete result.refreshToken;
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: 'Seller registered successfully. Verification code sent to email.',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
   } catch (error) {

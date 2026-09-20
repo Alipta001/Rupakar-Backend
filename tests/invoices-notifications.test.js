@@ -125,6 +125,17 @@ describe('invoice and notification systems', () => {
     expect(count).toBe(5);
   });
 
+  it('does not allow a user to mark another user notification as read', async () => {
+    const service = new NotificationService();
+    const ownerId = new mongoose.Types.ObjectId().toHexString();
+    const otherUserId = new mongoose.Types.ObjectId().toHexString();
+    jest.spyOn(Notification, 'findOne').mockResolvedValue(null);
+
+    await expect(service.markAsRead('notification-1', otherUserId)).rejects.toMatchObject({ code: 'NOTIFICATION_NOT_FOUND' });
+    expect(Notification.findOne).toHaveBeenCalledWith({ _id: 'notification-1', userId: otherUserId });
+    expect(ownerId).not.toBe(otherUserId);
+  });
+
   it('lists user notifications with pagination', async () => {
     const service = new NotificationService();
     const userId = new mongoose.Types.ObjectId().toHexString();

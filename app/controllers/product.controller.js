@@ -67,6 +67,64 @@ export const createVendorProduct = async (req, res, next) => {
   }
 };
 
+export const uploadVendorProductImage = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      throw new Error('Image file is required');
+    }
+
+    const payload = {
+      altText: req.body.altText,
+      sortOrder: req.body.sortOrder,
+      isPrimary: req.body.isPrimary === 'true' || req.body.isPrimary === true,
+    };
+
+    const image = await productService.uploadProductImage(req.user.sub, req.params.id, req.file, payload);
+    res.status(201).json({
+      success: true,
+      data: image,
+      message: 'Product image uploaded',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteVendorProductImage = async (req, res, next) => {
+  try {
+    const result = await productService.deleteProductImage(req.user.sub, req.params.id, req.params.imageId);
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: 'Product image deleted',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateVendorProductImage = async (req, res, next) => {
+  try {
+    const payload = {
+      altText: req.body.altText,
+      sortOrder: req.body.sortOrder,
+      isPrimary: req.body.isPrimary,
+    };
+
+    const image = await productService.updateProductImage(req.user.sub, req.params.id, req.params.imageId, payload);
+    res.status(200).json({
+      success: true,
+      data: image,
+      message: 'Product image updated',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const listVendorProducts = async (req, res, next) => {
   try {
     const result = await productService.listForVendor(req.user.sub, {
