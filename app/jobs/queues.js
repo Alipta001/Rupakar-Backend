@@ -6,6 +6,11 @@ import { notificationService } from '../services/notification.service.js';
 import { emailService } from '../services/email.service.js';
 import { storageService } from '../services/storage.service.js';
 import { pdfService } from '../services/pdf.service.js';
+import { Order } from '../models/order.model.js';
+import { VendorOrder } from '../models/vendor-order.model.js';
+import { Vendor } from '../models/vendor.model.js';
+import { User } from '../models/user.model.js';
+import { VendorLedgerEntry } from '../models/vendor-ledger-entry.model.js';
 
 const connection = new IORedis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -46,7 +51,7 @@ export async function scheduleInvoiceGeneration({ orderId, customerId, vendorId 
 
   try {
     const queue = getInvoiceQueue();
-    const jobId = `invoice:${orderId}:${vendorId || 'all'}`;
+    const jobId = `invoice:${orderId}:${vendorOrderId || vendorId || 'customer'}`;
     const job = await queue.add(
       'generate-invoice',
       { orderId, customerId, vendorId, vendorOrderId },
@@ -71,7 +76,7 @@ export async function scheduleNotification({ userId, type, title, message, chann
 
   try {
     const queue = getNotificationQueue();
-    const jobId = `notification:${userId}:${type}:${Date.now()}`;
+    const jobId = `notification:${userId}:${type}:${metadata?.orderId || metadata?.idempotencyKey || Date.now()}:${metadata?.vendorOrderId || ''}`;
     const job = await queue.add(
       'send-notification',
       { userId, type, title, message, channel, metadata },
@@ -120,21 +125,41 @@ export async function startInvoiceWorker() {
       console.log(`Processing invoice job ${job.id} for order ${orderId}`);
 
       try {
+        const order = await Order.findById(orderId).lean();
+        if (!order || order.paymentStatus !== 'PAID') throw new Error('Invoice requires a paid order');
+        const vendorOrder = vendorOrderId ? await VendorOrder.findOne({ _id: vendorOrderId, parentOrderId: orderId }).lean() : null;
+        const vendor = vendorOrder ? await Vendor.findById(vendorOrder.vendorId).select('businessName legalName email address gstNumber').lean() : null;
+        const customer = await User.findById(customerId).select('name email').lean();
+        const ledger = vendorOrder ? await VendorLedgerEntry.findOne({ vendorOrderId: vendorOrder._id, transactionType: 'SALE_CAPTURE' }).lean() : null;
+        const items = vendorOrder?.items || order.items || [];
+        const subtotal = Number(vendorOrder?.subtotal ?? order.subtotal ?? 0);
+        const total = Number(vendorOrder?.total ?? order.total ?? 0);
         const invoice = await invoiceService.createInvoice({
           orderId,
           customerId,
           vendorId,
           vendorOrderId,
-          items: [],
-          subtotal: 0,
-          discount: 0,
-          tax: 0,
-          shipping: 0,
-          total: 0,
+          items: items.map((item) => ({ productId: item.productId, variantId: item.variantId, productName: item.productName, sku: item.sku, quantity: item.quantity, unitPrice: item.unitPrice, lineTotal: item.lineTotal })),
+          subtotal,
+          discount: Number(vendorOrder?.discount ?? order.discount ?? 0),
+          tax: Number(vendorOrder?.tax ?? order.tax ?? 0),
+          shipping: Number(vendorOrder?.shipping ?? order.shipping ?? 0),
+          total,
+          currency: vendorOrder?.currency || order.currency || 'INR',
+          paymentMethod: order.paymentMethod,
+          paymentStatus: order.paymentStatus,
+          commissionRate: ledger?.commissionRate || 0,
+          commissionAmount: ledger?.commissionAmount || 0,
+          netVendorPayable: ledger?.netAmount || total,
+          commissionSource: ledger?.commissionSource || null,
+          customerSnapshot: customer || {},
+          vendorSnapshot: vendor || {},
+          shippingAddressSnapshot: order.shippingAddressSnapshot || {},
+          billingAddressSnapshot: order.billingAddressSnapshot || {},
         });
 
         await scheduleEmail({
-          to: 'customer@example.com',
+          to: vendor?.email || customer?.email || 'customer@example.com',
           subject: `Invoice ${invoice.invoiceNumber} Ready`,
           html: `<p>Your invoice is ready. Download it from your account.</p>`,
           jobType: 'send-notification-email',

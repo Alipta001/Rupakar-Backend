@@ -30,6 +30,16 @@ export const createCustomerReview = async (req, res, next) => {
   }
 };
 
+export const listPublicProductReviews = async (req, res, next) => {
+  try {
+    const { page, limit } = listReviewsQuerySchema.parse(req.query ?? {});
+    const data = await reviewService.listPublicReviews(req.params.productId, { page, limit });
+    sendSuccess(res, data, 'Product reviews loaded', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const listCustomerReviews = async (req, res, next) => {
   try {
     if (req.user.role !== 'customer') {

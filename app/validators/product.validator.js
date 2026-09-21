@@ -33,7 +33,9 @@ export const productBaseSchema = z.object({
 }).strict();
 
 export const variantSchema = z.object({
-  sku: z.string().trim().min(3).max(80),
+  _id: z.string().trim().optional(),
+  id: z.string().trim().optional(),
+  sku: z.string().trim().min(3).max(80).optional(),
   barcode: z.string().trim().max(80).optional(),
   price: z.number().min(0),
   compareAtPrice: z.number().min(0).nullable().optional(),

@@ -11,10 +11,11 @@ const sanitizeReview = (review) => {
   return {
     ...plain,
     id: String(plain._id),
-    customerId: String(plain.customerId),
-    productId: String(plain.productId),
-    orderId: String(plain.orderId),
-    vendorId: String(plain.vendorId),
+    customerId: String(plain.customerId?._id ?? plain.customerId),
+    productId: String(plain.productId?._id ?? plain.productId),
+    orderId: String(plain.orderId?._id ?? plain.orderId),
+    vendorId: String(plain.vendorId?._id ?? plain.vendorId),
+    reviewerName: plain.customerId?.name || [plain.customerId?.firstName, plain.customerId?.lastName].filter(Boolean).join(' ') || 'Rupakar Customer',
   };
 };
 
@@ -30,6 +31,36 @@ const queryToArray = async (query) => {
 };
 
 export class ReviewService {
+  async listPublicReviews(productId, { page = 1, limit = 10 } = {}) {
+    if (!mongoose.isValidObjectId(productId)) {
+      throw new AppError(400, 'INVALID_PRODUCT_ID', 'Product ID is invalid');
+    }
+
+    const product = await Product.findOne({ _id: productId, status: 'PUBLISHED', deletedAt: null });
+    if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
+
+    const safePage = Math.max(Number(page) || 1, 1);
+    const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
+    const filter = { productId, status: 'PUBLISHED' };
+    const [items, total, breakdown] = await Promise.all([
+      queryToArray(Review.find(filter).populate('customerId', 'name firstName lastName').sort({ createdAt: -1, _id: -1 }).skip((safePage - 1) * safeLimit).limit(safeLimit)),
+      Review.countDocuments(filter),
+      Promise.all(Array.from({ length: 5 }, async (_, index) => Review.countDocuments({ ...filter, rating: index + 1 }))),
+    ]);
+
+    const totalRatings = breakdown.reduce((sum, count) => sum + count, 0);
+    const ratingSum = breakdown.reduce((sum, count, index) => sum + count * (index + 1), 0);
+    return {
+      items: items.map((item) => sanitizeReview(item)),
+      page: safePage,
+      limit: safeLimit,
+      total,
+      averageRating: totalRatings ? Number((ratingSum / totalRatings).toFixed(1)) : 0,
+      breakdown: breakdown.reduce((result, count, index) => ({ ...result, [index + 1]: count }), {}),
+      hasNextPage: safePage * safeLimit < total,
+    };
+  }
+
   async createCustomerReview({ customerId, productId, orderId, rating, title, comment }) {
     if (!customerId) {
       throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');

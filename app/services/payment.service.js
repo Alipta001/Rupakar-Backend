@@ -11,6 +11,8 @@ import { env } from '../config/env.js';
 import { RazorpayProvider } from './payment-providers/razorpay.provider.js';
 import { inventoryReservationService } from './inventory-reservation.service.js';
 import { vendorLedgerService } from './vendor-ledger.service.js';
+import { scheduleInvoiceGeneration, scheduleNotification } from '../jobs/queues.js';
+import { Vendor } from '../models/vendor.model.js';
 
 const PAYMENT_STATUS_TRANSITIONS = {
   PENDING: ['AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED'],
@@ -92,6 +94,61 @@ export class PaymentService {
 
   isRazorpayEnabled() {
     return this.provider instanceof RazorpayProvider && this.provider.isEnabled();
+  }
+
+  async ensureCapturedOrderArtifacts(orderId, paymentId, payment) {
+    if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(paymentId)) return { vendorOrders: [], skipped: true };
+    const orderQuery = Order.findById(orderId);
+    const order = orderQuery && typeof orderQuery.lean === 'function' ? await orderQuery.lean() : await orderQuery;
+    if (!order || payment?.status !== 'CAPTURED' || order.paymentStatus !== 'PAID') return { vendorOrders: [], skipped: true };
+
+    const groups = new Map();
+    for (const item of order.items || []) {
+      const key = String(item.vendorId);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+
+    const vendorOrderIds = [];
+    const orderSubtotal = (order.items || []).reduce((sum, item) => sum + Number(item.lineTotal || 0), 0) || 1;
+    for (const [vendorId, items] of groups) {
+      let vendorOrder = await VendorOrder.findOne({ parentOrderId: order._id, vendorId, deletedAt: null });
+      if (!vendorOrder) {
+        const subtotal = items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+        const ratio = subtotal / orderSubtotal;
+        try {
+          vendorOrder = await VendorOrder.create({
+            parentOrderId: order._id,
+            vendorId,
+            customerId: order.customerId,
+            status: 'CONFIRMED',
+            items: items.map((item) => ({ ...item, productSnapshot: { ...(item.productSnapshot || {}), productName: item.productName, sku: item.sku, categoryId: item.categoryId } })),
+            subtotal,
+            discount: Number((Number(order.discount || 0) * ratio).toFixed(2)),
+            tax: Number((Number(order.tax || 0) * ratio).toFixed(2)),
+            shipping: Number((Number(order.shipping || 0) * ratio).toFixed(2)),
+            total: Number((subtotal - Number(order.discount || 0) * ratio + Number(order.tax || 0) * ratio + Number(order.shipping || 0) * ratio).toFixed(2)),
+            currency: order.currency,
+          });
+        } catch (error) {
+          if (error?.code !== 11000) throw error;
+          vendorOrder = await VendorOrder.findOne({ parentOrderId: order._id, vendorId, deletedAt: null });
+        }
+      } else if (vendorOrder.status === 'PENDING_PAYMENT') {
+        vendorOrder.status = 'CONFIRMED';
+        await vendorOrder.save();
+      }
+      vendorOrderIds.push(vendorOrder._id);
+      await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId, vendorId, vendorOrderId: vendorOrder._id }).catch(() => null);
+      const vendor = await Vendor.findById(vendorId).select('ownerUserId').lean();
+      if (vendor?.ownerUserId) await scheduleNotification({ userId: vendor.ownerUserId, type: 'VENDOR_ORDER_CONFIRMED', title: 'New vendor order', message: `Order ${order.orderNumber} is ready for processing.`, metadata: { orderId: order._id, vendorOrderId: vendorOrder._id } }).catch(() => null);
+    }
+
+    await Order.updateOne({ _id: order._id }, { $set: { vendorOrders: vendorOrderIds } });
+    await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId }).catch(() => null);
+    await scheduleNotification({ userId: order.customerId, type: 'ORDER_CONFIRMED', title: 'Order confirmed', message: `Your order ${order.orderNumber} is confirmed.`, metadata: { orderId: order._id } }).catch(() => null);
+    await vendorLedgerService.recordCapturedPayment({ orderId: order._id, paymentId, payment });
+    return { vendorOrders: vendorOrderIds, skipped: false };
   }
 
   async getPaymentForOrder(orderId) {
@@ -189,7 +246,7 @@ export class PaymentService {
     if (!payment) throw new AppError(404, 'PAYMENT_NOT_FOUND', 'Mock payment not found');
 
     if (['CAPTURED', 'FAILED', 'CANCELLED'].includes(payment.status)) {
-      if (payment.status === 'CAPTURED') await vendorLedgerService.recordCapturedPayment({ orderId, paymentId: payment._id, payment });
+      if (payment.status === 'CAPTURED') await this.ensureCapturedOrderArtifacts(orderId, payment._id, payment);
       return {
         outcome: payment.status === 'CAPTURED' ? 'success' : payment.status === 'FAILED' ? 'failure' : 'cancel',
         status: payment.status,
@@ -220,7 +277,7 @@ export class PaymentService {
     if (order && nextStatus !== 'CAPTURED') await inventoryReservationService.releaseOrderReservations({ orderId, items: order.items, reason: `LOCAL_MOCK_${outcome.toUpperCase()}` });
     await Order.updateOne({ _id: orderId, customerId }, { $set: { status: orderStatus, paymentStatus } });
     await VendorOrder.updateMany({ parentOrderId: orderId }, { $set: { status: orderStatus } });
-    if (nextStatus === 'CAPTURED' && capturedPayment) await vendorLedgerService.recordCapturedPayment({ orderId, paymentId: capturedPayment._id, payment: capturedPayment });
+    if (nextStatus === 'CAPTURED' && capturedPayment) await this.ensureCapturedOrderArtifacts(orderId, capturedPayment._id, capturedPayment);
 
     if (nextStatus === 'CAPTURED') {
       if (order) await Cart.updateOne({ userId: customerId }, { $pull: { items: { variantId: { $in: order.items.map((item) => item.variantId) } } } });
@@ -344,7 +401,7 @@ export class PaymentService {
       );
       if (!canApply) {
         if (nextStatus === 'CAPTURED' && currentPayment?.status === 'CAPTURED') {
-          await vendorLedgerService.recordCapturedPayment({ orderId: currentPayment.orderId, paymentId: currentPayment._id, payment: currentPayment });
+          await this.ensureCapturedOrderArtifacts(currentPayment.orderId, currentPayment._id, currentPayment);
         }
         return { success: true, duplicate: false, ignored: true, eventId: providerEventId };
       }
@@ -375,7 +432,7 @@ export class PaymentService {
           },
         });
         if (orderStatus) await VendorOrder.updateMany({ parentOrderId: updatedPayment.orderId }, { $set: { status: orderStatus } });
-        if (nextStatus === 'CAPTURED') await vendorLedgerService.recordCapturedPayment({ orderId: updatedPayment.orderId, paymentId: updatedPayment._id, payment: updatedPayment });
+        if (nextStatus === 'CAPTURED') await this.ensureCapturedOrderArtifacts(updatedPayment.orderId, updatedPayment._id, updatedPayment);
       }
     }
 

@@ -6,6 +6,7 @@ import { Category } from '../app/models/category.model.js';
 import { Brand } from '../app/models/brand.model.js';
 import { Product, ProductVariant } from '../app/models/product.model.js';
 import { Vendor } from '../app/models/vendor.model.js';
+import { inventoryService } from '../app/services/inventory.service.js';
 
 describe('catalog services', () => {
   beforeEach(() => {
@@ -123,6 +124,63 @@ describe('catalog services', () => {
       categoryId: 'cat-1',
       variants: [{ sku: 'SKU-1', price: 1000 }],
     })).rejects.toMatchObject({ code: 'SKU_ALREADY_EXISTS' });
+  });
+
+  it('generates a unique SKU when the seller omits it', async () => {
+    const service = new ProductService();
+    const createdSkus = [];
+    jest.spyOn(service, 'resolveVendorIdForUser').mockResolvedValue('vendor-1');
+    jest.spyOn(service, 'ensureVendor').mockResolvedValue({ _id: 'vendor-1' });
+    jest.spyOn(Category, 'findOne').mockResolvedValue({ _id: 'cat-1', name: 'Terracotta', status: 'ACTIVE', deletedAt: null });
+    jest.spyOn(Product, 'findOne').mockResolvedValue(null);
+    jest.spyOn(ProductVariant, 'findOne').mockResolvedValue(null);
+    jest.spyOn(Product, 'create').mockResolvedValue({ _id: 'product-1', save: jest.fn(), variants: [], images: [] });
+    jest.spyOn(ProductVariant, 'create').mockImplementation(async (payload) => { createdSkus.push(payload.sku); return { ...payload, _id: `variant-${createdSkus.length}` }; });
+    jest.spyOn(Product, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue({ _id: 'product-1', variants: [{ sku: createdSkus[0] }] }) });
+    jest.spyOn(inventoryService, 'initializeInventory').mockResolvedValue({});
+
+    await service.createProduct('user-1', { name: 'Hand Painted Horse', categoryId: 'cat-1', variants: [{ price: 1000 }] });
+
+    expect(createdSkus[0]).toMatch(/^RPK-TER-HPH-[A-Z0-9]{6}$/);
+  });
+
+  it('preserves a manually supplied SKU', async () => {
+    const service = new ProductService();
+    jest.spyOn(service, 'resolveVendorIdForUser').mockResolvedValue('vendor-1');
+    jest.spyOn(service, 'ensureVendor').mockResolvedValue({ _id: 'vendor-1' });
+    jest.spyOn(Category, 'findOne').mockResolvedValue({ _id: 'cat-1', name: 'Terracotta', status: 'ACTIVE', deletedAt: null });
+    jest.spyOn(Product, 'findOne').mockResolvedValue(null);
+    jest.spyOn(ProductVariant, 'findOne').mockResolvedValue(null);
+    jest.spyOn(Product, 'create').mockResolvedValue({ _id: 'product-1', save: jest.fn(), variants: [], images: [] });
+    const createVariant = jest.spyOn(ProductVariant, 'create').mockResolvedValue({ _id: 'variant-1', sku: 'SELLER-001' });
+    jest.spyOn(Product, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue({ _id: 'product-1' }) });
+    jest.spyOn(inventoryService, 'initializeInventory').mockResolvedValue({});
+
+    await service.createProduct('user-1', { name: 'Horse', categoryId: 'cat-1', variants: [{ sku: 'seller-001', price: 1000 }] });
+
+    expect(createVariant).toHaveBeenCalledWith(expect.objectContaining({ sku: 'SELLER-001' }));
+  });
+
+  it('generates distinct SKUs for variants and retries generated collisions', async () => {
+    const service = new ProductService();
+    const createdSkus = [];
+    jest.spyOn(service, 'resolveVendorIdForUser').mockResolvedValue('vendor-1');
+    jest.spyOn(service, 'ensureVendor').mockResolvedValue({ _id: 'vendor-1' });
+    jest.spyOn(Category, 'findOne').mockResolvedValue({ _id: 'cat-1', name: 'Terracotta', status: 'ACTIVE', deletedAt: null });
+    jest.spyOn(Product, 'findOne').mockResolvedValue(null);
+    jest.spyOn(ProductVariant, 'findOne').mockResolvedValue(null);
+    jest.spyOn(Product, 'create').mockResolvedValue({ _id: 'product-1', save: jest.fn(), variants: [], images: [] });
+    jest.spyOn(ProductVariant, 'create')
+      .mockRejectedValueOnce({ code: 11000, keyPattern: { sku: 1 } })
+      .mockImplementation(async (payload) => { createdSkus.push(payload.sku); return { ...payload, _id: `variant-${createdSkus.length}` }; });
+    jest.spyOn(Product, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue({ _id: 'product-1' }) });
+    jest.spyOn(inventoryService, 'initializeInventory').mockResolvedValue({});
+
+    await service.createProduct('user-1', { name: 'Horse', categoryId: 'cat-1', variants: [{ price: 1000, attributes: { size: 'S' } }, { price: 1100, attributes: { size: 'M' } }] });
+
+    expect(createdSkus).toHaveLength(2);
+    expect(new Set(createdSkus).size).toBe(2);
+    expect(createdSkus.every((sku) => /^RPK-TER-HOR-[SM]-[A-Z0-9]{6}$/.test(sku))).toBe(true);
   });
 
   it('requires an approved vendor to create products', async () => {

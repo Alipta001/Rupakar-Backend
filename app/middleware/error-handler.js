@@ -14,7 +14,12 @@ export const errorHandler = (err, req, res, _next) => {
     return;
   }
 
-  if (err?.name === 'MulterError' || err?.code === 'LIMIT_FILE_SIZE' || err?.code === 'LIMIT_UNEXPECTED_FILE') {
+  if (err?.code === 'LIMIT_FILE_SIZE') {
+    sendError(res, 413, 'IMAGE_TOO_LARGE', 'Image file must be 2MB or smaller', requestId);
+    return;
+  }
+
+  if (err?.name === 'MulterError' || err?.code === 'LIMIT_UNEXPECTED_FILE') {
     sendError(res, 400, 'INVALID_IMAGE_FILE', 'Only JPG, PNG, WEBP, GIF, and BMP images up to 2 MB are allowed', requestId);
     return;
   }

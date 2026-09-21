@@ -279,10 +279,7 @@ describe('checkout reliability', () => {
     })).rejects.toBe(paymentError);
 
     expect(releaseSpy).toHaveBeenCalledWith(expect.objectContaining({ orderId: 'order-1', variantId }));
-    expect(vendorUpdateSpy).toHaveBeenCalledWith(
-      { _id: { $in: ['vendor-order-1'] } },
-      { $set: { status: 'FAILED' } },
-    );
+    expect(vendorUpdateSpy).not.toHaveBeenCalled();
     expect(updateSpy).toHaveBeenLastCalledWith(
       'order-1',
       { $set: { status: 'FAILED', paymentStatus: 'FAILED' } },

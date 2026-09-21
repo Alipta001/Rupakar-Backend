@@ -30,6 +30,7 @@ import notificationRoutes from './app/routers/notification.routes.js';
 import reviewRoutes from './app/routers/review.routes.js';
 import adminRoutes from './app/routers/admin.routes.js';
 import financeRoutes from './app/routers/finance.routes.js';
+import supportRoutes from './app/routers/support.routes.js';
 
 export function createApp() {
   const app = express();
@@ -77,6 +78,7 @@ export function createApp() {
   app.use('/api/v1/reviews', reviewRoutes);
   app.use('/api/v1/admin', adminRoutes);
   app.use('/api/v1', financeRoutes);
+  app.use('/api/v1/support', supportRoutes);
 
   app.get('/api/v1/health', (_req, res) => {
     res.status(200).json({

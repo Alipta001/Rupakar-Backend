@@ -15,6 +15,41 @@ afterEach(() => {
 });
 
 describe('review API', () => {
+  it('lists published product reviews publicly with a rating summary', async () => {
+    const productId = new mongoose.Types.ObjectId().toHexString();
+    const reviewRow = {
+      _id: new mongoose.Types.ObjectId(),
+      customerId: { name: 'Asha Customer' },
+      productId,
+      orderId: new mongoose.Types.ObjectId(),
+      vendorId: new mongoose.Types.ObjectId(),
+      rating: 5,
+      title: 'Beautiful piece',
+      comment: 'The finish is lovely.',
+      status: 'PUBLISHED',
+      createdAt: new Date(),
+      toObject: function toObject() { return this; },
+    };
+
+    jest.spyOn(Product, 'findOne').mockResolvedValue({ _id: productId, status: 'PUBLISHED', deletedAt: null });
+    jest.spyOn(Review, 'find').mockReturnValue({
+      populate: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([reviewRow]) }),
+    });
+    jest.spyOn(Review, 'countDocuments').mockImplementation(async (filter) => filter.rating ? (filter.rating === 5 ? 1 : 0) : 1);
+
+    const response = await request(app).get(`/api/v1/reviews/product/${productId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      total: 1,
+      averageRating: 5,
+      items: [expect.objectContaining({ reviewerName: 'Asha Customer', rating: 5 })],
+    });
+  });
+
   it('allows authenticated customers to create a review after purchase', async () => {
     const customerId = new mongoose.Types.ObjectId().toHexString();
     const vendorId = new mongoose.Types.ObjectId().toHexString();

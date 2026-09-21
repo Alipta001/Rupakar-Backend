@@ -18,6 +18,7 @@ const invoiceItemSchema = new Schema(
 const invoiceSchema = new Schema(
   {
     invoiceNumber: { type: String, required: true, unique: true, index: true },
+    sourceKey: { type: String, required: true, unique: true, sparse: true, index: true },
     orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true, index: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
@@ -28,6 +29,10 @@ const invoiceSchema = new Schema(
     tax: { type: Number, default: 0, min: 0 },
     shipping: { type: Number, default: 0, min: 0 },
     total: { type: Number, required: true, min: 0 },
+    commissionRate: { type: Number, default: 0, min: 0, max: 100 },
+    commissionAmount: { type: Number, default: 0, min: 0 },
+    netVendorPayable: { type: Number, default: 0 },
+    commissionSource: { type: String, default: null },
     currency: { type: String, default: 'INR' },
     paymentMethod: { type: String, default: 'razorpay' },
     paymentStatus: { type: String, enum: ['PENDING', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'], default: 'PENDING', index: true },

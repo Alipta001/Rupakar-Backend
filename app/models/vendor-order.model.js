@@ -36,6 +36,6 @@ const vendorOrderSchema = new Schema(
   { timestamps: true },
 );
 
-vendorOrderSchema.index({ vendorId: 1, parentOrderId: 1 }, { unique: false });
+vendorOrderSchema.index({ parentOrderId: 1, vendorId: 1 }, { unique: true });
 
 export const VendorOrder = model('VendorOrder', vendorOrderSchema);

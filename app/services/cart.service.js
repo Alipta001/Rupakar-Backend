@@ -100,7 +100,7 @@ export class CartService {
 
     const available = await inventoryService.getAvailableStock(variantId);
     if (normalizedQuantity > available) {
-      throw new AppError(409, 'INSUFFICIENT_STOCK', 'Requested quantity exceeds available stock');
+      throw new AppError(409, 'INSUFFICIENT_STOCK', `Only ${available} left in stock`);
     }
 
     return {

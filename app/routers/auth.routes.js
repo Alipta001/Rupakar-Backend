@@ -6,20 +6,28 @@ import { cartService } from '../services/cart.service.js';
 
 const router = Router();
 
-export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV) => ({
-  httpOnly: true,
-  secure: nodeEnv === 'production' || /^https:\/\//.test(env.FRONTEND_URL),
-  sameSite: nodeEnv === 'production' || /^https:\/\//.test(env.FRONTEND_URL) ? 'none' : 'lax',
-  path: '/api/v1/auth',
-  maxAge: 7 * 24 * 60 * 60 * 1000,
-});
+export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV, origin = null) => {
+  const isLocalOrigin = Boolean(origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
+  const isProd = nodeEnv === 'production';
+  const hasHttpsFrontend = !isLocalOrigin && (isProd || /^https:\/\//.test(origin || env.FRONTEND_URL));
 
-const setRefreshCookie = (res, refreshToken) => {
-  res.cookie('refresh_token', refreshToken, getRefreshCookieOptions());
+  return {
+    httpOnly: true,
+    secure: hasHttpsFrontend,
+    sameSite: hasHttpsFrontend ? 'none' : 'lax',
+    path: '/api/v1/auth',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
 };
 
-const clearRefreshCookie = (res) => {
-  const options = getRefreshCookieOptions();
+const setRefreshCookie = (res, refreshToken, req = null) => {
+  const origin = req?.headers?.origin;
+  res.cookie('refresh_token', refreshToken, getRefreshCookieOptions(env.NODE_ENV, origin));
+};
+
+const clearRefreshCookie = (res, req = null) => {
+  const origin = req?.headers?.origin;
+  const options = getRefreshCookieOptions(env.NODE_ENV, origin);
   res.clearCookie('refresh_token', {
     httpOnly: options.httpOnly,
     secure: options.secure,
@@ -75,7 +83,7 @@ router.post('/register', async (req, res, next) => {
   try {
     const payload = registerSchema.parse(req.body);
     const result = await authService.register(payload);
-    setRefreshCookie(res, result.refreshToken);
+    setRefreshCookie(res, result.refreshToken, req);
     delete result.refreshToken;
     res.status(201).json({
       success: true,
@@ -92,7 +100,7 @@ router.post('/register-seller', async (req, res, next) => {
   try {
     const payload = registerSellerSchema.parse(req.body);
     const result = await authService.registerSeller(payload);
-    setRefreshCookie(res, result.refreshToken);
+    setRefreshCookie(res, result.refreshToken, req);
     delete result.refreshToken;
     res.status(201).json({
       success: true,
@@ -109,7 +117,7 @@ router.post('/verify-otp', async (req, res, next) => {
   try {
     const payload = verifyOtpSchema.parse(req.body);
     const result = await authService.verifyOtp(payload);
-    setRefreshCookie(res, result.refreshToken);
+    setRefreshCookie(res, result.refreshToken, req);
     delete result.refreshToken;
     res.status(200).json({
       success: true,
@@ -156,7 +164,7 @@ router.post('/login', async (req, res, next) => {
   try {
     const payload = loginSchema.parse(req.body);
     const result = await authService.login(payload);
-    setRefreshCookie(res, result.refreshToken);
+    setRefreshCookie(res, result.refreshToken, req);
     delete result.refreshToken;
 
     const guestSessionId = req.headers['x-guest-session-id'] || req.body?.guestSessionId;
@@ -183,7 +191,7 @@ router.post('/refresh', async (req, res, next) => {
   try {
     const refreshToken = req.cookies?.refresh_token;
     const result = await authService.refreshToken(refreshToken);
-    setRefreshCookie(res, result.refreshToken);
+    setRefreshCookie(res, result.refreshToken, req);
     delete result.refreshToken;
     res.status(200).json({
       success: true,
@@ -199,7 +207,7 @@ router.post('/refresh', async (req, res, next) => {
 router.post('/logout', async (req, res, next) => {
   try {
     await authService.revokeRefreshToken(req.cookies?.refresh_token, 'LOGOUT');
-    clearRefreshCookie(res);
+    clearRefreshCookie(res, req);
 
     res.status(200).json({
       success: true,

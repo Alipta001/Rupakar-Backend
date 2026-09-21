@@ -7,6 +7,7 @@ import { Vendor } from '../models/vendor.model.js';
 import { auditService } from './audit.service.js';
 import { inventoryService } from './inventory.service.js';
 import { storageService } from './storage.service.js';
+import crypto from 'node:crypto';
 
 const normalizeSlug = (value) => {
   const slug = String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
@@ -14,6 +15,23 @@ const normalizeSlug = (value) => {
 };
 
 const normalizeSku = (value) => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '-');
+
+const skuAbbreviation = (value, fallback = 'PRD') => {
+  const words = String(value ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return fallback;
+  const abbreviation = words.length > 1 ? words.map((word) => word[0]).join('') : words[0].slice(0, 3);
+  return (abbreviation || fallback).slice(0, 6);
+};
+
+const generatedSkuBase = (productName, categoryName, variant, index) => {
+  const category = skuAbbreviation(categoryName, 'GEN');
+  const product = skuAbbreviation(productName, 'PRD');
+  const variantValue = variant?.attributes && Object.values(variant.attributes).find(Boolean);
+  const variantPart = variantValue ? `${skuAbbreviation(variantValue, `V${index + 1}`)}-` : '';
+  return `RPK-${category}-${product}-${variantPart}`;
+};
+
+const generatedSku = (base) => `${base}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
 const buildUniqueProductSlug = async (base, excludeId = null) => {
   const root = normalizeSlug(base);
@@ -44,6 +62,15 @@ const buildUniqueSku = async (sku, excludeId = null) => {
   throw new AppError(409, 'SKU_ALREADY_EXISTS', 'Variant SKU already exists');
 };
 
+const buildGeneratedSku = async (base) => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = generatedSku(base);
+    const existing = await ProductVariant.findOne({ sku: candidate });
+    if (!existing) return candidate;
+  }
+  throw new AppError(409, 'SKU_GENERATION_FAILED', 'Unable to generate a unique variant SKU');
+};
+
 const parsePrice = (value) => {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) {
@@ -53,6 +80,18 @@ const parsePrice = (value) => {
 };
 
 const MAX_PRODUCT_IMAGES = 20;
+
+const findProductWithVariants = (productId) => {
+  let query = Product.findById(productId);
+  if (typeof query.populate === 'function') {
+    query = query
+      .populate('variants')
+      .populate('images')
+      .populate('categoryId', 'name slug')
+      .populate('brandId', 'name slug');
+  }
+  return query.lean();
+};
 
 export class ProductService {
   async resolveVendorIdForUser(userId) {
@@ -85,43 +124,75 @@ export class ProductService {
       throw new AppError(400, 'IMAGE_REQUIRED', 'An image file is required');
     }
 
-    storageService.validateImageFile(file);
+    try {
+      storageService.validateImageFile(file);
+    } catch (error) {
+      throw new AppError(400, 'INVALID_IMAGE_FILE', error.message);
+    }
     const activeImageCount = await ProductImage.countDocuments({ productId: product._id, status: 'ACTIVE' });
     if (activeImageCount >= MAX_PRODUCT_IMAGES) {
       throw new AppError(400, 'IMAGE_LIMIT_REACHED', 'A product cannot have more than 20 images');
     }
 
-    const uploadMetadata = await storageService.uploadImage({
-      file,
-      folder: `products/${String(product._id)}`,
-      altText: metadata.altText ?? '',
-    });
+    let uploadMetadata;
+    try {
+      uploadMetadata = await storageService.uploadImage({
+        file,
+        folder: `products/${String(product._id)}`,
+        altText: metadata.altText ?? '',
+      });
+    } catch (error) {
+      throw new AppError(502, 'IMAGE_UPLOAD_FAILED', error.message || 'Cloudinary image upload failed');
+    }
+
+    if (!uploadMetadata.storageKey || !uploadMetadata.url) {
+      throw new AppError(502, 'IMAGE_UPLOAD_FAILED', 'Cloudinary returned incomplete image metadata');
+    }
 
     const existingPrimaryResult = await ProductImage.findOne({ productId: product._id, isPrimary: true, status: 'ACTIVE' });
     const existingPrimary = existingPrimaryResult && typeof existingPrimaryResult.lean === 'function'
-      ? existingPrimaryResult.lean()
+      ? await existingPrimaryResult.lean()
       : existingPrimaryResult;
     const nextIsPrimary = existingPrimary ? Boolean(metadata.isPrimary) : true;
-    const newImage = await ProductImage.create({
-      productId: product._id,
-      variantId: metadata.variantId ?? null,
-      storageKey: uploadMetadata.storageKey,
-      url: uploadMetadata.url,
-      altText: uploadMetadata.altText || metadata.altText || '',
-      sortOrder: Number(metadata.sortOrder ?? 0),
-      isPrimary: nextIsPrimary,
-      width: uploadMetadata.width,
-      height: uploadMetadata.height,
-      fileSize: uploadMetadata.fileSize,
-      mimeType: uploadMetadata.mimeType,
-      status: 'ACTIVE',
-    });
-
-    if (!Array.isArray(product.images)) {
-      product.images = [];
+    let newImage;
+    try {
+      newImage = await ProductImage.create({
+        productId: product._id,
+        variantId: metadata.variantId ?? null,
+        storageKey: uploadMetadata.storageKey,
+        url: uploadMetadata.url,
+        altText: uploadMetadata.altText || metadata.altText || '',
+        sortOrder: Number(metadata.sortOrder ?? 0),
+        isPrimary: nextIsPrimary,
+        width: uploadMetadata.width,
+        height: uploadMetadata.height,
+        fileSize: uploadMetadata.fileSize,
+        mimeType: uploadMetadata.mimeType,
+        status: 'ACTIVE',
+      });
+    } catch (error) {
+      await storageService.deleteImage(uploadMetadata.storageKey).catch(() => undefined);
+      throw error;
     }
-    product.images.push(newImage._id);
-    await product.save();
+
+    try {
+      if (existingPrimary && nextIsPrimary) {
+        await ProductImage.updateMany(
+          { productId: product._id, _id: { $ne: newImage._id }, status: 'ACTIVE' },
+          { $set: { isPrimary: false } },
+        );
+      }
+
+      if (!Array.isArray(product.images)) {
+        product.images = [];
+      }
+      product.images.push(newImage._id);
+      await product.save();
+    } catch (error) {
+      await ProductImage.deleteOne({ _id: newImage._id, productId: product._id }).catch(() => undefined);
+      await storageService.deleteImage(uploadMetadata.storageKey).catch(() => undefined);
+      throw error;
+    }
 
     return newImage.toObject();
   }
@@ -184,9 +255,11 @@ export class ProductService {
     await this.ensureVendor(vendorId);
     const categoryId = input.categoryId ?? null;
     const brandId = input.brandId ?? null;
+    let categoryName = '';
     if (categoryId) {
       const category = await Category.findOne({ _id: categoryId, deletedAt: null, status: 'ACTIVE' });
       if (!category) throw new AppError(400, 'INVALID_CATEGORY', 'Category does not exist or is inactive');
+      categoryName = category.name || category.slug || '';
     }
     if (brandId) {
       const brand = await Brand.findOne({ _id: brandId, deletedAt: null, status: 'ACTIVE' });
@@ -215,17 +288,26 @@ export class ProductService {
       });
 
       if (input.variants && input.variants.length > 0) {
-        const savedVariants = await Promise.all(input.variants.map(async (variant) => {
-          const sku = await buildUniqueSku(variant.sku ?? `${normalizeSlug(input.name)}-${Date.now()}`);
+        const savedVariants = await Promise.all(input.variants.map(async (variant, index) => {
+          const hasExplicitSku = Boolean(variant.sku?.trim());
           const normalizedVariant = {
             ...variant,
-            sku,
             price: parsePrice(variant.price),
             compareAtPrice: variant.compareAtPrice == null ? null : Number(variant.compareAtPrice),
             costPrice: variant.costPrice == null ? null : Number(variant.costPrice),
             weight: variant.weight == null ? null : Number(variant.weight),
           };
-          return ProductVariant.create({ productId: product._id, ...normalizedVariant });
+          const base = generatedSkuBase(input.name, categoryName, variant, index);
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            const sku = hasExplicitSku ? await buildUniqueSku(variant.sku) : await buildGeneratedSku(base);
+            try {
+              return await ProductVariant.create({ productId: product._id, ...normalizedVariant, sku });
+            } catch (error) {
+              if (!hasExplicitSku && error?.code === 11000) continue;
+              throw error;
+            }
+          }
+          throw new AppError(409, 'SKU_GENERATION_FAILED', 'Unable to generate a unique variant SKU');
         }));
         product.variants = savedVariants.map((item) => item._id);
         await product.save();
@@ -251,7 +333,7 @@ export class ProductService {
       }
 
       auditService.log('PRODUCT_CREATED', { productId: product._id.toString(), vendorId, status: product.status });
-      return Product.findById(product._id).lean();
+      return findProductWithVariants(product._id);
     } catch (error) {
       if (error && (error.code === 11000 || error.keyPattern?.sku || error.keyPattern?.slug || error.message?.toLowerCase().includes('sku'))) {
         throw new AppError(409, 'SKU_ALREADY_EXISTS', 'Variant SKU already exists');
@@ -268,16 +350,45 @@ export class ProductService {
       const escaped = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       query.name = { $regex: escaped, $options: 'i' };
     }
-    const data = await Product.find(query).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean();
+    let queryChain = Product.find(query);
+    if (typeof queryChain.populate === 'function') {
+      queryChain = queryChain
+        .populate('variants')
+        .populate('images')
+        .populate('categoryId', 'name slug')
+        .populate('brandId', 'name slug');
+    }
+    const data = await queryChain.sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean();
     const total = await Product.countDocuments(query);
-    return { data, page, limit, total };
+    return {
+      data: data.map((p) => ({
+        ...p,
+        id: (p._id ?? p.id)?.toString(),
+        variantId: p.variants?.[0]?._id?.toString(),
+      })),
+      page,
+      limit,
+      total,
+    };
   }
 
   async getForVendor(userId, productId) {
     const vendorId = await this.resolveVendorIdForUser(userId);
-    const product = await Product.findOne({ _id: productId, vendorId, deletedAt: null }).lean();
+    let queryChain = Product.findOne({ _id: productId, vendorId, deletedAt: null });
+    if (typeof queryChain.populate === 'function') {
+      queryChain = queryChain
+        .populate('variants')
+        .populate('images')
+        .populate('categoryId', 'name slug')
+        .populate('brandId', 'name slug');
+    }
+    const product = await queryChain.lean();
     if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
-    return product;
+    return {
+      ...product,
+      id: (product._id ?? product.id)?.toString(),
+      variantId: product.variants?.[0]?._id?.toString(),
+    };
   }
 
   async updateProduct(userId, productId, input) {
@@ -317,12 +428,28 @@ export class ProductService {
     }
     if (input.variants !== undefined) {
       const savedVariants = [];
-      for (const variant of input.variants) {
-        const existing = await ProductVariant.findOne({ productId: product._id, sku: normalizeSku(variant.sku) });
+      const category = product.categoryId ? await Category.findOne({ _id: product.categoryId, deletedAt: null }).lean() : null;
+      for (const [index, variant] of input.variants.entries()) {
+        const hasExplicitSku = Boolean(variant.sku?.trim());
+        const variantId = variant._id || variant.id;
+        let existing = null;
+        if (variantId) {
+          existing = await ProductVariant.findOne({ _id: variantId, productId: product._id });
+        }
+        if (!existing && hasExplicitSku) {
+          existing = await ProductVariant.findOne({ productId: product._id, sku: normalizeSku(variant.sku) });
+        }
+        if (!existing && index === 0 && Array.isArray(product.variants) && product.variants.length > 0) {
+          existing = await ProductVariant.findById(product.variants[0]);
+        }
+
         if (existing) {
+          const nextSku = hasExplicitSku && normalizeSku(variant.sku) !== existing.sku
+            ? await buildUniqueSku(variant.sku, existing._id)
+            : existing.sku;
           Object.assign(existing, {
             ...variant,
-            sku: normalizeSku(variant.sku),
+            sku: nextSku,
             price: parsePrice(variant.price),
             compareAtPrice: variant.compareAtPrice == null ? null : Number(variant.compareAtPrice),
             costPrice: variant.costPrice == null ? null : Number(variant.costPrice),
@@ -331,24 +458,24 @@ export class ProductService {
           await existing.save();
           savedVariants.push(existing);
         } else {
-          const created = await ProductVariant.create({ productId: product._id, ...variant, sku: await buildUniqueSku(variant.sku), price: parsePrice(variant.price) });
+          const sku = hasExplicitSku
+            ? await buildUniqueSku(variant.sku)
+            : await buildGeneratedSku(generatedSkuBase(product.name, category?.name || category?.slug, variant, savedVariants.length));
+          const created = await ProductVariant.create({ productId: product._id, ...variant, sku, price: parsePrice(variant.price) });
           savedVariants.push(created);
           await inventoryService.initializeInventory({ productId: product._id, variantId: created._id, actorId: userId });
         }
       }
-      const submittedSkus = savedVariants.map((variant) => normalizeSku(variant.sku));
-      await ProductVariant.updateMany({ productId: product._id, sku: { $nin: submittedSkus } }, { $set: { status: 'INACTIVE' } });
-      const existingVariantIds = Array.isArray(product.variants) ? product.variants : [];
-      const variantIds = [...existingVariantIds, ...savedVariants.map((variant) => variant._id)];
-      product.variants = variantIds.filter((id, index, all) => all.findIndex((candidate) => String(candidate) === String(id)) === index);
+      product.variants = savedVariants.map((variant) => variant._id);
+      await ProductVariant.updateMany({ productId: product._id, _id: { $nin: product.variants } }, { $set: { status: 'INACTIVE' } });
     }
-    if (input.images !== undefined) {
+    if (Array.isArray(input.images) && input.images.length > 0) {
       await ProductImage.updateMany({ productId: product._id, status: 'ACTIVE' }, { $set: { status: 'INACTIVE' } });
       const savedImages = await Promise.all(input.images.map((image) => ProductImage.create({ productId: product._id, ...image })));
       product.images = savedImages.map((image) => image._id);
     }
     await product.save();
-    return product.toObject();
+    return findProductWithVariants(product._id);
   }
 
   async submitForReview(userId, productId) {
@@ -400,7 +527,9 @@ export class ProductService {
       queryBuilder = queryBuilder
         .populate({ path: 'variants', match: { status: 'ACTIVE' } })
         .populate({ path: 'images', match: { status: 'ACTIVE' } })
-        .populate({ path: 'categoryId', select: 'name slug' });
+        .populate({ path: 'categoryId', select: 'name slug' })
+        .populate({ path: 'brandId', select: 'name slug logo' })
+        .populate({ path: 'vendorId', select: 'businessName legalName description website originState originDistrict' });
     }
     if (typeof queryBuilder.sort === 'function') {
       queryBuilder = queryBuilder.sort(sortMap[sort] ?? sortMap.newest);
@@ -463,7 +592,9 @@ export class ProductService {
       queryBuilder = queryBuilder
         .populate({ path: 'variants', match: { status: 'ACTIVE' } })
         .populate({ path: 'images', match: { status: 'ACTIVE' } })
-        .populate({ path: 'categoryId', select: 'name slug' });
+        .populate({ path: 'categoryId', select: 'name slug' })
+        .populate({ path: 'brandId', select: 'name slug logo' })
+        .populate({ path: 'vendorId', select: 'businessName legalName description website originState originDistrict' });
     }
     const product = typeof queryBuilder.lean === 'function' ? await queryBuilder.lean() : await queryBuilder;
     if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');

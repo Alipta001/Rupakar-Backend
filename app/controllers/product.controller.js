@@ -1,34 +1,83 @@
 import { productService } from '../services/product.service.js';
 import { createProductSchema, updateProductSchema, submitProductSchema, publicProductQuerySchema, adminReviewSchema } from '../validators/product.validators.js';
+import { AppError } from '../utils/app-error.js';
 
 const sanitizeProduct = (product) => {
   if (!product) return product;
+  const vendor = product.vendorId && typeof product.vendorId === 'object' ? product.vendorId : null;
+  const brand = product.brandId && typeof product.brandId === 'object' ? product.brandId : null;
   const primaryVariant = Array.isArray(product.variants) ? product.variants[0] : null;
   const primaryVariantId = primaryVariant?._id ?? primaryVariant?.id ?? (typeof primaryVariant === 'string' ? primaryVariant : null);
   const price = product.price ?? primaryVariant?.price ?? 0;
   const compareAtPrice = product.compareAtPrice ?? primaryVariant?.compareAtPrice ?? null;
   const primaryImage = product.image ?? (Array.isArray(product.images) && product.images.length > 0
-    ? (product.images.find((img) => img?.isPrimary)?.url ?? product.images[0]?.url ?? product.images[0])
-    : '/images/product-vase.jpg');
-  const images = Array.isArray(product.images) && product.images.length > 0
-    ? product.images.map((img) => (typeof img === 'string' ? img : img?.url ?? primaryImage))
+    ? (product.images.find((img) => img?.isPrimary)?.url ?? product.images[0]?.url ?? (typeof product.images[0] === 'string' ? product.images[0] : null))
+    : '/images/product-vase.jpg') ?? '/images/product-vase.jpg';
+
+  const formattedImages = Array.isArray(product.images) && product.images.length > 0
+    ? product.images.map((img) => {
+        if (typeof img === 'string') return img;
+        const imgId = (img?._id ?? img?.id)?.toString();
+        return {
+          _id: imgId,
+          id: imgId,
+          productId: (img?.productId ?? product._id ?? product.id)?.toString(),
+          storageKey: img?.storageKey || '',
+          url: img?.url || primaryImage,
+          altText: img?.altText || '',
+          sortOrder: typeof img?.sortOrder === 'number' ? img.sortOrder : 0,
+          isPrimary: Boolean(img?.isPrimary),
+          width: img?.width ?? null,
+          height: img?.height ?? null,
+          fileSize: img?.fileSize ?? null,
+          mimeType: img?.mimeType ?? null,
+          status: img?.status ?? 'ACTIVE',
+        };
+      })
     : [primaryImage];
 
+  const formattedVariants = Array.isArray(product.variants)
+    ? product.variants.map((v) => {
+        if (typeof v === 'string') return { _id: v, id: v, price: 0 };
+        const vId = (v?._id ?? v?.id)?.toString();
+        return {
+          ...v,
+          _id: vId,
+          id: vId,
+          sku: v?.sku || '',
+          price: v?.price ?? 0,
+          compareAtPrice: v?.compareAtPrice ?? null,
+        };
+      })
+    : [];
+
   return {
-    id: product._id ?? product.id,
-    variantId: primaryVariantId,
-    vendorId: product.vendorId,
+    id: (product._id ?? product.id)?.toString(),
+    variantId: primaryVariantId?.toString() ?? null,
+    vendorId: (vendor?._id ?? product.vendorId)?.toString?.() ?? product.vendorId,
+    vendor: vendor ? {
+      id: vendor._id?.toString?.() ?? vendor.id,
+      businessName: vendor.businessName,
+      legalName: vendor.legalName,
+      description: vendor.description,
+      website: vendor.website,
+      originState: vendor.originState,
+      originDistrict: vendor.originDistrict,
+    } : undefined,
+    retailer: vendor?.businessName ?? vendor?.legalName ?? product.retailer,
+    shopkeeper: vendor?.businessName ?? vendor?.legalName ?? product.shopkeeper,
     name: product.name,
     slug: product.slug,
     shortDescription: product.shortDescription,
     description: product.description,
     categoryId: product.categoryId,
     subcategoryId: product.subcategoryId,
-    brandId: product.brandId,
+    brandId: brand ? { _id: brand._id, id: brand._id?.toString?.() ?? brand.id, name: brand.name, slug: brand.slug, logo: brand.logo } : product.brandId,
+    brand: brand ? { id: brand._id?.toString?.() ?? brand.id, name: brand.name, slug: brand.slug, logo: brand.logo } : product.brand,
     tags: product.tags,
     attributes: product.attributes,
-    variants: product.variants,
-    images,
+    variants: formattedVariants,
+    images: formattedImages,
     image: primaryImage,
     price,
     compareAtPrice,
@@ -70,7 +119,7 @@ export const createVendorProduct = async (req, res, next) => {
 export const uploadVendorProductImage = async (req, res, next) => {
   try {
     if (!req.file) {
-      throw new Error('Image file is required');
+      throw new AppError(400, 'IMAGE_REQUIRED', 'Image file is required');
     }
 
     const payload = {

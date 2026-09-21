@@ -204,8 +204,8 @@ describe('product image API', () => {
       .set('Authorization', `Bearer ${token}`)
       .attach('image', largeBuffer, { filename: 'huge.png', contentType: 'image/png' });
 
-    expect(response.status).toBe(400);
-    expect(response.body.error.code).toBe('INVALID_IMAGE_FILE');
+    expect(response.status).toBe(413);
+    expect(response.body.error.code).toBe('IMAGE_TOO_LARGE');
   });
 
   it('rejects uploads when the product already has 20 images', async () => {

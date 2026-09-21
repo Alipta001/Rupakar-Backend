@@ -19,6 +19,10 @@ export class InvoiceService {
     tax = 0,
     shipping = 0,
     total = 0,
+    commissionRate = 0,
+    commissionAmount = 0,
+    netVendorPayable = 0,
+    commissionSource = null,
     currency = 'INR',
     paymentMethod = 'razorpay',
     paymentStatus = 'PENDING',
@@ -31,30 +35,44 @@ export class InvoiceService {
       throw new AppError(400, 'INVALID_INVOICE_DATA', 'Order and customer are required');
     }
 
+    const sourceKey = `order:${String(orderId)}:${vendorOrderId ? `vendor:${String(vendorOrderId)}` : 'customer'}`;
     const invoiceNumber = this.generateInvoiceNumber();
     
-    const invoice = await Invoice.create({
-      invoiceNumber,
-      orderId,
-      customerId,
-      vendorId,
-      vendorOrderId,
-      items,
-      subtotal,
-      discount,
-      tax,
-      shipping,
-      total,
-      currency,
-      paymentMethod,
-      paymentStatus,
-      status: 'ISSUED',
-      customerSnapshot,
-      vendorSnapshot,
-      billingAddressSnapshot,
-      shippingAddressSnapshot,
-      issuedAt: new Date(),
-    });
+    let invoice;
+    try {
+      invoice = await Invoice.create({
+        invoiceNumber,
+        sourceKey,
+        orderId,
+        customerId,
+        vendorId,
+        vendorOrderId,
+        items,
+        subtotal,
+        discount,
+        tax,
+        shipping,
+        total,
+        commissionRate,
+        commissionAmount,
+        netVendorPayable,
+        commissionSource,
+        currency,
+        paymentMethod,
+        paymentStatus,
+        status: 'ISSUED',
+        customerSnapshot,
+        vendorSnapshot,
+        billingAddressSnapshot,
+        shippingAddressSnapshot,
+        issuedAt: new Date(),
+      });
+    } catch (error) {
+      if (error?.code === 11000) {
+        return Invoice.findOne({ sourceKey, status: { $ne: 'CANCELLED' } }).lean();
+      }
+      throw error;
+    }
 
     return invoice.toObject ? invoice.toObject() : invoice;
   }

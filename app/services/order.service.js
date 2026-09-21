@@ -233,7 +233,7 @@ export class OrderService {
         quantity: item.quantity,
         unitPrice,
         lineTotal,
-        productSnapshot: { name: product.name, sku: variant.sku },
+        productSnapshot: { name: product.name, sku: variant.sku, price: variant.price, compareAtPrice: variant.compareAtPrice ?? null, attributes: variant.attributes || {}, categoryId: product.categoryId || null },
       });
       group.subtotal += lineTotal;
       vendorGroups.set(String(vendorId), group);
@@ -248,7 +248,7 @@ export class OrderService {
         unitPrice,
         lineTotal,
         categoryId: product.categoryId,
-        productSnapshot: { name: product.name, sku: variant.sku },
+        productSnapshot: { name: product.name, sku: variant.sku, price: variant.price, compareAtPrice: variant.compareAtPrice ?? null, attributes: variant.attributes || {}, categoryId: product.categoryId || null },
       });
     }
 
@@ -283,29 +283,6 @@ export class OrderService {
       reservationRecords.push(reservation);
     }
 
-    const vendorOrderIds = [];
-    for (const group of vendorGroups.values()) {
-      const vendorOrder = await VendorOrder.create({
-        parentOrderId: orderDoc._id,
-        vendorId: group.vendorId,
-        customerId,
-        status: 'PENDING_PAYMENT',
-        items: group.items,
-        subtotal: group.subtotal,
-        discount: 0,
-        tax: 0,
-        shipping: 0,
-        total: group.subtotal,
-        currency: summary.currency,
-      });
-      vendorOrderIds.push(vendorOrder._id);
-    }
-
-    await Order.findByIdAndUpdate(orderDoc._id, {
-      vendorOrders: vendorOrderIds,
-      paymentStatus: 'PENDING',
-    }, { new: true });
-
     let payment;
     try {
       payment = await paymentService.createPayment({
@@ -321,7 +298,7 @@ export class OrderService {
         await this.compensatePaymentCreationFailure({
           orderId: orderDoc._id,
           orderItems,
-          vendorOrderIds,
+          vendorOrderIds: [],
         });
       } catch (compensationError) {
         error.compensationError = compensationError;
@@ -336,7 +313,7 @@ export class OrderService {
     return {
       ...orderDoc.toObject(),
       payment,
-      vendorOrders: vendorOrderIds,
+      vendorOrders: [],
       reservationRecords,
     };
   }
