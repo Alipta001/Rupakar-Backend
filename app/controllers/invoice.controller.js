@@ -128,7 +128,15 @@ export const downloadVendorOrderInvoice = async (req, res, next) => {
     const vendor = await getVendorForDocument(req.user.sub);
     const vendorOrder = await VendorOrder.findOne({ _id: req.params.orderId, vendorId: vendor._id, deletedAt: null }).lean();
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
-    const invoice = await Invoice.findOne({ vendorOrderId: vendorOrder._id, vendorId: vendor._id, status: { $ne: 'CANCELLED' } }).lean();
+
+    const invoice = await Invoice.findOne({
+      $or: [
+        { vendorOrderId: vendorOrder._id, vendorId: vendor._id },
+        { orderId: vendorOrder.parentOrderId, vendorId: vendor._id, vendorOrderId: null },
+      ],
+      status: { $ne: 'CANCELLED' },
+    }).lean();
+
     await sendDocumentUrl(res, invoice, 'Vendor invoice', String(req.headers['x-request-id'] ?? ''));
   } catch (error) { next(error); }
 };
