@@ -37,6 +37,17 @@ const userSchema = new Schema(
       type: String,
       default: '',
     },
+    googleId: {
+      type: String,
+      default: null,
+      index: true,
+      sparse: true,
+    },
+    authProvider: {
+      type: String,
+      enum: ['local', 'google'],
+      default: 'local',
+    },
     preferences: {
       type: Object,
       default: {},

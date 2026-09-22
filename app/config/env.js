@@ -28,6 +28,8 @@ if (isProduction) {
     'RAZORPAY_KEY_ID',
     'RAZORPAY_KEY_SECRET',
     'RAZORPAY_WEBHOOK_SECRET',
+    'GOOGLE_CLIENT_ID',
+    'GOOGLE_CLIENT_SECRET',
     ...productionSecretNames,
   ].filter((name) => hasPlaceholder(process.env[name]));
 
@@ -81,6 +83,9 @@ export const env = {
   EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ?? process.env.EMAIL_PASS ?? 'change-me',
   CONTACT_EMAIL: process.env.CONTACT_EMAIL ?? process.env.EMAIL_USER ?? 'noreply@example.com',
   SMS_PROVIDER: process.env.SMS_PROVIDER ?? 'twilio',
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ?? '',
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ?? '',
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI ?? 'http://localhost:4000/api/v1/auth/google/callback',
   STORAGE_BUCKET: process.env.STORAGE_BUCKET ?? 'rupakar-dev',
   STORAGE_PROVIDER: process.env.STORAGE_PROVIDER ?? 'cloudinary', S3_BUCKET_NAME: process.env.S3_BUCKET_NAME ?? '', S3_REGION: process.env.S3_REGION ?? 'us-east-1', S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? '', S3_SECRET_ACCESS_KEY: process.env.S3_SECRET_ACCESS_KEY ?? '', S3_ENDPOINT: process.env.S3_ENDPOINT ?? '',
   CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME ?? '',

@@ -74,6 +74,146 @@ describe('registration role assignment', () => {
   });
 });
 
+describe('google oauth customer flow', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('starts Google OAuth for a customer redirect', async () => {
+    env.GOOGLE_CLIENT_ID = 'google-client-id';
+    env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
+    env.FRONTEND_URL = 'http://localhost:3000';
+
+    const response = await request(app)
+      .get('/api/v1/auth/google')
+      .query({ redirect: 'http://localhost:3000/account/orders' });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.location).toContain('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(response.headers.location).toContain('client_id=google-client-id');
+    expect(response.headers['set-cookie']).toEqual(expect.arrayContaining([expect.stringContaining('google_oauth_state=')]));
+  });
+
+  it('callback success for a verified Google customer', async () => {
+    env.FRONTEND_URL = 'http://localhost:3000';
+
+    const googleProfile = {
+      sub: 'google-user-123',
+      email: 'google-user@example.com',
+      email_verified: true,
+      name: 'Google User',
+      picture: 'https://example.com/avatar.jpg',
+    };
+
+    const result = { user: { id: 'google-user-1', role: 'customer', email: 'google-user@example.com' }, accessToken: 'google-access-token', refreshToken: 'google-refresh-token' };
+
+    jest.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('oauth2.googleapis.com/token')) {
+        return {
+          ok: true,
+          json: async () => ({ access_token: 'google-access-token-raw', id_token: 'google-id-token' }),
+        };
+      }
+      if (String(url).includes('openidconnect.googleapis.com/v1/userinfo')) {
+        return {
+          ok: true,
+          json: async () => ({ email: 'google-user@example.com', email_verified: true, name: 'Google User', picture: 'https://example.com/avatar.jpg', sub: 'google-user-123' }),
+        };
+      }
+      throw new Error('Unexpected fetch');
+    });
+    jest.spyOn(authService, 'verifyGoogleIdToken').mockResolvedValue(googleProfile);
+    jest.spyOn(authService, 'handleGoogleUser').mockResolvedValue(result);
+
+    const response = await request(app)
+      .get('/api/v1/auth/google/callback')
+      .set('Cookie', 'google_oauth_state=valid-state; google_oauth_redirect=http://localhost:3000/account')
+      .query({ code: 'auth-code', state: 'valid-state' });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.location).toBe('http://localhost:3000/account');
+  });
+
+  it('rejects an invalid Google token', async () => {
+    await expect(authService.verifyGoogleIdToken('this.is.not.valid')).rejects.toMatchObject({ code: 'INVALID_GOOGLE_TOKEN' });
+  });
+
+  it('creates a new customer account from a verified Google profile', async () => {
+    const user = { _id: 'google-user-1', name: 'Google User', email: 'google-user@example.com', role: 'customer', isEmailVerified: true, googleId: 'google-user-123' };
+    jest.spyOn(User, 'findOne').mockResolvedValue(null);
+    jest.spyOn(User, 'create').mockResolvedValue(user);
+    jest.spyOn(authService, 'issueTokens').mockResolvedValue({ accessToken: 'google-access-token', refreshToken: 'google-refresh-token' });
+
+    const result = await authService.handleGoogleUser({
+      email: 'google-user@example.com',
+      name: 'Google User',
+      picture: 'https://example.com/avatar.jpg',
+      email_verified: true,
+      sub: 'google-user-123',
+    });
+
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      email: 'google-user@example.com',
+      role: 'customer',
+      isEmailVerified: true,
+      googleId: 'google-user-123',
+    }));
+    expect(result.user.role).toBe('customer');
+    expect(result.accessToken).toBe('google-access-token');
+  });
+
+  it('logs in an existing customer through Google without creating duplicates', async () => {
+    const user = { _id: 'existing-user-1', name: 'Existing Customer', email: 'customer@example.com', role: 'customer', isEmailVerified: true, googleId: 'existing-sub', avatar: 'https://example.com/existing.jpg', save: jest.fn().mockResolvedValue(true) };
+    const createSpy = jest.spyOn(User, 'create');
+    jest.spyOn(User, 'findOne').mockResolvedValue(user);
+    jest.spyOn(authService, 'issueTokens').mockResolvedValue({ accessToken: 'existing-access-token', refreshToken: 'existing-refresh-token' });
+
+    const result = await authService.handleGoogleUser({
+      email: 'customer@example.com',
+      name: 'Existing Customer',
+      picture: 'https://example.com/existing.jpg',
+      email_verified: true,
+      sub: 'existing-sub',
+    });
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(user.save).toHaveBeenCalled();
+    expect(result.user.role).toBe('customer');
+    expect(result.accessToken).toBe('existing-access-token');
+  });
+
+  it('links Google identity to an existing customer account without creating duplicates', async () => {
+    const user = { _id: 'link-user-1', name: 'Linked Customer', email: 'linked@example.com', role: 'customer', isEmailVerified: true, googleId: null, avatar: '', save: jest.fn().mockResolvedValue(true) };
+    jest.spyOn(User, 'findOne').mockResolvedValue(user);
+    jest.spyOn(authService, 'issueTokens').mockResolvedValue({ accessToken: 'linked-access-token', refreshToken: 'linked-refresh-token' });
+
+    const result = await authService.handleGoogleUser({
+      email: 'linked@example.com',
+      name: 'Linked Customer',
+      picture: 'https://example.com/linked.jpg',
+      email_verified: true,
+      sub: 'linked-google-321',
+    });
+
+    expect(user.googleId).toBe('linked-google-321');
+    expect(user.save).toHaveBeenCalled();
+    expect(result.user.role).toBe('customer');
+  });
+
+  it('rejects linking Google to a vendor or admin account', async () => {
+    const user = { _id: 'vendor-user-1', name: 'Vendor User', email: 'vendor@example.com', role: 'vendor', isEmailVerified: true, googleId: null };
+    jest.spyOn(User, 'findOne').mockResolvedValue(user);
+
+    await expect(authService.handleGoogleUser({
+      email: 'vendor@example.com',
+      name: 'Vendor User',
+      picture: 'https://example.com/vendor.jpg',
+      email_verified: true,
+      sub: 'vendor-google-900',
+    })).rejects.toMatchObject({ code: 'GOOGLE_ACCOUNT_EXISTS' });
+  });
+});
+
 describe('authenticated endpoint error handling', () => {
   it('returns 401 instead of 500 for an expired access token on /users/me', async () => {
     const token = jwt.sign({ sub: '507f1f77bcf86cd799439011', role: 'customer' }, env.JWT_ACCESS_SECRET, { expiresIn: -1 });
