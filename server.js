@@ -55,7 +55,7 @@ async function startServer() {
     try {
       await redis.connect();
       console.log('Redis connected');
-    } catch (_error) {
+    } catch {
       if (env.NODE_ENV === 'production') {
         throw new Error('Redis is required in production');
       }

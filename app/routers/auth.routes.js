@@ -6,6 +6,7 @@ import { authService } from '../services/auth.service.js';
 import { cartService } from '../services/cart.service.js';
 
 const router = Router();
+export const REFRESH_TOKEN_COOKIE_NAME = 'refresh_token';
 
 export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV, origin = null) => {
   const isLocalOrigin = Boolean(origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
@@ -23,20 +24,22 @@ export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV, origin = null) =
   };
 };
 
+const getRefreshCookieScope = (req = null) => getRefreshCookieOptions(env.NODE_ENV, req?.headers?.origin);
+
 const setRefreshCookie = (res, refreshToken, req = null) => {
-  const origin = req?.headers?.origin;
-  res.cookie('refresh_token', refreshToken, getRefreshCookieOptions(env.NODE_ENV, origin));
+  const options = getRefreshCookieScope(req);
+  res.cookie(REFRESH_TOKEN_COOKIE_NAME, refreshToken, options);
 };
 
 const clearRefreshCookie = (res, req = null) => {
-  const origin = req?.headers?.origin;
-  const options = getRefreshCookieOptions(env.NODE_ENV, origin);
-  res.clearCookie('refresh_token', {
+  const options = getRefreshCookieScope(req);
+  res.clearCookie(REFRESH_TOKEN_COOKIE_NAME, {
     httpOnly: options.httpOnly,
     secure: options.secure,
     sameSite: options.sameSite,
     path: options.path,
     ...(options.domain ? { domain: options.domain } : {}),
+    expires: new Date(0),
   });
 };
 

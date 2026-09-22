@@ -1,4 +1,6 @@
 import express, { Router } from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import mongoose from 'mongoose';
@@ -35,6 +37,8 @@ import contactRoutes from './app/routers/contact.routes.js';
 
 export function createApp() {
   const app = express();
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
   let redis = null;
 
   if (env.REDIS_ENABLED) {
@@ -50,6 +54,7 @@ export function createApp() {
   }
 
   app.use('/api/v1/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
+  app.use('/Rupakar-logo.jpeg', express.static(path.join(__dirname, 'public', 'Rupakar-logo.jpeg')));
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   app.use(cookieParser());
@@ -115,7 +120,7 @@ export function createApp() {
         message: ready ? 'Service ready' : 'Service not ready',
         requestId: String(_req.headers['x-request-id'] ?? ''),
       });
-    } catch (_error) {
+    } catch {
       res.status(503).json({
         success: false,
         error: { code: 'READINESS_CHECK_FAILED', message: 'Health checks failed' },

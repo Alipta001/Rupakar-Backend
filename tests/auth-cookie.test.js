@@ -2,7 +2,7 @@ import request from 'supertest';
 import { describe, expect, it, jest } from '@jest/globals';
 import app from '../app.js';
 import { authService } from '../app/services/auth.service.js';
-import { getRefreshCookieOptions } from '../app/routers/auth.routes.js';
+import { getRefreshCookieOptions, REFRESH_TOKEN_COOKIE_NAME } from '../app/routers/auth.routes.js';
 import { env } from '../app/config/env.js';
 
 describe('cross-origin refresh authentication', () => {
@@ -101,5 +101,55 @@ describe('cross-origin refresh authentication', () => {
     expect(response.headers['set-cookie'][0]).toContain('refresh_token=;');
     expect(response.headers['set-cookie'][0]).toContain('Path=/');
     revokeSpy.mockRestore();
+  });
+
+  it('uses one refresh cookie name and exact same scope for login, refresh rotation, and logout', async () => {
+    const loginSpy = jest.spyOn(authService, 'login').mockResolvedValue({
+      user: { id: 'user-1' },
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token-v1',
+    });
+
+    const refreshSpy = jest.spyOn(authService, 'refreshToken').mockResolvedValue({
+      user: { id: 'user-1' },
+      accessToken: 'access-token-2',
+      refreshToken: 'refresh-token-v2',
+    });
+
+    const logoutSpy = jest.spyOn(authService, 'revokeRefreshToken').mockResolvedValue();
+
+    const loginRes = await request(app)
+      .post('/api/v1/auth/login')
+      .set('Origin', 'https://rupakar-frontend.vercel.app')
+      .send({ email: 'customer@example.com', password: 'password123' });
+
+    const refreshRes = await request(app)
+      .post('/api/v1/auth/refresh')
+      .set('Origin', 'https://rupakar-frontend.vercel.app')
+      .set('Cookie', `${REFRESH_TOKEN_COOKIE_NAME}=refresh-token-v1`);
+
+    const logoutRes = await request(app)
+      .post('/api/v1/auth/logout')
+      .set('Origin', 'https://rupakar-frontend.vercel.app')
+      .set('Cookie', `${REFRESH_TOKEN_COOKIE_NAME}=refresh-token-v2`);
+
+    const loginCookie = loginRes.headers['set-cookie'][0];
+    const refreshCookie = refreshRes.headers['set-cookie'][0];
+    const logoutCookie = logoutRes.headers['set-cookie'][0];
+
+    expect(loginCookie).toContain(`${REFRESH_TOKEN_COOKIE_NAME}=refresh-token-v1`);
+    expect(loginCookie).toContain('Path=/');
+    expect(refreshCookie).toContain(`${REFRESH_TOKEN_COOKIE_NAME}=refresh-token-v2`);
+    expect(refreshCookie).toContain('Path=/');
+    expect(logoutCookie).toContain(`${REFRESH_TOKEN_COOKIE_NAME}=;`);
+    expect(logoutCookie).toContain('Path=/');
+
+    expect(loginCookie.match(new RegExp(`${REFRESH_TOKEN_COOKIE_NAME}`, 'g'))).toHaveLength(1);
+    expect(refreshCookie.match(new RegExp(`${REFRESH_TOKEN_COOKIE_NAME}`, 'g'))).toHaveLength(1);
+    expect(logoutCookie.match(new RegExp(`${REFRESH_TOKEN_COOKIE_NAME}`, 'g'))).toHaveLength(1);
+
+    loginSpy.mockRestore();
+    refreshSpy.mockRestore();
+    logoutSpy.mockRestore();
   });
 });
