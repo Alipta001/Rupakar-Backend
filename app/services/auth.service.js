@@ -311,20 +311,20 @@ export class AuthService {
     const accessToken = jwt.sign(
       { sub: userId, role },
       env.JWT_ACCESS_SECRET,
-      { expiresIn: '1m' },
+      { expiresIn: env.ACCESS_TOKEN_EXPIRATION },
     );
 
     const refreshToken = jwt.sign(
       { sub: userId, role, type: 'refresh', jti, familyId },
       env.JWT_REFRESH_SECRET,
-      { expiresIn: '7d' },
+      { expiresIn: env.REFRESH_TOKEN_EXPIRATION },
     );
 
     await RefreshSession.create({
       userId,
       familyId,
       tokenHash: this.hashToken(refreshToken),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      expiresAt: new Date(Date.now() + env.REFRESH_TOKEN_MAX_AGE_MS),
     });
 
     return { accessToken, refreshToken };
@@ -332,8 +332,8 @@ export class AuthService {
 
   signTokens(userId, role) {
     return {
-      accessToken: jwt.sign({ sub: userId, role }, env.JWT_ACCESS_SECRET, { expiresIn: '1m' }),
-      refreshToken: jwt.sign({ sub: userId, role, type: 'refresh' }, env.JWT_REFRESH_SECRET, { expiresIn: '7d' }),
+      accessToken: jwt.sign({ sub: userId, role }, env.JWT_ACCESS_SECRET, { expiresIn: env.ACCESS_TOKEN_EXPIRATION }),
+      refreshToken: jwt.sign({ sub: userId, role, type: 'refresh' }, env.JWT_REFRESH_SECRET, { expiresIn: env.REFRESH_TOKEN_EXPIRATION }),
     };
   }
 }

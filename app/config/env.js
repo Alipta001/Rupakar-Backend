@@ -6,6 +6,11 @@ const isProduction = process.env.NODE_ENV === 'production';
 const isDevelopment = ['development', 'local'].includes(process.env.NODE_ENV ?? 'development');
 const productionSecretNames = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
 const hasPlaceholder = (value) => !value || /change-me|dev-(access|refresh)-secret/i.test(value);
+const durationToMs = (value, fallback) => {
+  const match = String(value ?? '').trim().match(/^(\d+)([smhd])$/i);
+  if (!match) return fallback;
+  return Number(match[1]) * ({ s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2].toLowerCase()]);
+};
 
 if (isProduction) {
   const missing = [
@@ -64,6 +69,12 @@ export const env = {
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET ?? (process.env.JWT_SECRET ? `${process.env.JWT_SECRET}_refresh` : 'dev-refresh-secret'),
   FRONTEND_URL: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS ?? 'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000',
+  SELLER_FRONTEND_URL: process.env.SELLER_FRONTEND_URL ?? '',
+  COOKIE_DOMAIN: process.env.COOKIE_DOMAIN ?? '',
+  COOKIE_SAMESITE: (process.env.COOKIE_SAMESITE ?? '').toLowerCase(),
+  ACCESS_TOKEN_EXPIRATION: process.env.ACCESS_TOKEN_EXPIRATION ?? '1m',
+  REFRESH_TOKEN_EXPIRATION: process.env.REFRESH_TOKEN_EXPIRATION ?? '7d',
+  REFRESH_TOKEN_MAX_AGE_MS: durationToMs(process.env.REFRESH_TOKEN_EXPIRATION ?? '7d', 7 * 24 * 60 * 60 * 1000),
   EMAIL_HOST: process.env.EMAIL_HOST ?? 'smtp.gmail.com',
   EMAIL_PORT: Number(process.env.EMAIL_PORT ?? 465),
   EMAIL_USER: process.env.EMAIL_USER ?? 'noreply@example.com',

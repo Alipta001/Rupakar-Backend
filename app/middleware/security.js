@@ -3,10 +3,10 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { env } from '../config/env.js';
 
-const allowedOrigins = (env.CORS_ALLOWED_ORIGINS ?? '')
+const allowedOrigins = [...new Set([...(env.CORS_ALLOWED_ORIGINS ?? '')
   .split(',')
   .map((origin) => origin.trim())
-  .filter(Boolean);
+  .filter(Boolean), env.SELLER_FRONTEND_URL.trim()].filter(Boolean))];
 
 export const securityMiddleware = [
   helmet({

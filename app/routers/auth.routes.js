@@ -10,13 +10,18 @@ export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV, origin = null) =
   const isLocalOrigin = Boolean(origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
   const isProd = nodeEnv === 'production';
   const hasHttpsFrontend = !isLocalOrigin && (isProd || /^https:\/\//.test(origin || env.FRONTEND_URL));
+  // HTTPS frontends on a separate deployment host (for example Vercel calling
+  // Render) require SameSite=None. Operators can explicitly choose Lax only
+  // when the browser-facing app and API are same-site.
+  const crossSite = hasHttpsFrontend && env.COOKIE_SAMESITE !== 'lax';
 
   return {
     httpOnly: true,
     secure: hasHttpsFrontend,
-    sameSite: hasHttpsFrontend ? 'none' : 'lax',
-    path: '/api/v1/auth',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    sameSite: crossSite ? 'none' : 'lax',
+    path: '/',
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+    maxAge: env.REFRESH_TOKEN_MAX_AGE_MS,
   };
 };
 
@@ -33,6 +38,7 @@ const clearRefreshCookie = (res, req = null) => {
     secure: options.secure,
     sameSite: options.sameSite,
     path: options.path,
+    ...(options.domain ? { domain: options.domain } : {}),
   });
 };
 

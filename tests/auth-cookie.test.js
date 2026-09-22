@@ -11,7 +11,7 @@ describe('cross-origin refresh authentication', () => {
       httpOnly: true,
       secure: true,
       sameSite: 'none',
-      path: '/api/v1/auth',
+      path: '/',
     });
   });
 
@@ -24,7 +24,7 @@ describe('cross-origin refresh authentication', () => {
         httpOnly: true,
         secure: false,
         sameSite: 'lax',
-        path: '/api/v1/auth',
+        path: '/',
       });
     } finally {
       env.FRONTEND_URL = originalFrontendUrl;
@@ -40,7 +40,7 @@ describe('cross-origin refresh authentication', () => {
         httpOnly: true,
         secure: true,
         sameSite: 'none',
-        path: '/api/v1/auth',
+        path: '/',
       });
     } finally {
       env.FRONTEND_URL = originalFrontendUrl;
@@ -99,7 +99,7 @@ describe('cross-origin refresh authentication', () => {
     expect(response.status).toBe(200);
     expect(revokeSpy).toHaveBeenCalledWith('refresh-token', 'LOGOUT');
     expect(response.headers['set-cookie'][0]).toContain('refresh_token=;');
-    expect(response.headers['set-cookie'][0]).toContain('Path=/api/v1/auth');
+    expect(response.headers['set-cookie'][0]).toContain('Path=/');
     revokeSpy.mockRestore();
   });
 });
