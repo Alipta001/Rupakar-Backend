@@ -204,7 +204,11 @@ export class OrderService {
     const vendorGroups = new Map();
 
     for (const item of summary.items) {
-      const productDoc = await Product.findOne({ _id: item.productId, status: 'PUBLISHED', deletedAt: null });
+      let productQuery = Product.findOne({ _id: item.productId, status: 'PUBLISHED', deletedAt: null });
+      // Product.images stores references; populate them before taking the order
+      // snapshot so Cloudinary URLs survive independently of later catalogue edits.
+      if (typeof productQuery.populate === 'function') productQuery = productQuery.populate({ path: 'images', match: { status: 'ACTIVE' } });
+      const productDoc = await productQuery;
       const variantDoc = await ProductVariant.findOne({ _id: item.variantId, status: 'ACTIVE' });
       if (!productDoc || !variantDoc) {
         throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product or variant unavailable');
@@ -218,6 +222,27 @@ export class OrderService {
       }
 
       const vendorId = product.vendorId;
+      // Keep the product presentation needed to render a historical order.  The
+      // product itself can be edited or unpublished after checkout, so resolving
+      // images from the live catalogue in the customer order view is unreliable.
+      const productImages = Array.isArray(product.images)
+        ? product.images
+          .filter((image) => image?.status !== 'INACTIVE' && image?.url)
+          .sort((left, right) => Number(Boolean(right.isPrimary)) - Number(Boolean(left.isPrimary)) || Number(left.sortOrder || 0) - Number(right.sortOrder || 0))
+          .map((image) => ({ url: image.url, altText: image.altText || product.name, variantId: image.variantId ? String(image.variantId) : null, isPrimary: Boolean(image.isPrimary) }))
+        : [];
+      const variantImage = productImages.find((image) => image.variantId === String(item.variantId));
+      const primaryImage = variantImage?.url || productImages[0]?.url || null;
+      const productSnapshot = {
+        name: product.name,
+        sku: variant.sku,
+        price: variant.price,
+        compareAtPrice: variant.compareAtPrice ?? null,
+        attributes: variant.attributes || {},
+        categoryId: product.categoryId || null,
+        image: primaryImage,
+        images: productImages,
+      };
       if (!vendorGroups.has(String(vendorId))) {
         vendorGroups.set(String(vendorId), { vendorId, items: [], subtotal: 0, discount: 0, tax: 0, shipping: 0, total: 0 });
       }
@@ -233,7 +258,7 @@ export class OrderService {
         quantity: item.quantity,
         unitPrice,
         lineTotal,
-        productSnapshot: { name: product.name, sku: variant.sku, price: variant.price, compareAtPrice: variant.compareAtPrice ?? null, attributes: variant.attributes || {}, categoryId: product.categoryId || null },
+        productSnapshot,
       });
       group.subtotal += lineTotal;
       vendorGroups.set(String(vendorId), group);
@@ -248,7 +273,7 @@ export class OrderService {
         unitPrice,
         lineTotal,
         categoryId: product.categoryId,
-        productSnapshot: { name: product.name, sku: variant.sku, price: variant.price, compareAtPrice: variant.compareAtPrice ?? null, attributes: variant.attributes || {}, categoryId: product.categoryId || null },
+        productSnapshot,
       });
     }
 

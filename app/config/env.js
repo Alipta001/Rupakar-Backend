@@ -32,6 +32,10 @@ if (isProduction) {
   if (process.env.REDIS_ENABLED !== 'true') {
     throw new Error('REDIS_ENABLED=true is required in production');
   }
+  if (process.env.STORAGE_PROVIDER === 's3') {
+    const missingStorage = ['S3_BUCKET_NAME', 'S3_REGION', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'].filter((name) => !process.env[name]);
+    if (missingStorage.length > 0) throw new Error(`Missing S3 storage configuration: ${missingStorage.join(', ')}`);
+  }
   if (!/^https:\/\//.test(process.env.FRONTEND_URL) || process.env.CORS_ALLOWED_ORIGINS.split(',').some((origin) => !/^https:\/\//.test(origin.trim()) || /localhost|127\.0\.0\.1/.test(origin))) {
     throw new Error('Production frontend and CORS origins must use HTTPS');
   }
@@ -64,8 +68,10 @@ export const env = {
   EMAIL_PORT: Number(process.env.EMAIL_PORT ?? 465),
   EMAIL_USER: process.env.EMAIL_USER ?? 'noreply@example.com',
   EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ?? process.env.EMAIL_PASS ?? 'change-me',
+  CONTACT_EMAIL: process.env.CONTACT_EMAIL ?? process.env.EMAIL_USER ?? 'noreply@example.com',
   SMS_PROVIDER: process.env.SMS_PROVIDER ?? 'twilio',
   STORAGE_BUCKET: process.env.STORAGE_BUCKET ?? 'rupakar-dev',
+  STORAGE_PROVIDER: process.env.STORAGE_PROVIDER ?? 'cloudinary', S3_BUCKET_NAME: process.env.S3_BUCKET_NAME ?? '', S3_REGION: process.env.S3_REGION ?? 'us-east-1', S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? '', S3_SECRET_ACCESS_KEY: process.env.S3_SECRET_ACCESS_KEY ?? '', S3_ENDPOINT: process.env.S3_ENDPOINT ?? '',
   CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME ?? '',
   CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY ?? '',
   CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET ?? '',

@@ -1,4 +1,6 @@
 import { v2 as cloudinary } from 'cloudinary';
+import { S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../config/env.js';
 
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp']);
@@ -20,7 +22,16 @@ export class StorageService {
         secure: true,
       });
     }
+    this.s3Configured = env.STORAGE_PROVIDER === 's3' && Boolean(env.S3_BUCKET_NAME && env.S3_ACCESS_KEY_ID && env.S3_SECRET_ACCESS_KEY);
+    if (this.s3Configured) this.s3 = new S3Client({ region: env.S3_REGION, endpoint: env.S3_ENDPOINT || undefined, forcePathStyle: Boolean(env.S3_ENDPOINT), credentials: { accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY } });
   }
+
+  assertS3() { if (!this.s3Configured) throw new Error('Private S3 storage is not configured'); }
+  async upload({ key, body, contentType = 'application/octet-stream' }) { this.assertS3(); await this.s3.send(new PutObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key, Body: body, ContentType: contentType })); return { storageKey: key, storageProvider: 's3' }; }
+  async get(key) { this.assertS3(); return this.s3.send(new GetObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key })); }
+  async exists(key) { try { this.assertS3(); await this.s3.send(new HeadObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key })); return true; } catch { return false; } }
+  async delete(key) { this.assertS3(); await this.s3.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key })); return true; }
+  async getSignedUrl(key, expiresIn = 300) { this.assertS3(); return getSignedUrl(this.s3, new GetObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key, ResponseContentType: 'application/pdf' }), { expiresIn }); }
 
   isAllowedMimeType(mimeType) {
     return Boolean(mimeType) && ALLOWED_MIME_TYPES.has(String(mimeType).toLowerCase());

@@ -7,6 +7,7 @@ import { AppError } from '../utils/app-error.js';
 import { sendSuccess } from '../utils/response.js';
 import { shippingService } from '../services/shipping.service.js';
 import { shipmentStateService } from '../services/shipment-state.service.js';
+import { schedulePackingSlipGeneration } from '../jobs/queues.js';
 import { shipmentStatusSchema, paginationSchema, shipmentTrackingQuerySchema } from '../validators/shipping.validators.js';
 
 const getPagination = (query = {}) => {
@@ -119,6 +120,8 @@ export const packVendorOrder = async (req, res, next) => {
 
     vendorOrder.status = nextStatus;
     await vendorOrder.save();
+
+    await schedulePackingSlipGeneration({ orderId: order._id, vendorOrderId: vendorOrder._id, vendorId: vendor._id, customerId: order.customerId });
 
     order.status = 'PACKED';
     await order.save();

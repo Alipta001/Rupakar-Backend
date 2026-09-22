@@ -23,7 +23,7 @@ import {
 import { listVendorOrders, getVendorOrder } from '../controllers/order.controller.js';
 import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
 import { packVendorOrder, shipVendorOrder } from '../controllers/shipping.controller.js';
-import { listVendorInvoices } from '../controllers/invoice.controller.js';
+import { listVendorInvoices, downloadVendorOrderInvoice, downloadVendorPackingSlip } from '../controllers/invoice.controller.js';
 
 const router = Router();
 
@@ -39,6 +39,8 @@ router.post('/bank-account', addBankAccount);
 
 router.get('/orders', listVendorOrders);
 router.get('/orders/:id', getVendorOrder);
+router.get('/orders/:orderId/invoice', downloadVendorOrderInvoice);
+router.get('/orders/:orderId/packing-slip', downloadVendorPackingSlip);
 router.post('/orders/:id/pack', packVendorOrder);
 router.post('/orders/:id/ship', shipVendorOrder);
 router.get('/returns', listVendorReturns);

@@ -3,6 +3,10 @@ import { Invoice } from '../models/invoice.model.js';
 import { AppError } from '../utils/app-error.js';
 import { sendSuccess } from '../utils/response.js';
 import { invoiceService } from '../services/invoice.service.js';
+import { storageService } from '../services/storage.service.js';
+import { Vendor } from '../models/vendor.model.js';
+import { VendorOrder } from '../models/vendor-order.model.js';
+import { PackingSlip } from '../models/packing-slip.model.js';
 import { listInvoicesQuerySchema, invoiceIdSchema } from '../validators/invoice.validators.js';
 
 const getMeta = (query = {}) => {
@@ -68,12 +72,75 @@ export const downloadInvoice = async (req, res, next) => {
       throw new AppError(403, 'INVOICE_ACCESS_DENIED', 'You do not have access to this invoice');
     }
 
+    if (invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey) {
+      res.status(invoice.generationStatus === 'FAILED' ? 409 : 425).json({ success: false, error: { code: invoice.generationStatus === 'FAILED' ? 'INVOICE_FAILED' : 'INVOICE_NOT_READY', message: 'Invoice PDF is not ready' } }); return;
+    }
+    const downloadUrl = await storageService.getSignedUrl(invoice.storageKey);
     await invoiceService.markInvoiceDownloaded(invoice._id);
 
-    sendSuccess(res, { invoiceNumber: invoice.invoiceNumber, storageUrl: invoice.storageUrl, downloadUrl: invoice.storageUrl }, 'Invoice download link', String(req.headers['x-request-id'] ?? ''));
+    sendSuccess(res, { invoiceNumber: invoice.invoiceNumber, downloadUrl }, 'Invoice download link', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
+};
+
+export const downloadOrderInvoice = async (req, res, next) => {
+  try {
+    const order = await Order.findById(req.params.orderId).lean();
+    if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
+    const isAdmin = req.user.role === 'admin';
+    const vendor = req.user.role === 'vendor' ? await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null }).lean() : null;
+    // A vendor order has its own invoice. Select it before authorization so a
+    // vendor is never evaluated against the parent customer invoice.
+    const invoice = await invoiceService.getInvoiceByOrderId(
+      order._id,
+      isAdmin || vendor ? null : req.user.sub,
+      vendor?._id ?? null,
+    );
+    if (!invoice) throw new AppError(404, 'INVOICE_NOT_FOUND', 'No invoice found for this order');
+    const isOwner = String(invoice.customerId) === String(req.user.sub);
+    if (!isOwner && !isAdmin && String(vendor?._id) !== String(invoice.vendorId)) throw new AppError(403, 'INVOICE_ACCESS_DENIED', 'You do not have access to this invoice');
+    if (invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey) { res.status(invoice.generationStatus === 'FAILED' ? 409 : 425).json({ success: false, error: { code: 'INVOICE_NOT_READY', message: 'Invoice PDF is not ready' } }); return; }
+    const downloadUrl = await storageService.getSignedUrl(invoice.storageKey);
+    await invoiceService.markInvoiceDownloaded(invoice._id);
+    sendSuccess(res, { invoiceNumber: invoice.invoiceNumber, downloadUrl }, 'Invoice download link', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) { next(error); }
+};
+
+const getVendorForDocument = async (userId) => {
+  const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null, status: 'APPROVED' }).lean();
+  if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'An approved vendor profile is required');
+  return vendor;
+};
+
+const sendDocumentUrl = async (res, document, label, requestId) => {
+  if (!document) throw new AppError(404, 'DOCUMENT_NOT_FOUND', `${label} not found`);
+  if (document.generationStatus !== 'AVAILABLE' || !document.storageKey) {
+    res.status(document.generationStatus === 'FAILED' ? 409 : 425).json({ success: false, error: { code: document.generationStatus === 'FAILED' ? 'DOCUMENT_FAILED' : 'DOCUMENT_NOT_READY', message: `${label} is not ready` } });
+    return;
+  }
+  const downloadUrl = await storageService.getSignedUrl(document.storageKey);
+  sendSuccess(res, { documentNumber: document.invoiceNumber || document.packingSlipNumber, downloadUrl }, `${label} download link`, requestId);
+};
+
+export const downloadVendorOrderInvoice = async (req, res, next) => {
+  try {
+    const vendor = await getVendorForDocument(req.user.sub);
+    const vendorOrder = await VendorOrder.findOne({ _id: req.params.orderId, vendorId: vendor._id, deletedAt: null }).lean();
+    if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
+    const invoice = await Invoice.findOne({ vendorOrderId: vendorOrder._id, vendorId: vendor._id, status: { $ne: 'CANCELLED' } }).lean();
+    await sendDocumentUrl(res, invoice, 'Vendor invoice', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) { next(error); }
+};
+
+export const downloadVendorPackingSlip = async (req, res, next) => {
+  try {
+    const vendor = await getVendorForDocument(req.user.sub);
+    const vendorOrder = await VendorOrder.findOne({ _id: req.params.orderId, vendorId: vendor._id, deletedAt: null }).lean();
+    if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
+    const packingSlip = await PackingSlip.findOne({ vendorOrderId: vendorOrder._id, vendorId: vendor._id }).lean();
+    await sendDocumentUrl(res, packingSlip, 'Packing slip', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) { next(error); }
 };
 
 export const listAdminInvoices = async (req, res, next) => {

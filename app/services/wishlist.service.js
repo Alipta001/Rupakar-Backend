@@ -87,6 +87,9 @@ export class WishlistService {
       page: safePage,
       limit: safeLimit,
       total,
+      totalPages: total ? Math.ceil(total / safeLimit) : 0,
+      hasNext: safePage * safeLimit < total,
+      hasPrevious: safePage > 1,
     };
   }
 }

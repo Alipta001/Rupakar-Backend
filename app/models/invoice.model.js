@@ -35,7 +35,7 @@ const invoiceSchema = new Schema(
     commissionSource: { type: String, default: null },
     currency: { type: String, default: 'INR' },
     paymentMethod: { type: String, default: 'razorpay' },
-    paymentStatus: { type: String, enum: ['PENDING', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'], default: 'PENDING', index: true },
+    paymentStatus: { type: String, enum: ['PENDING', 'AUTHORIZED', 'CAPTURED', 'PAID', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED'], default: 'PENDING', index: true },
     status: { type: String, enum: ['DRAFT', 'ISSUED', 'VIEWED', 'DOWNLOADED', 'CANCELLED'], default: 'ISSUED', index: true },
     customerSnapshot: { type: Object, default: {} },
     vendorSnapshot: { type: Object, default: {} },
@@ -43,6 +43,8 @@ const invoiceSchema = new Schema(
     shippingAddressSnapshot: { type: Object, default: {} },
     storageKey: { type: String, default: null },
     storageUrl: { type: String, default: null },
+    storageProvider: { type: String, default: null }, fileType: { type: String, default: 'application/pdf' },
+    generationStatus: { type: String, enum: ['PENDING', 'GENERATING', 'UPLOADING', 'AVAILABLE', 'FAILED'], default: 'PENDING', index: true }, generatedAt: { type: Date, default: null }, uploadedAt: { type: Date, default: null }, errorReason: { type: String, default: null },
     issuedAt: { type: Date, default: Date.now, index: true },
     viewedAt: { type: Date, default: null },
     downloadedAt: { type: Date, default: null },
@@ -52,6 +54,7 @@ const invoiceSchema = new Schema(
 );
 
 invoiceSchema.index({ orderId: 1, customerId: 1 });
+invoiceSchema.index({ orderId: 1, invoiceNumber: 1 });
 invoiceSchema.index({ customerId: 1, issuedAt: -1 });
 invoiceSchema.index({ vendorId: 1, issuedAt: -1 });
 invoiceSchema.index({ status: 1, issuedAt: -1 });

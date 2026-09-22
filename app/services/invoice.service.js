@@ -145,6 +145,11 @@ export class InvoiceService {
     );
     return invoice ? (invoice.toObject ? invoice.toObject() : invoice) : null;
   }
+
+  async setGenerationStatus(invoiceId, generationStatus, fields = {}) {
+    const invoice = await Invoice.findByIdAndUpdate(invoiceId, { $set: { generationStatus, ...fields } }, { new: true });
+    return invoice?.toObject?.() ?? invoice;
+  }
 }
 
 export const invoiceService = new InvoiceService();

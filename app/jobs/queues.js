@@ -11,6 +11,8 @@ import { VendorOrder } from '../models/vendor-order.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { User } from '../models/user.model.js';
 import { VendorLedgerEntry } from '../models/vendor-ledger-entry.model.js';
+import { packingSlipService } from '../services/packing-slip.service.js';
+import { Shipment } from '../models/shipment.model.js';
 
 const connection = new IORedis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -36,6 +38,10 @@ export async function ensureQueueConnection() {
 
 export function getInvoiceQueue() {
   return new Queue('invoice', { connection });
+}
+
+export function getPackingSlipQueue() {
+  return new Queue('packing-slip', { connection });
 }
 
 export function getNotificationQueue() {
@@ -69,6 +75,17 @@ export async function scheduleInvoiceGeneration({ orderId, customerId, vendorId 
     if (env.NODE_ENV === 'production') throw _error;
     return null;
   }
+}
+
+export async function schedulePackingSlipGeneration({ orderId, vendorOrderId, vendorId, customerId }) {
+  if (!orderId || !vendorOrderId || !vendorId || !customerId) return null;
+  const queue = getPackingSlipQueue();
+  try {
+    const job = await queue.add('generate-packing-slip', { orderId, vendorOrderId, vendorId, customerId }, {
+      jobId: `packing-slip-${vendorOrderId}`, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: { age: 3600 }, removeOnFail: { age: 86400 },
+    });
+    return job.id;
+  } finally { await queue.close(); }
 }
 
 export async function scheduleNotification({ userId, type, title, message, channel = 'IN_APP', metadata = {} }) {
@@ -122,6 +139,7 @@ export async function startInvoiceWorker() {
     'invoice',
     async (job) => {
       const { orderId, customerId, vendorId, vendorOrderId } = job.data;
+      let invoice = null;
       console.log(`Processing invoice job ${job.id} for order ${orderId}`);
 
       try {
@@ -134,7 +152,7 @@ export async function startInvoiceWorker() {
         const items = vendorOrder?.items || order.items || [];
         const subtotal = Number(vendorOrder?.subtotal ?? order.subtotal ?? 0);
         const total = Number(vendorOrder?.total ?? order.total ?? 0);
-        const invoice = await invoiceService.createInvoice({
+        invoice = await invoiceService.createInvoice({
           orderId,
           customerId,
           vendorId,
@@ -158,6 +176,15 @@ export async function startInvoiceWorker() {
           billingAddressSnapshot: order.billingAddressSnapshot || {},
         });
 
+        if (invoice.generationStatus !== 'AVAILABLE') {
+          await invoiceService.setGenerationStatus(invoice._id, 'GENERATING', { errorReason: null });
+          const pdf = await pdfService.generateInvoicePdf(invoice);
+          await invoiceService.setGenerationStatus(invoice._id, 'UPLOADING', { generatedAt: new Date() });
+          const storageKey = `invoices/${String(orderId)}/${invoice.invoiceNumber}.pdf`;
+          await storageService.upload({ key: storageKey, body: pdf.content, contentType: pdf.contentType });
+          await invoiceService.setGenerationStatus(invoice._id, 'AVAILABLE', { storageProvider: 's3', storageKey, storageUrl: null, fileType: pdf.contentType, uploadedAt: new Date(), errorReason: null });
+        }
+
         await scheduleEmail({
           to: vendor?.email || customer?.email || 'customer@example.com',
           subject: `Invoice ${invoice.invoiceNumber} Ready`,
@@ -167,6 +194,7 @@ export async function startInvoiceWorker() {
 
         return { invoiceId: invoice._id, invoiceNumber: invoice.invoiceNumber };
       } catch (error) {
+        if (invoice?._id) await invoiceService.setGenerationStatus(invoice._id, 'FAILED', { errorReason: error.message }).catch(() => null);
         console.error(`Invoice job ${job.id} failed:`, error.message);
         throw error;
       }
@@ -179,6 +207,31 @@ export async function startInvoiceWorker() {
   });
 
   return worker;
+}
+
+export async function startPackingSlipWorker() {
+  return new Worker('packing-slip', async (job) => {
+    const { orderId, vendorOrderId, vendorId, customerId } = job.data;
+    let slip;
+    try {
+      const [order, vendorOrder, vendor, shipment] = await Promise.all([
+        Order.findById(orderId).lean(), VendorOrder.findOne({ _id: vendorOrderId, vendorId, parentOrderId: orderId }).lean(), Vendor.findById(vendorId).lean(), Shipment.findOne({ vendorOrderId }).lean(),
+      ]);
+      if (!order || !vendorOrder || !vendor) throw new Error('Packing slip order data is unavailable');
+      slip = await packingSlipService.createOrGet({ orderId, vendorOrderId, vendorId, customerId });
+      if (slip.generationStatus === 'AVAILABLE') return { packingSlipId: slip._id, reused: true };
+      await packingSlipService.setGenerationStatus(slip._id, 'GENERATING', { errorReason: null });
+      const pdf = await pdfService.generatePackingSlipPdf({ packingSlipNumber: slip.packingSlipNumber, order, vendorOrder, vendor, shipment });
+      await packingSlipService.setGenerationStatus(slip._id, 'UPLOADING', { generatedAt: new Date() });
+      const storageKey = `packing-slips/${vendorId}/${orderId}.pdf`;
+      await storageService.upload({ key: storageKey, body: pdf.content, contentType: pdf.contentType });
+      await packingSlipService.setGenerationStatus(slip._id, 'AVAILABLE', { storageProvider: 's3', storageKey, fileType: pdf.contentType, uploadedAt: new Date(), errorReason: null });
+      return { packingSlipId: slip._id };
+    } catch (error) {
+      if (slip?._id) await packingSlipService.setGenerationStatus(slip._id, 'FAILED', { errorReason: error.message }).catch(() => null);
+      throw error;
+    }
+  }, { connection });
 }
 
 export async function startNotificationWorker() {

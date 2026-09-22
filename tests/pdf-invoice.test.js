@@ -1,0 +1,3 @@
+import { describe, expect, it } from '@jest/globals';
+import { PdfService } from '../app/services/pdf.service.js';
+describe('invoice PDF generation', () => { it('creates a binary PDF buffer', async () => { const pdf = await new PdfService().generateInvoicePdf({ invoiceNumber: 'INV-TEST-1', orderId: 'order-1', issuedAt: new Date(), items: [{ productName: 'Handcrafted vase', sku: 'RPK-001', quantity: 1, unitPrice: 1200, lineTotal: 1200 }], subtotal: 1200, discount: 0, tax: 0, shipping: 0, total: 1200, paymentMethod: 'razorpay', paymentStatus: 'PAID' }); expect(Buffer.isBuffer(pdf.content)).toBe(true); expect(pdf.content.subarray(0, 4).toString()).toBe('%PDF'); }); });

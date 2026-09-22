@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
-import { getOrderInvoice, getInvoiceDetail, listCustomerInvoices, downloadInvoice, listAdminInvoices, getAdminInvoiceDetail, listVendorInvoices } from '../controllers/invoice.controller.js';
+import { getInvoiceDetail, listCustomerInvoices, downloadInvoice, downloadOrderInvoice, listAdminInvoices, getAdminInvoiceDetail, listVendorInvoices } from '../controllers/invoice.controller.js';
 
 const router = Router();
 
 router.get('/', requireAuth, listCustomerInvoices);
+router.get('/order/:orderId/download', requireAuth, downloadOrderInvoice);
 router.get('/:id', requireAuth, getInvoiceDetail);
 router.post('/:id/download', requireAuth, downloadInvoice);
 

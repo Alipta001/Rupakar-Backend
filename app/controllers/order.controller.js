@@ -39,15 +39,17 @@ export const createOrder = async (req, res, next) => {
 export const listOrders = async (req, res, next) => {
   try {
     const page = Math.max(Number(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
-    const filter = { customerId: req.user.sub };
+    const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+    const status = String(req.query.status || '').toUpperCase();
+    const statusMap = { PENDING: ['PENDING_PAYMENT', 'PAID', 'PROCESSING', 'PACKED', 'OUT_FOR_DELIVERY'], CONFIRMED: ['CONFIRMED'], CANCELLED: ['CANCELLED'], SHIPPED: ['SHIPPED'], DELIVERED: ['DELIVERED'] };
+    const filter = { customerId: req.user.sub, ...(statusMap[status] ? { status: { $in: statusMap[status] } } : {}) };
     const [orders, total] = await Promise.all([
       Order.find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       Order.countDocuments(filter),
     ]);
     res.status(200).json({
       success: true,
-      data: { items: orders, page, limit, total },
+      data: { items: orders, page, limit, total, totalPages: total ? Math.ceil(total / limit) : 0, hasNext: page * limit < total, hasPrevious: page > 1 },
       message: 'Orders loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
@@ -62,7 +64,18 @@ export const getOrder = async (req, res, next) => {
     const filter = mongoose.isValidObjectId(identifier)
       ? { _id: identifier, customerId: req.user.sub }
       : { orderNumber: identifier, customerId: req.user.sub };
-    const order = await Order.findOne(filter).lean();
+    let orderQuery = Order.findOne(filter);
+    // Customer orders retain parent-level totals while fulfillment is performed
+    // per vendor. Populate the existing relation instead of creating a second
+    // customer-only order shape.
+    if (typeof orderQuery.populate === 'function') {
+      orderQuery = orderQuery.populate({
+        path: 'vendorOrders',
+        match: { deletedAt: null },
+        populate: { path: 'vendorId', select: 'businessName legalName' },
+      });
+    }
+    const order = await orderQuery.lean();
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
     res.status(200).json({
       success: true,

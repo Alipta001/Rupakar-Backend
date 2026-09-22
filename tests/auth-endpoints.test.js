@@ -184,7 +184,7 @@ describe('authenticated endpoint error handling', () => {
     const response = await request(app).get('/api/v1/wishlist');
 
     expect(response.status).toBe(200);
-    expect(Array.isArray(response.body.data)).toBe(true);
+    expect(response.body.data).toMatchObject({ items: [], page: 1, limit: 12, total: 0, totalPages: 0, hasNext: false, hasPrevious: false });
   });
 
   it('merges guest cart for authenticated user via POST /cart/merge', async () => {

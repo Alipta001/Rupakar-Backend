@@ -1,4 +1,4 @@
-import { ensureQueueConnection, getQueueConnection, startInvoiceWorker, startNotificationWorker, startEmailWorker } from './app/jobs/queues.js';
+import { ensureQueueConnection, getQueueConnection, startInvoiceWorker, startPackingSlipWorker, startNotificationWorker, startEmailWorker } from './app/jobs/queues.js';
 import { connectMongo, disconnectMongo } from './app/database/connection.js';
 
 async function startWorkers() {
@@ -20,6 +20,8 @@ async function startWorkers() {
 
     const invoiceWorker = await startInvoiceWorker();
     console.log('✓ Invoice worker started');
+    const packingSlipWorker = await startPackingSlipWorker();
+    console.log('✓ Packing slip worker started');
 
     const notificationWorker = await startNotificationWorker();
     console.log('✓ Notification worker started');
@@ -34,6 +36,7 @@ async function startWorkers() {
       globalThis.clearInterval(heartbeatTimer);
       await heartbeat.del('rupakar:worker:heartbeat');
       await invoiceWorker.close();
+      await packingSlipWorker.close();
       await notificationWorker.close();
       await emailWorker.close();
       if (heartbeat.status === 'ready' || heartbeat.status === 'connecting') {

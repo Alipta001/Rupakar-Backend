@@ -23,9 +23,9 @@ export const listWishlist = async (req, res, next) => {
   try {
     const userId = req.user?.sub ?? null;
     const page = Math.max(Number(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
-    const items = userId ? await wishlistService.listItems(userId, { page, limit }) : [];
-    sendSuccess(res, items, 'Wishlist loaded', String(req.headers['x-request-id'] ?? ''));
+    const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+    const data = userId ? await wishlistService.listItems(userId, { page, limit }) : { items: [], page, limit, total: 0, totalPages: 0, hasNext: false, hasPrevious: false };
+    sendSuccess(res, data, 'Wishlist loaded', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
