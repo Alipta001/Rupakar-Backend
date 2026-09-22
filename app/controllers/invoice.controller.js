@@ -8,10 +8,19 @@ import { Vendor } from '../models/vendor.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
 import { PackingSlip } from '../models/packing-slip.model.js';
 import { listInvoicesQuerySchema, invoiceIdSchema } from '../validators/invoice.validators.js';
+import { scheduleInvoiceGeneration, schedulePackingSlipGeneration } from '../jobs/queues.js';
 
 const getMeta = (query = {}) => {
   const { page, limit } = listInvoicesQuerySchema.parse(query ?? {});
   return { page, limit, skip: (page - 1) * limit };
+};
+
+const queueCustomerInvoiceGeneration = async (order) => {
+  try {
+    await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId });
+  } catch {
+    throw new AppError(503, 'INVOICE_GENERATION_UNAVAILABLE', 'Invoice generation is temporarily unavailable');
+  }
 };
 
 export const getOrderInvoice = async (req, res, next) => {
@@ -21,7 +30,10 @@ export const getOrderInvoice = async (req, res, next) => {
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
 
     const invoice = await invoiceService.getInvoiceByOrderId(orderId, req.user.sub);
-    if (!invoice) throw new AppError(404, 'INVOICE_NOT_FOUND', 'No invoice found for this order');
+    if (!invoice) {
+      await queueCustomerInvoiceGeneration(order);
+      res.status(425).json({ success: false, error: { code: 'INVOICE_NOT_READY', message: 'Invoice generation has been queued' } }); return;
+    }
 
     await invoiceService.markInvoiceViewed(invoice._id);
 
@@ -97,7 +109,11 @@ export const downloadOrderInvoice = async (req, res, next) => {
       isAdmin || vendor ? null : req.user.sub,
       vendor?._id ?? null,
     );
-    if (!invoice) throw new AppError(404, 'INVOICE_NOT_FOUND', 'No invoice found for this order');
+    if (!invoice) {
+      if (vendor || isAdmin) throw new AppError(404, 'INVOICE_NOT_FOUND', 'No invoice found for this order');
+      await queueCustomerInvoiceGeneration(order);
+      res.status(425).json({ success: false, error: { code: 'INVOICE_NOT_READY', message: 'Invoice generation has been queued' } }); return;
+    }
     const isOwner = String(invoice.customerId) === String(req.user.sub);
     if (!isOwner && !isAdmin && String(vendor?._id) !== String(invoice.vendorId)) throw new AppError(403, 'INVOICE_ACCESS_DENIED', 'You do not have access to this invoice');
     if (invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey) { res.status(invoice.generationStatus === 'FAILED' ? 409 : 425).json({ success: false, error: { code: 'INVOICE_NOT_READY', message: 'Invoice PDF is not ready' } }); return; }
@@ -113,8 +129,12 @@ const getVendorForDocument = async (userId) => {
   return vendor;
 };
 
-const sendDocumentUrl = async (res, document, label, requestId) => {
-  if (!document) throw new AppError(404, 'DOCUMENT_NOT_FOUND', `${label} not found`);
+const sendDocumentUrl = async (res, document, label, requestId, queueGeneration) => {
+  if (!document) {
+    await queueGeneration();
+    const code = label === 'Packing slip' ? 'PACKING_SLIP_NOT_READY' : 'INVOICE_NOT_READY';
+    res.status(425).json({ success: false, error: { code, message: `${label} generation has been queued` } }); return;
+  }
   if (document.generationStatus !== 'AVAILABLE' || !document.storageKey) {
     res.status(document.generationStatus === 'FAILED' ? 409 : 425).json({ success: false, error: { code: document.generationStatus === 'FAILED' ? 'DOCUMENT_FAILED' : 'DOCUMENT_NOT_READY', message: `${label} is not ready` } });
     return;
@@ -137,7 +157,13 @@ export const downloadVendorOrderInvoice = async (req, res, next) => {
       status: { $ne: 'CANCELLED' },
     }).lean();
 
-    await sendDocumentUrl(res, invoice, 'Vendor invoice', String(req.headers['x-request-id'] ?? ''));
+    await sendDocumentUrl(
+      res,
+      invoice,
+      'Vendor invoice',
+      String(req.headers['x-request-id'] ?? ''),
+      () => scheduleInvoiceGeneration({ orderId: vendorOrder.parentOrderId, customerId: vendorOrder.customerId, vendorId: vendor._id, vendorOrderId: vendorOrder._id }),
+    );
   } catch (error) { next(error); }
 };
 
@@ -147,7 +173,13 @@ export const downloadVendorPackingSlip = async (req, res, next) => {
     const vendorOrder = await VendorOrder.findOne({ _id: req.params.orderId, vendorId: vendor._id, deletedAt: null }).lean();
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
     const packingSlip = await PackingSlip.findOne({ vendorOrderId: vendorOrder._id, vendorId: vendor._id }).lean();
-    await sendDocumentUrl(res, packingSlip, 'Packing slip', String(req.headers['x-request-id'] ?? ''));
+    await sendDocumentUrl(
+      res,
+      packingSlip,
+      'Packing slip',
+      String(req.headers['x-request-id'] ?? ''),
+      () => schedulePackingSlipGeneration({ orderId: vendorOrder.parentOrderId, vendorOrderId: vendorOrder._id, vendorId: vendor._id, customerId: vendorOrder.customerId }),
+    );
   } catch (error) { next(error); }
 };
 

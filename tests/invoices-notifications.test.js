@@ -4,6 +4,10 @@ import { InvoiceService } from '../app/services/invoice.service.js';
 import { NotificationService } from '../app/services/notification.service.js';
 import { Invoice } from '../app/models/invoice.model.js';
 import { Notification } from '../app/models/notification.model.js';
+import { Order } from '../app/models/order.model.js';
+import { invoiceService } from '../app/services/invoice.service.js';
+import { storageService } from '../app/services/storage.service.js';
+import { downloadOrderInvoice } from '../app/controllers/invoice.controller.js';
 
 describe('invoice and notification systems', () => {
   beforeEach(() => {
@@ -73,6 +77,32 @@ describe('invoice and notification systems', () => {
 
     const invoice = await service.getInvoice(invoiceId);
     expect(String(invoice.customerId)).not.toBe(String(customerId));
+  });
+
+  it('resolves a customer parent order invoice and returns a signed download URL', async () => {
+    const orderId = new mongoose.Types.ObjectId().toHexString();
+    const customerId = new mongoose.Types.ObjectId().toHexString();
+    const invoice = {
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      orderId,
+      customerId,
+      generationStatus: 'AVAILABLE',
+      storageKey: `invoices/${orderId}/INV-TEST.pdf`,
+      invoiceNumber: 'INV-TEST',
+    };
+    const response = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+    jest.spyOn(Order, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue({ _id: orderId }) });
+    jest.spyOn(invoiceService, 'getInvoiceByOrderId').mockResolvedValue(invoice);
+    jest.spyOn(storageService, 'getSignedUrl').mockResolvedValue('https://signed.example/invoice.pdf');
+    jest.spyOn(invoiceService, 'markInvoiceDownloaded').mockResolvedValue(invoice);
+
+    await downloadOrderInvoice({ params: { orderId }, user: { sub: customerId, role: 'customer' }, headers: {} }, response, (error) => { throw error; });
+
+    expect(invoiceService.getInvoiceByOrderId).toHaveBeenCalledWith(orderId, customerId, null);
+    expect(storageService.getSignedUrl).toHaveBeenCalledWith(invoice.storageKey);
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: expect.objectContaining({ invoiceNumber: invoice.invoiceNumber, downloadUrl: 'https://signed.example/invoice.pdf' }) }));
   });
 
   it('creates notifications and marks them as read', async () => {
