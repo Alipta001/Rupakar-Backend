@@ -7,6 +7,7 @@ import { User } from '../models/user.model.js';
 import { AppError } from '../utils/app-error.js';
 import { sendSuccess } from '../utils/response.js';
 import { shippingService } from '../services/shipping.service.js';
+import { orderService } from '../services/order.service.js';
 import { shipmentStateService } from '../services/shipment-state.service.js';
 import { schedulePackingSlipGeneration } from '../jobs/queues.js';
 import { shipmentStatusSchema, paginationSchema, shipmentTrackingQuerySchema } from '../validators/shipping.validators.js';

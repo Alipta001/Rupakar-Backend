@@ -40,4 +40,18 @@ describe('customer order detail lookup', () => {
     const latest = orderService.calculateParentOrderStatus(['PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED']);
     expect(latest).toBe('SHIPPED');
   });
+
+  it('accepts parent order states that reflect ready-to-ship and in-transit fulfillment', () => {
+    const readyToShip = orderService.calculateParentOrderStatus(['PROCESSING', 'READY_TO_SHIP']);
+    expect(readyToShip).toBe('READY_TO_SHIP');
+    expect(Order.schema.path('status').enumValues).toContain('READY_TO_SHIP');
+    expect(Order.schema.path('status').enumValues).toContain('IN_TRANSIT');
+  });
+
+  it('keeps the canonical order status set aligned with the real shipment and return lifecycle', () => {
+    const expected = ['PENDING_PAYMENT', 'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED', 'RETURN_IN_TRANSIT', 'RETURNED', 'DELIVERY_FAILED', 'REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED', 'FAILED', 'CANCELLED'];
+    expect(Order.schema.path('status').enumValues).toEqual(expect.arrayContaining(expected));
+    expect(Order.schema.path('status').enumValues).not.toContain('PENDING');
+    expect(Order.schema.path('status').enumValues).not.toContain('FAILED_PAYMENT');
+  });
 });

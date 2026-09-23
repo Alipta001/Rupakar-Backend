@@ -17,8 +17,22 @@ import { env } from '../config/env.js';
 const ORDER_STATUS_TRANSITIONS = {
   PENDING_PAYMENT: ['PAID', 'FAILED', 'CANCELLED'],
   PAID: ['CONFIRMED', 'CANCELLED'],
-  CONFIRMED: ['CANCELLED'],
+  CONFIRMED: ['PROCESSING', 'CANCELLED'],
+  PROCESSING: ['PACKED', 'CANCELLED'],
+  PACKED: ['READY_TO_SHIP', 'CANCELLED'],
+  READY_TO_SHIP: ['SHIPPED', 'CANCELLED'],
+  SHIPPED: ['IN_TRANSIT', 'DELIVERY_FAILED', 'CANCELLED'],
+  IN_TRANSIT: ['OUT_FOR_DELIVERY', 'DELIVERY_FAILED', 'CANCELLED'],
+  OUT_FOR_DELIVERY: ['DELIVERED', 'DELIVERY_FAILED', 'CANCELLED'],
+  DELIVERED: ['RETURN_REQUESTED', 'RETURN_IN_TRANSIT', 'RETURNED', 'CANCELLED'],
+  RETURN_REQUESTED: ['RETURN_IN_TRANSIT', 'RETURNED', 'CANCELLED'],
+  RETURN_IN_TRANSIT: ['RETURNED', 'CANCELLED'],
+  RETURNED: ['REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED', 'CANCELLED'],
+  DELIVERY_FAILED: ['OUT_FOR_DELIVERY', 'CANCELLED'],
   FAILED: [],
+  REFUND_PENDING: ['REFUNDED', 'PARTIALLY_REFUNDED'],
+  REFUNDED: [],
+  PARTIALLY_REFUNDED: [],
   CANCELLED: [],
 };
 
@@ -34,7 +48,7 @@ export class OrderService {
     if (normalized.length === 0) return 'PENDING_PAYMENT';
     if (normalized.every((status) => status === 'CANCELLED')) return 'CANCELLED';
 
-    const statusPriority = ['PENDING_PAYMENT', 'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'];
+    const statusPriority = ['PENDING_PAYMENT', 'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RETURN_REQUESTED', 'RETURN_IN_TRANSIT', 'RETURNED', 'DELIVERY_FAILED', 'REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED', 'FAILED', 'CANCELLED'];
     const ranked = normalized.map((status) => ({ status, rank: statusPriority.indexOf(status) === -1 ? -1 : statusPriority.indexOf(status) }));
     const latest = ranked.filter((entry) => entry.rank >= 0).sort((a, b) => b.rank - a.rank)[0];
     return latest ? latest.status : 'PENDING_PAYMENT';
