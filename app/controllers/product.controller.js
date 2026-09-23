@@ -47,6 +47,9 @@ const sanitizeProduct = (product) => {
           sku: v?.sku || '',
           price: v?.price ?? 0,
           compareAtPrice: v?.compareAtPrice ?? null,
+          stock: typeof v?.stock === 'number' ? v.stock : typeof v?.availableStock === 'number' ? v.availableStock : 0,
+          availableStock: typeof v?.availableStock === 'number' ? v.availableStock : typeof v?.stock === 'number' ? v.stock : 0,
+          reservedStock: typeof v?.reservedStock === 'number' ? v.reservedStock : 0,
         };
       })
     : [];
@@ -92,6 +95,9 @@ const sanitizeProduct = (product) => {
     care: product.care || 'Dust with soft dry cloth. Avoid direct moisture.',
     status: product.status,
     featured: product.featured,
+    stock: typeof product.stock === 'number' ? product.stock : typeof product.availableStock === 'number' ? product.availableStock : 0,
+    availableStock: typeof product.availableStock === 'number' ? product.availableStock : typeof product.stock === 'number' ? product.stock : 0,
+    reservedStock: typeof product.reservedStock === 'number' ? product.reservedStock : 0,
     seo: product.seo,
     authenticity: product.authenticity,
     shipping: product.shipping,

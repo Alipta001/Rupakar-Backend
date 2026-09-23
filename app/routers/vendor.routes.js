@@ -9,6 +9,7 @@ import {
   addDocument,
   addBankAccount,
   getVendorDashboard,
+  getVendorAnalytics,
   listAdminVendors,
   getAdminVendor,
   approveVendor,
@@ -34,6 +35,7 @@ router.patch('/me', updateMyVendor);
 router.get('/me/status', getMyVendorStatus);
 router.get('/me/verification', getMyVendorVerification);
 router.get('/dashboard', getVendorDashboard);
+router.get('/analytics', getVendorAnalytics);
 router.post('/documents', addDocument);
 router.post('/bank-account', addBankAccount);
 

@@ -3,6 +3,7 @@ import { Brand } from '../models/brand.model.js';
 import { Category } from '../models/category.model.js';
 import { Product, ProductImage } from '../models/product.model.js';
 import { ProductVariant } from '../models/product-variant.model.js';
+import { Inventory } from '../models/inventory.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { auditService } from './audit.service.js';
 import { inventoryService } from './inventory.service.js';
@@ -360,12 +361,49 @@ export class ProductService {
     }
     const data = await queryChain.sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean();
     const total = await Product.countDocuments(query);
-    return {
-      data: data.map((p) => ({
+
+    const variantIds = data.flatMap((p) => (p.variants || []).map((v) => v._id).filter(Boolean));
+    const inventories = variantIds.length
+      ? await Inventory.find({ variantId: { $in: variantIds }, deletedAt: null }).lean()
+      : [];
+    const invMap = new Map(inventories.map((inv) => [String(inv.variantId), inv]));
+
+    const enrichedData = data.map((p) => {
+      let productAvailableStock = 0;
+      let productReservedStock = 0;
+      let productSoldStock = 0;
+
+      const enrichedVariants = (p.variants || []).map((v) => {
+        const inv = invMap.get(String(v._id));
+        const available = typeof inv?.availableQuantity === 'number' ? inv.availableQuantity : 0;
+        const reserved = typeof inv?.reservedQuantity === 'number' ? inv.reservedQuantity : 0;
+        const sold = typeof inv?.soldQuantity === 'number' ? inv.soldQuantity : 0;
+        productAvailableStock += available;
+        productReservedStock += reserved;
+        productSoldStock += sold;
+        return {
+          ...v,
+          stock: available,
+          availableStock: available,
+          reservedStock: reserved,
+          soldStock: sold,
+        };
+      });
+
+      return {
         ...p,
         id: (p._id ?? p.id)?.toString(),
         variantId: p.variants?.[0]?._id?.toString(),
-      })),
+        variants: enrichedVariants,
+        stock: productAvailableStock,
+        availableStock: productAvailableStock,
+        reservedStock: productReservedStock,
+        soldStock: productSoldStock,
+      };
+    });
+
+    return {
+      data: enrichedData,
       page,
       limit,
       total,
@@ -384,10 +422,43 @@ export class ProductService {
     }
     const product = await queryChain.lean();
     if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
+
+    const variantIds = (product.variants || []).map((v) => v._id).filter(Boolean);
+    const inventories = variantIds.length
+      ? await Inventory.find({ variantId: { $in: variantIds }, deletedAt: null }).lean()
+      : [];
+    const invMap = new Map(inventories.map((inv) => [String(inv.variantId), inv]));
+
+    let productAvailableStock = 0;
+    let productReservedStock = 0;
+    let productSoldStock = 0;
+
+    const enrichedVariants = (product.variants || []).map((v) => {
+      const inv = invMap.get(String(v._id));
+      const available = typeof inv?.availableQuantity === 'number' ? inv.availableQuantity : 0;
+      const reserved = typeof inv?.reservedQuantity === 'number' ? inv.reservedQuantity : 0;
+      const sold = typeof inv?.soldQuantity === 'number' ? inv.soldQuantity : 0;
+      productAvailableStock += available;
+      productReservedStock += reserved;
+      productSoldStock += sold;
+      return {
+        ...v,
+        stock: available,
+        availableStock: available,
+        reservedStock: reserved,
+        soldStock: sold,
+      };
+    });
+
     return {
       ...product,
       id: (product._id ?? product.id)?.toString(),
       variantId: product.variants?.[0]?._id?.toString(),
+      variants: enrichedVariants,
+      stock: productAvailableStock,
+      availableStock: productAvailableStock,
+      reservedStock: productReservedStock,
+      soldStock: productSoldStock,
     };
   }
 

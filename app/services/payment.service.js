@@ -14,6 +14,10 @@ import { vendorLedgerService } from './vendor-ledger.service.js';
 import { scheduleInvoiceGeneration, scheduleNotification } from '../jobs/queues.js';
 import { Vendor } from '../models/vendor.model.js';
 import { User } from '../models/user.model.js';
+import { Notification } from '../models/notification.model.js';
+import { notificationService } from './notification.service.js';
+import { emailService } from './email.service.js';
+import { smsService } from './sms.service.js';
 
 const PAYMENT_STATUS_TRANSITIONS = {
   PENDING: ['AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED'],
@@ -143,13 +147,62 @@ export class PaymentService {
       await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId, vendorId, vendorOrderId: vendorOrder._id }).catch(() => null);
       const vendor = await Vendor.findById(vendorId).select('ownerUserId').lean();
       const owner = vendor?.ownerUserId ? await User.findById(vendor.ownerUserId).select('email phone').lean() : null;
-      if (vendor?.ownerUserId) await scheduleNotification({
-        userId: vendor.ownerUserId,
-        type: 'VENDOR_ORDER_CONFIRMED',
-        title: 'New vendor order',
-        message: `Order ${order.orderNumber} is ready for processing.`,
-        metadata: { orderId: order._id, vendorOrderId: vendorOrder._id, email: owner?.email, phone: owner?.phone, idempotencyKey: `vendor-order-confirmed:${vendorOrder._id}` },
-      }).catch(() => null);
+      if (vendor?.ownerUserId) {
+        try {
+          const idempotencyKey = `vendor-order-confirmed:${vendorOrder._id}`;
+          const existingNotif = await Notification.findOne({
+            userId: vendor.ownerUserId,
+            'metadata.idempotencyKey': idempotencyKey,
+          }).lean();
+
+          if (!existingNotif) {
+            await notificationService.createNotification({
+              userId: vendor.ownerUserId,
+              type: 'VENDOR_ORDER_CONFIRMED',
+              title: 'New vendor order',
+              message: `Order ${order.orderNumber} is ready for processing.`,
+              channel: 'IN_APP',
+              metadata: {
+                orderId: order._id,
+                vendorOrderId: vendorOrder._id,
+                email: owner?.email,
+                phone: owner?.phone,
+                idempotencyKey,
+              },
+            }).catch(() => null);
+
+            if (owner?.email) {
+              await emailService.sendEmail({
+                to: owner.email,
+                subject: `New vendor order - ${order.orderNumber}`,
+                html: `<p>You have received a new order #${order.orderNumber} with ${items.length} item(s).</p><p>Total: ₹${vendorOrder.total}</p>`,
+                text: `You have received a new order #${order.orderNumber} with ${items.length} item(s). Total: ₹${vendorOrder.total}`,
+              }).catch(() => null);
+            }
+
+            const rawPhone = String(owner?.phone || '').trim();
+            const digitsOnly = rawPhone.replace(/[^\d+]/g, '');
+            const isValidPhone = /^\+?[0-9]{10,15}$/.test(digitsOnly);
+            if (isValidPhone) {
+              await smsService.sendSms({
+                to: rawPhone,
+                message: `Rupakar: New order #${order.orderNumber} received. Please check portal to process.`,
+              }).catch(() => null);
+            }
+
+            await scheduleNotification({
+              userId: vendor.ownerUserId,
+              type: 'VENDOR_ORDER_CONFIRMED',
+              title: 'New vendor order',
+              message: `Order ${order.orderNumber} is ready for processing.`,
+              metadata: { orderId: order._id, vendorOrderId: vendorOrder._id, email: owner?.email, phone: owner?.phone, idempotencyKey },
+            }).catch(() => null);
+          }
+        } catch (notifError) {
+          // Notification failures must never roll back order or payment
+          console.error('Vendor notification failed:', notifError?.message);
+        }
+      }
     }
 
     await Order.updateOne({ _id: order._id }, { $set: { vendorOrders: vendorOrderIds } });

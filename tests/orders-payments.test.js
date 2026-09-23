@@ -287,6 +287,7 @@ describe('order service', () => {
     jest.spyOn(OrderStatusHistory, 'create').mockResolvedValue({ _id: 'history-1' });
     jest.spyOn(Order, 'findByIdAndUpdate').mockResolvedValue({ _id: orderId, status: 'CANCELLED', paymentStatus: 'CANCELLED' });
     jest.spyOn(inventoryReservationService, 'releaseReservation').mockResolvedValue({ _id: 'res-1', status: 'RELEASED' });
+    jest.spyOn(VendorOrder, 'find').mockResolvedValue([]);
     jest.spyOn(VendorOrder, 'updateMany').mockResolvedValue({ acknowledged: true });
     jest.spyOn(Payment, 'findOne').mockResolvedValue({ _id: 'pay-1', status: 'PENDING' });
     jest.spyOn(Payment, 'findOneAndUpdate').mockResolvedValue({ _id: 'pay-1', status: 'CANCELLED' });

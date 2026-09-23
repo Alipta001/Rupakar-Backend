@@ -9,6 +9,8 @@ import { Payment } from '../models/payment.model.js';
 import { AppError } from '../utils/app-error.js';
 import { pricingService } from './pricing.service.js';
 import { inventoryReservationService } from './inventory-reservation.service.js';
+import { inventoryService } from './inventory.service.js';
+import { InventoryReservation } from '../models/inventory-reservation.model.js';
 import { paymentService } from './payment.service.js';
 import { env } from '../config/env.js';
 
@@ -151,12 +153,42 @@ export class OrderService {
     });
 
     for (const item of order.items || []) {
-      await inventoryReservationService.releaseReservation({
+      const released = await inventoryReservationService.releaseReservation({
         orderId: order._id,
         variantId: item.variantId,
         reason,
         actorId,
       });
+
+      if (!released) {
+        const consumed = await InventoryReservation.findOne({ orderId: order._id, variantId: item.variantId, status: 'CONSUMED' });
+        if (consumed) {
+          await InventoryReservation.updateOne({ _id: consumed._id }, { $set: { status: 'CANCELLED' } });
+          await inventoryService.increaseStock(item.variantId, item.quantity, {
+            referenceType: 'ORDER_CANCELLED',
+            referenceId: String(order._id),
+            reason: 'Restock consumed reservation upon order cancellation',
+          }).catch(() => null);
+        }
+      }
+    }
+
+    const vendorOrdersToCancel = await VendorOrder.find({ parentOrderId: order._id });
+    for (const vo of vendorOrdersToCancel) {
+      if (vo.inventoryDecremented) {
+        for (const item of vo.items || []) {
+          const hasRes = await InventoryReservation.findOne({ orderId: order._id, variantId: item.variantId });
+          if (!hasRes) {
+            await inventoryService.increaseStock(item.variantId, item.quantity, {
+              referenceType: 'ORDER_CANCELLED',
+              referenceId: String(vo._id),
+              reason: 'Restock vendor order upon order cancellation',
+            }).catch(() => null);
+          }
+        }
+        vo.inventoryDecremented = false;
+        await vo.save();
+      }
     }
 
     const payment = await paymentService.getPaymentForOrder(order._id);

@@ -29,7 +29,10 @@ export const getOrderInvoice = async (req, res, next) => {
     const order = await Order.findOne({ _id: orderId, customerId: req.user.sub }).lean();
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
 
-    const invoice = await invoiceService.getInvoiceByOrderId(orderId, req.user.sub);
+    let invoice = await invoiceService.getInvoiceByOrderId(orderId, req.user.sub, null);
+    if (!invoice && (['PAID', 'CAPTURED'].includes(order.paymentStatus) || order.status === 'CONFIRMED')) {
+      invoice = await invoiceService.ensureCustomerInvoice(order).catch(() => null);
+    }
     if (!invoice) {
       await queueCustomerInvoiceGeneration(order);
       res.status(425).json({ success: false, error: { code: 'INVOICE_NOT_READY', message: 'Invoice generation has been queued' } }); return;
@@ -104,11 +107,16 @@ export const downloadOrderInvoice = async (req, res, next) => {
     const vendor = req.user.role === 'vendor' ? await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null }).lean() : null;
     // A vendor order has its own invoice. Select it before authorization so a
     // vendor is never evaluated against the parent customer invoice.
-    const invoice = await invoiceService.getInvoiceByOrderId(
+    let invoice = await invoiceService.getInvoiceByOrderId(
       order._id,
       isAdmin || vendor ? null : req.user.sub,
       vendor?._id ?? null,
     );
+    if ((!invoice || invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey) && !vendor && !isAdmin) {
+      if (['PAID', 'CAPTURED'].includes(order.paymentStatus) || ['CONFIRMED', 'PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
+        invoice = await invoiceService.ensureCustomerInvoice(order).catch(() => invoice);
+      }
+    }
     if (!invoice) {
       if (vendor || isAdmin) throw new AppError(404, 'INVOICE_NOT_FOUND', 'No invoice found for this order');
       await queueCustomerInvoiceGeneration(order);

@@ -14,6 +14,9 @@ import { shipmentStatusSchema, paginationSchema, shipmentTrackingQuerySchema } f
 import { env } from '../config/env.js';
 import crypto from 'node:crypto';
 import { scheduleNotification } from '../jobs/queues.js';
+import { InventoryReservation } from '../models/inventory-reservation.model.js';
+import { inventoryReservationService } from '../services/inventory-reservation.service.js';
+import { inventoryService } from '../services/inventory.service.js';
 
 const getPagination = (query = {}) => {
   const { page, limit } = paginationSchema.parse(query ?? {});
@@ -97,8 +100,8 @@ export const getVendorOrder = async (req, res, next) => {
 
 export const packVendorOrder = async (req, res, next) => {
   try {
-    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null });
-    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Vendor profile is required');
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
+    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can manage orders');
 
     const vendorOrder = await VendorOrder.findOne({ _id: req.params.id, vendorId: vendor._id });
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
@@ -207,6 +210,46 @@ export const readyVendorOrder = async (req, res, next) => {
     if (vendorOrder.status !== 'PACKED') throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order must be packed before it is ready to ship');
     const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
     if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment has not been created');
+
+    if (!vendorOrder.inventoryDecremented) {
+      const decrementedItems = [];
+      try {
+        for (const item of vendorOrder.items || []) {
+          const reservation = await InventoryReservation.findOne({
+            orderId: vendorOrder.parentOrderId,
+            variantId: item.variantId,
+          });
+
+          if (reservation && reservation.status === 'ACTIVE') {
+            await inventoryReservationService.consumeReservation({
+              orderId: vendorOrder.parentOrderId,
+              variantId: item.variantId,
+            });
+          } else if (reservation && reservation.status === 'CONSUMED') {
+            // Already consumed by checkout/payment; available stock was already reduced
+          } else {
+            await inventoryService.decreaseStock(item.variantId, item.quantity, {
+              referenceType: 'VENDOR_ORDER',
+              referenceId: String(vendorOrder._id),
+              reason: 'READY_TO_SHIP',
+            });
+            decrementedItems.push({ variantId: item.variantId, quantity: item.quantity });
+          }
+        }
+        vendorOrder.inventoryDecremented = true;
+        vendorOrder.inventoryDecrementedAt = new Date();
+      } catch (err) {
+        for (const rolledItem of decrementedItems) {
+          await inventoryService.increaseStock(rolledItem.variantId, rolledItem.quantity, {
+            referenceType: 'VENDOR_ORDER_ROLLBACK',
+            referenceId: String(vendorOrder._id),
+            reason: 'ROLLBACK_READY_TO_SHIP_FAILURE',
+          }).catch(() => null);
+        }
+        throw err;
+      }
+    }
+
     await shipmentStateService.transitionShipmentStatus(shipment.status, 'READY_TO_SHIP', { shipmentId: shipment._id, actorType: 'VENDOR', actorId: req.user.sub, reason: 'Ready for carrier handoff' });
     shipment.status = 'READY_TO_SHIP';
     await shipment.save();

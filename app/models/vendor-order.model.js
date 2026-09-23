@@ -31,6 +31,8 @@ const vendorOrderSchema = new Schema(
     currency: { type: String, default: 'INR' },
     commissionPlaceholder: { type: Number, default: 0 },
     vendorPayablePlaceholder: { type: Number, default: 0 },
+    inventoryDecremented: { type: Boolean, default: false },
+    inventoryDecrementedAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
   },
   { timestamps: true },

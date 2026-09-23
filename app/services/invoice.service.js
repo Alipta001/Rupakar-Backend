@@ -90,17 +90,78 @@ export class InvoiceService {
     return invoice;
   }
 
-  async getInvoiceByOrderId(orderId, customerId, vendorId = null) {
+  async getInvoiceByOrderId(orderId, customerId = null, vendorId = null) {
     if (!orderId) {
       throw new AppError(400, 'INVALID_ORDER_ID', 'Order ID is required');
     }
 
     const filter = { orderId, status: { $ne: 'CANCELLED' } };
+    if (vendorId) {
+      filter.vendorId = vendorId;
+    } else {
+      filter.vendorId = null;
+      filter.vendorOrderId = null;
+    }
     if (customerId) filter.customerId = customerId;
-    if (vendorId) filter.vendorId = vendorId;
 
     const invoice = await Invoice.findOne(filter).lean();
     return invoice || null;
+  }
+
+  async ensureCustomerInvoice(order) {
+    if (!order) return null;
+    let invoice = await this.getInvoiceByOrderId(order._id, order.customerId, null);
+    if (!invoice) {
+      const { User } = await import('../models/user.model.js');
+      const customer = order.customerId ? await User.findById(order.customerId).select('name email').lean() : null;
+      invoice = await this.createInvoice({
+        orderId: order._id,
+        customerId: order.customerId,
+        vendorId: null,
+        vendorOrderId: null,
+        items: (order.items || []).map((item) => ({
+          productId: item.productId,
+          variantId: item.variantId,
+          productName: item.productName,
+          sku: item.sku,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          lineTotal: item.lineTotal,
+        })),
+        subtotal: Number(order.subtotal || 0),
+        discount: Number(order.discount || 0),
+        tax: Number(order.tax || 0),
+        shipping: Number(order.shipping || 0),
+        total: Number(order.total || 0),
+        currency: order.currency || 'INR',
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        customerSnapshot: customer || {},
+        vendorSnapshot: {},
+        shippingAddressSnapshot: order.shippingAddressSnapshot || {},
+        billingAddressSnapshot: order.billingAddressSnapshot || {},
+      });
+    }
+
+    if (invoice && (invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey)) {
+      const { pdfService } = await import('./pdf.service.js');
+      const { storageService } = await import('./storage.service.js');
+      await this.setGenerationStatus(invoice._id, 'GENERATING', { errorReason: null });
+      const pdf = await pdfService.generateInvoicePdf(invoice);
+      await this.setGenerationStatus(invoice._id, 'UPLOADING', { generatedAt: new Date() });
+      const storageKey = `invoices/${String(order._id)}/${invoice.invoiceNumber}.pdf`;
+      await storageService.upload({ key: storageKey, body: pdf.content, contentType: pdf.contentType });
+      invoice = await this.setGenerationStatus(invoice._id, 'AVAILABLE', {
+        storageProvider: 's3',
+        storageKey,
+        storageUrl: null,
+        fileType: pdf.contentType,
+        uploadedAt: new Date(),
+        errorReason: null,
+      });
+    }
+
+    return invoice;
   }
 
   async listInvoices({ customerId = null, vendorId = null, page = 1, limit = 20 }) {

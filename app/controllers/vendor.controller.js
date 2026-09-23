@@ -444,3 +444,108 @@ export const rejectDocument = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getVendorAnalytics = async (req, res, next) => {
+  try {
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null }).lean();
+    if (!vendor) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor profile not found');
+    }
+
+    const range = ['7d', '30d', '90d', '1y'].includes(req.query.range) ? req.query.range : '30d';
+    const now = new Date();
+    const days = range === '7d' ? 7 : range === '30d' ? 30 : range === '90d' ? 90 : 365;
+    const startDate = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+    startDate.setHours(0, 0, 0, 0);
+
+    const orders = await VendorOrder.find({
+      vendorId: vendor._id,
+      deletedAt: null,
+      createdAt: { $gte: startDate },
+    }).lean();
+
+    let totalRevenue = 0;
+    let unitsSold = 0;
+    const customerSet = new Set();
+    const statusMap = new Map();
+    const productMap = new Map();
+    const dateMap = new Map();
+
+    const cursorDate = new Date(startDate);
+    const endDate = new Date(now);
+    endDate.setHours(23, 59, 59, 999);
+
+    while (cursorDate <= endDate) {
+      const dateKey = cursorDate.toISOString().slice(0, 10);
+      const label = cursorDate.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+      dateMap.set(dateKey, { date: dateKey, label, revenue: 0, orders: 0, units: 0 });
+      cursorDate.setDate(cursorDate.getDate() + 1);
+    }
+
+    for (const order of orders) {
+      const orderTotal = Number(order.total || 0);
+      totalRevenue += orderTotal;
+      if (order.customerId) customerSet.add(String(order.customerId));
+
+      const st = order.status || 'UNKNOWN';
+      const curStatus = statusMap.get(st) || { status: st, count: 0, revenue: 0 };
+      curStatus.count += 1;
+      curStatus.revenue = Number((curStatus.revenue + orderTotal).toFixed(2));
+      statusMap.set(st, curStatus);
+
+      const orderDateKey = new Date(order.createdAt).toISOString().slice(0, 10);
+      if (dateMap.has(orderDateKey)) {
+        const point = dateMap.get(orderDateKey);
+        point.revenue = Number((point.revenue + orderTotal).toFixed(2));
+        point.orders += 1;
+      }
+
+      for (const item of order.items || []) {
+        const qty = Number(item.quantity || 0);
+        unitsSold += qty;
+        if (dateMap.has(orderDateKey)) {
+          dateMap.get(orderDateKey).units += qty;
+        }
+        const prodKey = String(item.variantId || item.sku || item.productName);
+        const prod = productMap.get(prodKey) || {
+          productId: item.productId,
+          variantId: item.variantId,
+          productName: item.productName,
+          sku: item.sku,
+          unitsSold: 0,
+          revenue: 0,
+        };
+        prod.unitsSold += qty;
+        prod.revenue = Number((prod.revenue + Number(item.lineTotal || item.unitPrice * qty || 0)).toFixed(2));
+        productMap.set(prodKey, prod);
+      }
+    }
+
+    const salesTrend = Array.from(dateMap.values());
+    const statusBreakdown = Array.from(statusMap.values()).sort((a, b) => b.count - a.count);
+    const topProducts = Array.from(productMap.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+    const orderCount = orders.length;
+    const averageOrderValue = orderCount > 0 ? Number((totalRevenue / orderCount).toFixed(2)) : 0;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        range,
+        summary: {
+          revenue: Number(totalRevenue.toFixed(2)),
+          orders: orderCount,
+          unitsSold,
+          averageOrderValue,
+          customerCount: customerSet.size,
+        },
+        salesTrend,
+        statusBreakdown,
+        topProducts,
+      },
+      message: 'Vendor analytics loaded',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
