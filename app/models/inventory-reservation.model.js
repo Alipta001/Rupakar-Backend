@@ -8,7 +8,7 @@ const inventoryReservationSchema = new Schema(
     variantId: { type: Schema.Types.ObjectId, ref: 'ProductVariant', required: true, index: true },
     productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true, index: true },
     quantity: { type: Number, required: true, min: 1 },
-    status: { type: String, enum: ['ACTIVE', 'RELEASED', 'CONSUMED', 'EXPIRED'], default: 'ACTIVE', index: true },
+    status: { type: String, enum: ['ACTIVE', 'CONSUMING', 'RELEASED', 'CONSUMED', 'EXPIRED'], default: 'ACTIVE', index: true },
     expiresAt: { type: Date, default: null, index: true },
     releasedAt: { type: Date, default: null },
     consumedAt: { type: Date, default: null },

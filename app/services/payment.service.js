@@ -13,6 +13,7 @@ import { inventoryReservationService } from './inventory-reservation.service.js'
 import { vendorLedgerService } from './vendor-ledger.service.js';
 import { scheduleInvoiceGeneration, scheduleNotification } from '../jobs/queues.js';
 import { Vendor } from '../models/vendor.model.js';
+import { User } from '../models/user.model.js';
 
 const PAYMENT_STATUS_TRANSITIONS = {
   PENDING: ['AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED'],
@@ -141,12 +142,19 @@ export class PaymentService {
       vendorOrderIds.push(vendorOrder._id);
       await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId, vendorId, vendorOrderId: vendorOrder._id }).catch(() => null);
       const vendor = await Vendor.findById(vendorId).select('ownerUserId').lean();
-      if (vendor?.ownerUserId) await scheduleNotification({ userId: vendor.ownerUserId, type: 'VENDOR_ORDER_CONFIRMED', title: 'New vendor order', message: `Order ${order.orderNumber} is ready for processing.`, metadata: { orderId: order._id, vendorOrderId: vendorOrder._id } }).catch(() => null);
+      const owner = vendor?.ownerUserId ? await User.findById(vendor.ownerUserId).select('email phone').lean() : null;
+      if (vendor?.ownerUserId) await scheduleNotification({
+        userId: vendor.ownerUserId,
+        type: 'VENDOR_ORDER_CONFIRMED',
+        title: 'New vendor order',
+        message: `Order ${order.orderNumber} is ready for processing.`,
+        metadata: { orderId: order._id, vendorOrderId: vendorOrder._id, email: owner?.email, phone: owner?.phone, idempotencyKey: `vendor-order-confirmed:${vendorOrder._id}` },
+      }).catch(() => null);
     }
 
     await Order.updateOne({ _id: order._id }, { $set: { vendorOrders: vendorOrderIds } });
     await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId }).catch(() => null);
-    await scheduleNotification({ userId: order.customerId, type: 'ORDER_CONFIRMED', title: 'Order confirmed', message: `Your order ${order.orderNumber} is confirmed.`, metadata: { orderId: order._id } }).catch(() => null);
+    await scheduleNotification({ userId: order.customerId, type: 'ORDER_CONFIRMED', title: 'Order confirmed', message: `Your order ${order.orderNumber} is confirmed.`, metadata: { orderId: order._id, idempotencyKey: `order-confirmed:${order._id}` } }).catch(() => null);
     await vendorLedgerService.recordCapturedPayment({ orderId: order._id, paymentId, payment });
     return { vendorOrders: vendorOrderIds, skipped: false };
   }

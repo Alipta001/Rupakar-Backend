@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
-import { env } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
 
 const NAVY = '#16263d';
@@ -19,23 +18,13 @@ const formatStamp = (value) => new Date(value).toLocaleString('en-IN', { day: '2
 
 export class PdfService {
   async getLogoBuffer() {
-    const logoUrl = env.RUPAKAR_LOGO_URL || 'https://rupakar-backend.onrender.com/Rupakar-logo.jpeg';
-    if (!logoUrl) return null;
-
     try {
-      const response = await globalThis.fetch(logoUrl, { redirect: 'follow' });
-      if (!response.ok) throw new Error(`Logo fetch failed with status ${response.status}`);
-      const arrayBuffer = await response.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+      const fs = await import('node:fs/promises');
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = path.dirname(__filename);
+      return await fs.readFile(path.join(__dirname, '..', '..', 'public', 'Rupakar-logo.jpeg'));
     } catch {
-      try {
-        const fs = await import('node:fs/promises');
-        const __filename = fileURLToPath(import.meta.url);
-        const __dirname = path.dirname(__filename);
-        return await fs.readFile(path.join(__dirname, '..', '..', 'public', 'Rupakar-logo.jpeg'));
-      } catch {
-        return null;
-      }
+      return null;
     }
   }
 
@@ -334,7 +323,10 @@ export class PdfService {
       items.forEach((item, index) => {
         const lineTotal = Number(item.lineTotal || item.unitPrice * item.quantity || 0);
         const variation = item.variantName || item.variant || Object.values(item.attributes || item.variantAttributes || {}).filter(Boolean).join(' • ') || 'Standard';
-        const rowHeight = variation ? 18 : 16;
+        doc.font('Helvetica').fontSize(8.2);
+        const productHeight = doc.heightOfString(safeText(item.productName || 'Product'), { width: 180, lineGap: 2 });
+        const variantHeight = doc.heightOfString(`${safeText(item.sku || '—')} / ${safeText(variation)}`, { width: 120, lineGap: 2 });
+        const rowHeight = Math.max(18, productHeight, variantHeight);
 
         if (y + rowHeight > pageBottom) {
           doc.addPage();
@@ -355,7 +347,12 @@ export class PdfService {
         y += rowHeight + 10;
       });
 
-      const totalsY = Math.max(y + 18, 550);
+      let totalsY = Math.max(y + 18, 550);
+      if (totalsY + 118 > doc.page.height - 30) {
+        doc.addPage();
+        drawHeader();
+        totalsY = 104;
+      }
       doc.fillColor(CARD).strokeColor(LINE).lineWidth(1).roundedRect(left + 300, totalsY, 214, 108, 8).fillAndStroke();
       doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(9).text('ORDER TOTALS', left + 318, totalsY + 10);
       doc.fillColor(TEXT).font('Helvetica').fontSize(8.2);

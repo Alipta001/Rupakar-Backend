@@ -22,7 +22,7 @@ import {
 } from '../controllers/vendor.controller.js';
 import { listVendorOrders, getVendorOrder } from '../controllers/order.controller.js';
 import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
-import { packVendorOrder, shipVendorOrder } from '../controllers/shipping.controller.js';
+import { packVendorOrder, processVendorOrder, readyVendorOrder, shipVendorOrder } from '../controllers/shipping.controller.js';
 import { listVendorInvoices, downloadVendorOrderInvoice, downloadVendorPackingSlip } from '../controllers/invoice.controller.js';
 
 const router = Router();
@@ -42,6 +42,8 @@ router.get('/orders/:id', getVendorOrder);
 router.get('/orders/:orderId/invoice', downloadVendorOrderInvoice);
 router.get('/orders/:orderId/packing-slip', downloadVendorPackingSlip);
 router.post('/orders/:id/pack', packVendorOrder);
+router.post('/orders/:id/process', processVendorOrder);
+router.post('/orders/:id/ready-to-ship', readyVendorOrder);
 router.post('/orders/:id/ship', shipVendorOrder);
 router.get('/returns', listVendorReturns);
 router.get('/returns/:id', getVendorReturn);

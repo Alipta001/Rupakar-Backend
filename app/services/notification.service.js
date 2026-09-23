@@ -15,6 +15,12 @@ export class NotificationService {
       throw new AppError(400, 'INVALID_NOTIFICATION_DATA', 'User, type, title, and message are required');
     }
 
+    const idempotencyKey = metadata?.idempotencyKey;
+    if (idempotencyKey) {
+      const existing = await Notification.findOne({ userId, 'metadata.idempotencyKey': idempotencyKey }).lean();
+      if (existing) return existing;
+    }
+
     const notification = await Notification.create({
       userId,
       type,

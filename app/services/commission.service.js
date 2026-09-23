@@ -17,7 +17,9 @@ export class CommissionService {
       const config = await CommissionConfig.findOne({ ...base, scope, ...target }).sort({ effectiveFrom: -1, createdAt: -1 }).lean();
       if (config) return { rate: Number(config.rate), source: scope, configId: config._id };
     }
-    throw new AppError(500, 'COMMISSION_CONFIG_MISSING', 'No active global commission configuration exists');
+    // A missing rule means no commission, not a failed customer payment. The
+    // ledger still records the zero-rate snapshot for later settlement audits.
+    return { rate: 0, source: 'DEFAULT', configId: null };
   }
 
   validateInput({ scope, rate, productId = null, vendorId = null, categoryId = null }) {

@@ -1,6 +1,7 @@
 import { Shipment } from '../models/shipment.model.js';
 import { AppError } from '../utils/app-error.js';
 import { env } from '../config/env.js';
+import { deliveryProvider } from './delivery-provider.service.js';
 
 export class ShippingService {
   calculateShipping({ subtotal = 0, items = [], shippingAddress = null }) {
@@ -39,16 +40,17 @@ export class ShippingService {
       return existing.toObject ? existing.toObject() : existing;
     }
 
+    const providerShipment = await deliveryProvider.createShipment({ shipmentNumber: `SHIP-${Date.now().toString(36).toUpperCase()}` });
     const shipment = await Shipment.create({
       orderId,
       vendorOrderId,
       vendorId,
       customerId,
-      shipmentNumber: `SHIP-${Date.now().toString(36).toUpperCase()}`,
+      shipmentNumber: providerShipment.shipmentNumber,
       carrier,
-      provider,
-      trackingNumber: `TRK-${Date.now().toString(36).toUpperCase()}`,
-      trackingUrl: `https://mock-tracking.local/tracking/${Date.now().toString(36)}`,
+      provider: env.DELIVERY_PROVIDER || provider,
+      trackingNumber: providerShipment.trackingNumber,
+      trackingUrl: providerShipment.trackingUrl,
       shippingMethod,
       status: 'PENDING',
       metadata,
@@ -58,12 +60,9 @@ export class ShippingService {
   }
 
   async getTracking(shipmentId) {
-    return {
-      shipmentId,
-      status: 'PENDING',
-      trackingNumber: `TRK-${String(shipmentId).slice(-6)}`,
-      trackingUrl: `https://mock-tracking.local/tracking/${shipmentId}`,
-    };
+    const shipment = await Shipment.findById(shipmentId).lean();
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+    return deliveryProvider.getTracking({ trackingNumber: shipment.trackingNumber, shipmentId });
   }
 
   async cancelShipment({ shipmentId }) {
@@ -72,6 +71,7 @@ export class ShippingService {
       throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
     }
 
+    await deliveryProvider.cancelShipment({ trackingNumber: shipment.trackingNumber });
     shipment.status = 'CANCELLED';
     await shipment.save();
     return shipment.toObject ? shipment.toObject() : shipment;

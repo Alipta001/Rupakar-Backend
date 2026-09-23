@@ -13,6 +13,7 @@ import { User } from '../models/user.model.js';
 import { VendorLedgerEntry } from '../models/vendor-ledger-entry.model.js';
 import { packingSlipService } from '../services/packing-slip.service.js';
 import { Shipment } from '../models/shipment.model.js';
+import { smsService } from '../services/sms.service.js';
 
 const connection = new IORedis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
@@ -93,7 +94,7 @@ export async function scheduleNotification({ userId, type, title, message, chann
 
   try {
     const queue = getNotificationQueue();
-    const jobId = `notification:${userId}:${type}:${metadata?.orderId || metadata?.idempotencyKey || Date.now()}:${metadata?.vendorOrderId || ''}`;
+    const jobId = `notification:${userId}:${type}:${metadata?.idempotencyKey || metadata?.orderId || Date.now()}:${metadata?.vendorOrderId || ''}`;
     const job = await queue.add(
       'send-notification',
       { userId, type, title, message, channel, metadata },
@@ -261,6 +262,23 @@ export async function startNotificationWorker() {
           });
         }
 
+        if (metadata?.email && channel !== 'EMAIL') {
+          await scheduleEmail({
+            to: metadata.email,
+            subject: title,
+            html: message,
+            jobType: 'send-notification-email',
+          });
+        }
+        if (metadata?.phone) {
+          await scheduleEmail({
+            to: metadata.phone,
+            subject: title,
+            text: message,
+            jobType: 'send-notification-sms',
+          });
+        }
+
         await notificationService.sendNotification(notification._id);
         return { notificationId: notification._id };
       } catch (error) {
@@ -286,6 +304,9 @@ export async function startEmailWorker() {
       console.log(`Processing email job ${job.id} to ${to}`);
 
       try {
+        if (job.name === 'send-notification-sms') {
+          return await smsService.sendSms({ to, message: text || subject });
+        }
         const result = await emailService.sendEmail({ to, subject, html, text });
         return { messageId: result.messageId, success: true };
       } catch (error) {

@@ -54,6 +54,7 @@ export function createApp() {
   }
 
   app.use('/api/v1/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
+  app.use('/api/v1/webhooks/delivery', express.raw({ type: 'application/json', limit: '1mb' }));
   app.use('/Rupakar-logo.jpeg', express.static(path.join(__dirname, 'public', 'Rupakar-logo.jpeg')));
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
