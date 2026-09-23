@@ -24,5 +24,6 @@ notificationSchema.index({ createdAt: -1, _id: -1 });
 notificationSchema.index({ userId: 1, readAt: 1 });
 notificationSchema.index({ type: 1, createdAt: -1 });
 notificationSchema.index({ userId: 1, 'metadata.idempotencyKey': 1 }, { unique: true, sparse: true });
+notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 10 * 24 * 60 * 60 });
 
 export const Notification = model('Notification', notificationSchema);

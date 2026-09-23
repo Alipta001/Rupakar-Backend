@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { AppError } from '../utils/app-error.js';
 import { Refund } from '../models/refund.model.js';
 import { Inventory } from '../models/inventory.model.js';
@@ -51,8 +52,8 @@ export class RefundService {
       throw new AppError(400, 'INVALID_REFUND_REQUEST', 'Refund payload is incomplete');
     }
 
-    const key = `${refundData.orderId}:${refundData.returnId ?? refundData.cancellationRequestId ?? 'none'}:${refundData.amount}`;
-    if (this.isDuplicateRefund({ orderId: refundData.orderId, returnId: refundData.returnId || refundData.cancellationRequestId, refundKey: key })) {
+    const key = `${refundData.orderId}:${refundData.returnId ?? refundData.cancellationRequestId ?? refundData.vendorOrderId ?? 'none'}:${refundData.amount}`;
+    if (this.isDuplicateRefund({ orderId: refundData.orderId, returnId: refundData.returnId || refundData.cancellationRequestId || refundData.vendorOrderId, refundKey: key })) {
       throw new AppError(409, 'DUPLICATE_REFUND', 'Duplicate refund request');
     }
 
@@ -61,8 +62,8 @@ export class RefundService {
 
     let providerRefundId = refundData.providerRefundId || null;
     let status = 'REQUESTED';
-    if (payment.provider === 'razorpay') {
-      if (!payment.providerPaymentId) {
+    if (['razorpay', 'mock'].includes(payment.provider)) {
+      if (!payment.providerPaymentId && payment.provider === 'razorpay') {
         throw new AppError(409, 'PAYMENT_NOT_CAPTURED', 'Captured payment is required before refund');
       }
       const providerRefund = await paymentService.provider.refundPayment({
@@ -74,14 +75,31 @@ export class RefundService {
       status = 'PROCESSING';
       payment.status = 'REFUND_PENDING';
       await payment.save();
-      const refundStatus = Number(refundData.amount || 0) >= Number(payment.amount || 0)
-        ? 'REFUND_PENDING'
-        : 'REFUND_PENDING';
-      await Order.updateOne({ _id: refundData.orderId }, { $set: { status: refundStatus, paymentStatus: refundStatus } });
+      const refundStatus = 'REFUND_PENDING';
+      const orderToUpdate = mongoose.isValidObjectId(refundData.orderId)
+        ? await Order.findById(refundData.orderId)
+        : null;
+      const orderUpdate = { paymentStatus: refundStatus };
+      if ((!orderToUpdate || orderToUpdate.status !== 'CANCELLED') && !refundData.isCancellation) {
+        orderUpdate.status = refundStatus;
+      }
+      await Order.updateOne({ _id: refundData.orderId }, { $set: orderUpdate });
       if (refundData.vendorOrderId) {
-        await VendorOrder.updateOne({ _id: refundData.vendorOrderId }, { $set: { status: refundStatus } });
+        const voToUpdate = mongoose.isValidObjectId(refundData.vendorOrderId)
+          ? await VendorOrder.findById(refundData.vendorOrderId)
+          : null;
+        const voUpdate = {};
+        if ((!voToUpdate || voToUpdate.status !== 'CANCELLED') && !refundData.isCancellation) {
+          voUpdate.status = refundStatus;
+        }
+        if (Object.keys(voUpdate).length > 0) {
+          await VendorOrder.updateOne({ _id: refundData.vendorOrderId }, { $set: voUpdate });
+        }
       } else {
-        await VendorOrder.updateMany({ parentOrderId: refundData.orderId }, { $set: { status: refundStatus } });
+        await VendorOrder.updateMany(
+          { parentOrderId: refundData.orderId, status: { $ne: 'CANCELLED' } },
+          { $set: { status: refundStatus } }
+        );
       }
     }
 

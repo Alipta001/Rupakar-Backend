@@ -184,24 +184,31 @@ export class PaymentService {
               }).catch(() => null);
             }
 
+            const notifPromises = [];
             if (targetEmail) {
-              await emailService.sendEmail({
-                to: targetEmail,
-                subject: `New order #${order.orderNumber} placed - Please check your dashboard`,
-                html: `<div style="font-family:sans-serif;padding:16px;"><h2 style="color:#6B3E26;">New Order Received!</h2><p>New order has been placed, please check your dashboard to process.</p><p><strong>Order #:</strong> ${order.orderNumber}</p><p><strong>Total:</strong> ₹${vendorOrder.total}</p><p><strong>Items:</strong> ${(items || []).map((i) => `${i.productName} (x${i.quantity})`).join(', ')}</p></div>`,
-                text: `New order has been placed, please check your dashboard. Order #${order.orderNumber}, Items: ${items.length}, Total: ₹${vendorOrder.total}.`,
-              }).catch((err) => console.error('Failed to send vendor order email:', err?.message));
+              notifPromises.push(
+                emailService.sendEmail({
+                  to: targetEmail,
+                  subject: `New order #${order.orderNumber} placed - Please check your dashboard`,
+                  html: `<div style="font-family:sans-serif;padding:16px;"><h2 style="color:#6B3E26;">New Order Received!</h2><p>New order has been placed, please check your dashboard to process.</p><p><strong>Order #:</strong> ${order.orderNumber}</p><p><strong>Total:</strong> ₹${vendorOrder.total}</p><p><strong>Items:</strong> ${(items || []).map((i) => `${i.productName} (x${i.quantity})`).join(', ')}</p></div>`,
+                  text: `New order has been placed, please check your dashboard. Order #${order.orderNumber}, Items: ${items.length}, Total: ₹${vendorOrder.total}.`,
+                }).catch((err) => console.error('Failed to send vendor order email:', err?.message))
+              );
             }
 
             const rawPhone = String(targetPhone || '').trim();
             const digitsOnly = rawPhone.replace(/[^\d+]/g, '');
             const isValidPhone = /^\+?[0-9]{10,15}$/.test(digitsOnly);
             if (isValidPhone) {
-              await smsService.sendSms({
-                to: rawPhone,
-                message: `Rupakar: New order has been placed, please check your dashboard to process #${order.orderNumber}.`,
-              }).catch((err) => console.error('Failed to send vendor order SMS:', err?.message));
+              notifPromises.push(
+                smsService.sendSms({
+                  to: rawPhone,
+                  message: `Rupakar: New order has been placed, please check your dashboard to process #${order.orderNumber}.`,
+                }).catch((err) => console.error('Failed to send vendor order SMS:', err?.message))
+              );
             }
+
+            await Promise.all(notifPromises);
 
             if (recipientUserId) {
               await scheduleNotification({
@@ -223,7 +230,9 @@ export class PaymentService {
     await Order.updateOne({ _id: order._id }, { $set: { vendorOrders: vendorOrderIds } });
     await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId }).catch(() => null);
     await scheduleNotification({ userId: order.customerId, type: 'ORDER_CONFIRMED', title: 'Order confirmed', message: `Your order ${order.orderNumber} is confirmed.`, metadata: { orderId: order._id, idempotencyKey: `order-confirmed:${order._id}` } }).catch(() => null);
-    await vendorLedgerService.recordCapturedPayment({ orderId: order._id, paymentId, payment });
+    await vendorLedgerService.recordCapturedPayment({ orderId: order._id, paymentId, payment }).catch((err) => {
+      console.error('Failed to record captured payment in vendor ledger:', err?.message);
+    });
     return { vendorOrders: vendorOrderIds, skipped: false };
   }
 

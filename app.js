@@ -12,7 +12,7 @@ import { securityMiddleware } from './app/middleware/security.js';
 import { requestIdMiddleware } from './app/middleware/request-id.js';
 import { errorHandler, notFoundHandler } from './app/middleware/error-handler.js';
 import { requireAuth } from './app/middleware/auth.middleware.js';
-import { getVendorDashboard } from './app/controllers/vendor.controller.js';
+import { getVendorDashboard, getVendorAnalytics } from './app/controllers/vendor.controller.js';
 import authRoutes from './app/routers/auth.routes.js';
 import userRoutes from './app/routers/user.routes.js';
 import vendorRoutes from './app/routers/vendor.routes.js';
@@ -67,6 +67,7 @@ export function createApp() {
   app.use('/api/v1/users', userRoutes);
   const vendorDashboardRouter = Router();
   vendorDashboardRouter.get('/dashboard', requireAuth, getVendorDashboard);
+  vendorDashboardRouter.get('/analytics', requireAuth, getVendorAnalytics);
   app.use('/api/v1/vendor', vendorDashboardRouter);
   app.use('/api/v1/vendors', vendorRoutes);
   app.use('/api/v1/categories', categoryRoutes);

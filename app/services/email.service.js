@@ -16,6 +16,9 @@ export class GmailEmailProvider {
         user: env.EMAIL_USER,
         pass: env.EMAIL_PASSWORD,
       },
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 5000,
     });
   }
 
@@ -46,6 +49,9 @@ export class SmtpEmailProvider {
         user: env.EMAIL_USER,
         pass: env.EMAIL_PASSWORD,
       },
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 5000,
     });
   }
 

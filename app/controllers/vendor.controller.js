@@ -8,7 +8,7 @@ import { Product } from '../models/product.model.js';
 import { Inventory } from '../models/inventory.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
 import { Order } from '../models/order.model.js';
-import { Notification } from '../models/notification.model.js';
+import { notificationService } from '../services/notification.service.js';
 import { vendorLedgerService } from '../services/vendor-ledger.service.js';
 import { settlementService } from '../services/settlement.service.js';
 
@@ -90,7 +90,7 @@ export const getVendorDashboard = async (req, res, next) => {
     ]);
     const ledgerSummaryPromise = vendorLedgerService.summaryForVendor(vendor._id);
     const balancePromise = settlementService.balanceForVendor(vendor._id);
-    const unreadCountPromise = Notification.countDocuments({ userId: req.user.sub, readAt: null });
+    const unreadCountPromise = notificationService.getUnreadCount(req.user.sub);
 
     const [productCount, publishedCount, lowStockItems, lowStockCount, activeOrders, recentOrders, totalSales, ledgerSummary, balance, unreadCount] = await Promise.all([
       productCountPromise,

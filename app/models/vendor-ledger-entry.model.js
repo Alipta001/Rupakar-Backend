@@ -8,7 +8,7 @@ const commissionLineSchema = new Schema({
   grossAmount: { type: Number, required: true, min: 0 },
   rate: { type: Number, required: true, min: 0, max: 100 },
   commissionAmount: { type: Number, required: true, min: 0 },
-  source: { type: String, enum: ['PRODUCT', 'VENDOR', 'CATEGORY', 'GLOBAL'], required: true },
+  source: { type: String, enum: ['PRODUCT', 'VENDOR', 'CATEGORY', 'GLOBAL', 'DEFAULT'], required: true },
 }, { _id: false });
 
 const vendorLedgerEntrySchema = new Schema(

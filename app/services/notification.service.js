@@ -55,13 +55,15 @@ export class NotificationService {
   }
 
   async markAllAsRead(userId) {
-    const result = await Notification.updateMany({ userId, readAt: null }, { readAt: new Date() });
+    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const result = await Notification.updateMany({ userId, readAt: null, createdAt: { $gte: cutoff } }, { readAt: new Date() });
     return result.modifiedCount;
   }
 
   async getUserNotifications(userId, { page = 1, limit = 20, unreadOnly = false }) {
     const skip = (page - 1) * limit;
-    const filter = { userId };
+    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const filter = { userId, createdAt: { $gte: cutoff } };
     if (unreadOnly) filter.readAt = null;
 
     const notifications = await Notification.find(filter)
@@ -71,13 +73,14 @@ export class NotificationService {
       .lean();
 
     const total = await Notification.countDocuments(filter);
-    const unreadCount = await Notification.countDocuments({ userId, readAt: null });
+    const unreadCount = await Notification.countDocuments({ userId, readAt: null, createdAt: { $gte: cutoff } });
 
     return { notifications, page, limit, total, unreadCount };
   }
 
   async getUnreadCount(userId) {
-    return Notification.countDocuments({ userId, readAt: null });
+    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    return Notification.countDocuments({ userId, readAt: null, createdAt: { $gte: cutoff } });
   }
 }
 

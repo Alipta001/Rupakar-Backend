@@ -116,7 +116,9 @@ export const confirmPayment = async (req, res, next) => {
     }
     if (payment.status === 'CAPTURED') {
       if (payment.providerPaymentId === razorpay_payment_id) {
-        await paymentService.ensureCapturedOrderArtifacts(order._id, payment._id, payment);
+        await paymentService.ensureCapturedOrderArtifacts(order._id, payment._id, payment).catch((err) => {
+          console.error('ensureCapturedOrderArtifacts duplicate confirmation error:', err?.message);
+        });
         res.status(200).json({
           success: true,
           data: { orderId: order._id, status: order.status, paymentStatus: order.paymentStatus, duplicate: true },
@@ -176,7 +178,9 @@ export const confirmPayment = async (req, res, next) => {
     order.status = 'CONFIRMED';
     await order.save();
     await inventoryReservationService.consumeOrderReservations({ orderId: order._id, items: order.items });
-    await paymentService.ensureCapturedOrderArtifacts(order._id, capturedPayment._id, capturedPayment);
+    await paymentService.ensureCapturedOrderArtifacts(order._id, capturedPayment._id, capturedPayment).catch((err) => {
+      console.error('ensureCapturedOrderArtifacts error:', err?.message);
+    });
 
     res.status(200).json({
       success: true,

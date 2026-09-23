@@ -22,7 +22,7 @@ export const createOrderCancellationRequest = async (req, res, next) => {
       customerNote: payload.customerNote,
     });
 
-    sendSuccess(res, 201, 'Cancellation request submitted', request);
+    sendSuccess(res, request, 'Cancellation request submitted', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -35,7 +35,7 @@ export const listOrderCancellationRequests = async (req, res, next) => {
       orderId: req.params.id,
     });
 
-    sendSuccess(res, 200, 'Cancellation requests loaded', requests);
+    sendSuccess(res, requests, 'Cancellation requests loaded', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -51,7 +51,7 @@ export const listVendorCancellationRequests = async (req, res, next) => {
     const query = listCancellationRequestsQuerySchema.parse(req.query ?? {});
     const result = await cancellationService.listForVendor(vendor._id, query);
 
-    sendSuccess(res, 200, 'Vendor cancellation requests loaded', result);
+    sendSuccess(res, result, 'Vendor cancellation requests loaded', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -70,7 +70,7 @@ export const approveVendorCancellationRequest = async (req, res, next) => {
       reviewerUserId: req.user.sub,
     });
 
-    sendSuccess(res, 200, 'Cancellation request approved', result);
+    sendSuccess(res, result, 'Cancellation request approved', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -91,7 +91,7 @@ export const rejectVendorCancellationRequest = async (req, res, next) => {
       rejectionReason: payload.rejectionReason,
     });
 
-    sendSuccess(res, 200, 'Cancellation request rejected', result);
+    sendSuccess(res, result, 'Cancellation request rejected', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }

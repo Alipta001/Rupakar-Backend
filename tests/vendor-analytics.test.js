@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import request from 'supertest';
+import app from '../app.js';
 import { getVendorAnalytics } from '../app/controllers/vendor.controller.js';
 import { Vendor } from '../app/models/vendor.model.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
@@ -177,5 +179,60 @@ describe('Vendor Analytics Controller', () => {
     expect(data.topProducts[1].productName).toBe('Clay Lamp');
     expect(data.topProducts[1].revenue).toBe(800);
     expect(data.topProducts[1].unitsSold).toBe(1);
+  });
+
+  it('guarantees vendor isolation by scoping orders strictly to the authenticated vendor profile', async () => {
+    const vendorA = { _id: 'vendor-A', ownerUserId: 'user-A', status: 'APPROVED' };
+    const findVendorSpy = jest.spyOn(Vendor, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(vendorA),
+    });
+    const findOrdersSpy = jest.spyOn(VendorOrder, 'find').mockReturnValue({
+      lean: jest.fn().mockResolvedValue([]),
+    });
+
+    const ctx = response();
+    await getVendorAnalytics(
+      { user: { sub: 'user-A' }, query: { range: '30d' }, headers: {} },
+      ctx.res,
+      ctx.next
+    );
+
+    expect(findVendorSpy).toHaveBeenCalledWith(expect.objectContaining({ ownerUserId: 'user-A', deletedAt: null }));
+    expect(findOrdersSpy).toHaveBeenCalledWith(expect.objectContaining({
+      vendorId: 'vendor-A',
+      deletedAt: null,
+    }));
+    // Proves it does not query any other vendor
+    expect(findOrdersSpy).not.toHaveBeenCalledWith(expect.objectContaining({ vendorId: 'vendor-B' }));
+  });
+
+  it('verifies GET /api/v1/vendor/analytics route is registered and protected by auth', async () => {
+    const unauthenticatedRes = await request(app).get('/api/v1/vendor/analytics');
+    expect(unauthenticatedRes.status).toBe(401);
+  });
+
+  it('supports 90d and 1y range queries returning correct range in payload', async () => {
+    jest.spyOn(Vendor, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(mockVendor),
+    });
+    jest.spyOn(VendorOrder, 'find').mockReturnValue({
+      lean: jest.fn().mockResolvedValue([]),
+    });
+
+    for (const range of ['90d', '1y']) {
+      const ctx = response();
+      await getVendorAnalytics(
+        { user: { sub: 'user-123' }, query: { range }, headers: {} },
+        ctx.res,
+        ctx.next
+      );
+      expect(ctx.status).toHaveBeenCalledWith(200);
+      expect(ctx.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          data: expect.objectContaining({ range }),
+        })
+      );
+    }
   });
 });
