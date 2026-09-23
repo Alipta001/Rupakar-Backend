@@ -128,11 +128,9 @@ export const packVendorOrder = async (req, res, next) => {
 
     await schedulePackingSlipGeneration({ orderId: order._id, vendorOrderId: vendorOrder._id, vendorId: vendor._id, customerId: order.customerId });
 
-    const siblingOrders = await VendorOrder.find({ parentOrderId: order._id }).select('status').lean();
-    if (siblingOrders.length > 0 && siblingOrders.every((entry) => ['PACKED', 'SHIPPED', 'DELIVERED'].includes(entry.status))) order.status = 'PACKED';
-    await order.save();
-
-    sendSuccess(res, { shipment: shipment.toObject ? shipment.toObject() : shipment, vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder, order: order.toObject ? order.toObject() : order }, 'Order packed', String(req.headers['x-request-id'] ?? ''));
+    await orderService.syncParentOrderStatus(order._id);
+    const updatedOrder = await Order.findById(order._id).lean();
+    sendSuccess(res, { shipment: shipment.toObject ? shipment.toObject() : shipment, vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder, order: updatedOrder || (order.toObject ? order.toObject() : order) }, 'Order packed', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -147,7 +145,9 @@ export const processVendorOrder = async (req, res, next) => {
     if (!['PAID', 'CONFIRMED'].includes(vendorOrder.status)) throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order is not ready for processing');
     vendorOrder.status = 'PROCESSING';
     await vendorOrder.save();
-    sendSuccess(res, { vendorOrder: vendorOrder.toObject() }, 'Order processing started', String(req.headers['x-request-id'] ?? ''));
+    await orderService.syncParentOrderStatus(vendorOrder.parentOrderId);
+    const updatedVendorOrder = await VendorOrder.findById(vendorOrder._id).lean();
+    sendSuccess(res, { vendorOrder: updatedVendorOrder || vendorOrder.toObject() }, 'Order processing started', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -189,11 +189,9 @@ export const shipVendorOrder = async (req, res, next) => {
     vendorOrder.status = nextStatus;
     await vendorOrder.save();
 
-    const siblingOrders = await VendorOrder.find({ parentOrderId: order._id }).select('status').lean();
-    if (siblingOrders.length > 0 && siblingOrders.every((entry) => ['SHIPPED', 'DELIVERED'].includes(entry.status))) order.status = 'SHIPPED';
-    await order.save();
-
-    sendSuccess(res, { shipment: shipment.toObject ? shipment.toObject() : shipment, vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder }, 'Order shipped', String(req.headers['x-request-id'] ?? ''));
+    await orderService.syncParentOrderStatus(order._id);
+    const updatedOrder = await Order.findById(order._id).lean();
+    sendSuccess(res, { shipment: shipment.toObject ? shipment.toObject() : shipment, vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder, order: updatedOrder || (order.toObject ? order.toObject() : order) }, 'Order shipped', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -213,7 +211,10 @@ export const readyVendorOrder = async (req, res, next) => {
     await shipment.save();
     vendorOrder.status = 'READY_TO_SHIP';
     await vendorOrder.save();
-    sendSuccess(res, { shipment: shipment.toObject(), vendorOrder: vendorOrder.toObject() }, 'Order ready to ship', String(req.headers['x-request-id'] ?? ''));
+    const order = await Order.findById(vendorOrder.parentOrderId).lean();
+    if (order) await orderService.syncParentOrderStatus(order._id);
+    const updatedOrder = await Order.findById(vendorOrder.parentOrderId).lean();
+    sendSuccess(res, { shipment: shipment.toObject(), vendorOrder: vendorOrder.toObject(), order: updatedOrder || order }, 'Order ready to ship', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -269,6 +270,9 @@ export const updateAdminShipmentStatus = async (req, res, next) => {
           ? 'IN_TRANSIT'
           : childShipments.some((entry) => entry.status === 'SHIPPED') ? 'SHIPPED' : null;
     if (parentStatus) await Order.updateOne({ _id: shipment.orderId }, { $set: { status: parentStatus } });
+    const vendorStatuses = await VendorOrder.find({ parentOrderId: shipment.orderId }).select('status').lean();
+    const nextOrderStatus = orderService.calculateParentOrderStatus(vendorStatuses.map((entry) => entry.status));
+    if (nextOrderStatus) await Order.updateOne({ _id: shipment.orderId }, { $set: { status: nextOrderStatus } });
 
     sendSuccess(res, shipment.toObject ? shipment.toObject() : shipment, 'Shipment status updated', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
@@ -311,6 +315,9 @@ export const deliveryWebhook = async (req, res, next) => {
           ? 'IN_TRANSIT'
           : siblingShipments.some((entry) => entry.status === 'SHIPPED') ? 'SHIPPED' : null;
     if (parentStatus) await Order.updateOne({ _id: shipment.orderId }, { $set: { status: parentStatus } });
+    const vendorStatuses = await VendorOrder.find({ parentOrderId: shipment.orderId }).select('status').lean();
+    const nextOrderStatus = orderService.calculateParentOrderStatus(vendorStatuses.map((entry) => entry.status));
+    if (nextOrderStatus) await Order.updateOne({ _id: shipment.orderId }, { $set: { status: nextOrderStatus } });
     const order = await Order.findById(shipment.orderId).select('orderNumber').lean();
     const notification = nextStatus === 'DELIVERED'
       ? { type: 'ORDER_DELIVERED', title: 'Order delivered', message: `Order ${order?.orderNumber || shipment.orderId} was delivered.` }

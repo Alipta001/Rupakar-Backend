@@ -1,6 +1,12 @@
 import crypto from 'node:crypto';
 import { env } from '../config/env.js';
 
+const hasRealDeliveryConfig = (url, token) => {
+  const normalizedUrl = String(url ?? '').trim();
+  const normalizedToken = String(token ?? '').trim();
+  return Boolean(normalizedUrl && normalizedToken && !/^<.*>$/.test(normalizedUrl) && !/^<.*>$/.test(normalizedToken) && !/placeholder|example/i.test(normalizedUrl) && !/placeholder|example/i.test(normalizedToken));
+};
+
 export class MockDeliveryProvider {
   async createShipment({ shipmentNumber }) {
     const trackingNumber = `MOCK-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
@@ -21,4 +27,5 @@ export class DelhiveryProvider extends MockDeliveryProvider {
   }
 }
 
-export const deliveryProvider = env.DELIVERY_MODE === 'delhivery' ? new DelhiveryProvider() : new MockDeliveryProvider();
+const isLiveDeliveryConfigured = env.DELIVERY_MODE === 'delhivery' && hasRealDeliveryConfig(env.DELIVERY_API_URL, env.DELIVERY_API_TOKEN);
+export const deliveryProvider = isLiveDeliveryConfigured ? new DelhiveryProvider() : new MockDeliveryProvider();

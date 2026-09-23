@@ -5,7 +5,12 @@ dotenv.config();
 const isProduction = process.env.NODE_ENV === 'production';
 const isDevelopment = ['development', 'local'].includes(process.env.NODE_ENV ?? 'development');
 const productionSecretNames = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
-const hasPlaceholder = (value) => !value || /change-me|dev-(access|refresh)-secret/i.test(value);
+const hasPlaceholder = (value) => !value || /change-me|dev-(access|refresh)-secret|^<.*>$|placeholder|example\.com/i.test(String(value).trim());
+const hasRealDeliveryConfig = (url, token) => {
+  const normalizedUrl = String(url ?? '').trim();
+  const normalizedToken = String(token ?? '').trim();
+  return Boolean(normalizedUrl && normalizedToken && !/^<.*>$/.test(normalizedUrl) && !/^<.*>$/.test(normalizedToken) && !/placeholder|example/i.test(normalizedUrl) && !/placeholder|example/i.test(normalizedToken));
+};
 const durationToMs = (value, fallback) => {
   const match = String(value ?? '').trim().match(/^(\d+)([smhd])$/i);
   if (!match) return fallback;
@@ -102,8 +107,8 @@ export const env = {
   SHIPPING_EXTRA_ITEM_FEE: Number(process.env.SHIPPING_EXTRA_ITEM_FEE ?? 20),
   FREE_SHIPPING_THRESHOLD: Number(process.env.FREE_SHIPPING_THRESHOLD ?? 1500),
   WEST_BENGAL_SHIPPING_DISCOUNT: Number(process.env.WEST_BENGAL_SHIPPING_DISCOUNT ?? 10),
-  DELIVERY_MODE: process.env.DELIVERY_MODE ?? 'mock',
-  DELIVERY_PROVIDER: process.env.DELIVERY_PROVIDER ?? 'mock',
+  DELIVERY_MODE: (process.env.DELIVERY_MODE === 'delhivery' && hasRealDeliveryConfig(process.env.DELIVERY_API_URL, process.env.DELIVERY_API_TOKEN)) ? 'delhivery' : 'mock',
+  DELIVERY_PROVIDER: (process.env.DELIVERY_PROVIDER === 'delhivery' && hasRealDeliveryConfig(process.env.DELIVERY_API_URL, process.env.DELIVERY_API_TOKEN)) ? 'delhivery' : 'mock',
   DELIVERY_API_URL: process.env.DELIVERY_API_URL ?? '',
   DELIVERY_API_TOKEN: process.env.DELIVERY_API_TOKEN ?? '',
   DELIVERY_WEBHOOK_SECRET: process.env.DELIVERY_WEBHOOK_SECRET ?? 'mock-delivery-webhook-secret',

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { Order } from '../app/models/order.model.js';
 import { getOrder } from '../app/controllers/order.controller.js';
+import { orderService } from '../app/services/order.service.js';
 
 const invoke = async (id, customerId, order) => {
   const json = jest.fn();
@@ -33,5 +34,10 @@ describe('customer order detail lookup', () => {
     const result = await invoke('507f1f77bcf86cd799439011', 'customer-2', null);
     expect(result.json).not.toHaveBeenCalled();
     expect(result.next).toHaveBeenCalledWith(expect.objectContaining({ code: 'ORDER_NOT_FOUND' }));
+  });
+
+  it('aggregates the latest parent order status across vendor fulfillment steps', () => {
+    const latest = orderService.calculateParentOrderStatus(['PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED']);
+    expect(latest).toBe('SHIPPED');
   });
 });

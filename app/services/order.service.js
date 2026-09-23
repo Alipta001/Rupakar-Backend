@@ -29,6 +29,30 @@ export class OrderService {
     return `ORD-${new Date().getFullYear()}-${stamp}-${random}`;
   }
 
+  calculateParentOrderStatus(statuses = []) {
+    const normalized = Array.from(new Set((Array.isArray(statuses) ? statuses : []).filter(Boolean).map((status) => String(status).trim().toUpperCase())));
+    if (normalized.length === 0) return 'PENDING_PAYMENT';
+    if (normalized.every((status) => status === 'CANCELLED')) return 'CANCELLED';
+
+    const statusPriority = ['PENDING_PAYMENT', 'PAID', 'CONFIRMED', 'PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'];
+    const ranked = normalized.map((status) => ({ status, rank: statusPriority.indexOf(status) === -1 ? -1 : statusPriority.indexOf(status) }));
+    const latest = ranked.filter((entry) => entry.rank >= 0).sort((a, b) => b.rank - a.rank)[0];
+    return latest ? latest.status : 'PENDING_PAYMENT';
+  }
+
+  async syncParentOrderStatus(orderId) {
+    if (!orderId) return null;
+    const [currentOrder, vendorOrders] = await Promise.all([
+      Order.findById(orderId).select('status').lean(),
+      VendorOrder.find({ parentOrderId: orderId }).select('status').lean(),
+    ]);
+    if (!currentOrder) return null;
+    const nextStatus = this.calculateParentOrderStatus(vendorOrders.map((entry) => entry.status));
+    if (nextStatus === currentOrder.status) return currentOrder;
+    const updated = await Order.findByIdAndUpdate(orderId, { $set: { status: nextStatus } }, { new: true });
+    return updated ? (typeof updated.toObject === 'function' ? updated.toObject() : updated) : { ...currentOrder, status: nextStatus };
+  }
+
   async getExistingOrderForIdempotency(customerId, idempotencyKey) {
     if (!customerId || !idempotencyKey) return null;
     const doc = await Order.findOne({ customerId, idempotencyKey });
