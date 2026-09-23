@@ -11,7 +11,12 @@ import { env } from '../config/env.js';
 import { RazorpayProvider } from './payment-providers/razorpay.provider.js';
 import { inventoryReservationService } from './inventory-reservation.service.js';
 import { vendorLedgerService } from './vendor-ledger.service.js';
-import { scheduleInvoiceGeneration, scheduleNotification } from '../jobs/queues.js';
+import {
+  scheduleInvoiceGeneration,
+  scheduleNotification,
+  scheduleVendorOrderPackReminder,
+  scheduleVendorOrderAutoCancel,
+} from '../jobs/queues.js';
 import { Vendor } from '../models/vendor.model.js';
 import { User } from '../models/user.model.js';
 import { Notification } from '../models/notification.model.js';
@@ -145,58 +150,68 @@ export class PaymentService {
       }
       vendorOrderIds.push(vendorOrder._id);
       await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId, vendorId, vendorOrderId: vendorOrder._id }).catch(() => null);
-      const vendor = await Vendor.findById(vendorId).select('ownerUserId').lean();
-      const owner = vendor?.ownerUserId ? await User.findById(vendor.ownerUserId).select('email phone').lean() : null;
-      if (vendor?.ownerUserId) {
+      await scheduleVendorOrderPackReminder({ vendorOrderId: vendorOrder._id }).catch(() => null);
+      await scheduleVendorOrderAutoCancel({ vendorOrderId: vendorOrder._id }).catch(() => null);
+      const vendor = await Vendor.findById(vendorId).select('ownerUserId email phone businessName').lean();
+      const owner = vendor?.ownerUserId ? await User.findById(vendor.ownerUserId).select('email phone name firstName lastName').lean() : null;
+      const targetEmail = owner?.email || vendor?.email;
+      const targetPhone = owner?.phone || vendor?.phone;
+
+      if (vendor?.ownerUserId || targetEmail || targetPhone) {
         try {
           const idempotencyKey = `vendor-order-confirmed:${vendorOrder._id}`;
-          const existingNotif = await Notification.findOne({
-            userId: vendor.ownerUserId,
+          const recipientUserId = vendor?.ownerUserId || null;
+          const existingNotif = recipientUserId ? await Notification.findOne({
+            userId: recipientUserId,
             'metadata.idempotencyKey': idempotencyKey,
-          }).lean();
+          }).lean() : null;
 
           if (!existingNotif) {
-            await notificationService.createNotification({
-              userId: vendor.ownerUserId,
-              type: 'VENDOR_ORDER_CONFIRMED',
-              title: 'New vendor order',
-              message: `Order ${order.orderNumber} is ready for processing.`,
-              channel: 'IN_APP',
-              metadata: {
-                orderId: order._id,
-                vendorOrderId: vendorOrder._id,
-                email: owner?.email,
-                phone: owner?.phone,
-                idempotencyKey,
-              },
-            }).catch(() => null);
-
-            if (owner?.email) {
-              await emailService.sendEmail({
-                to: owner.email,
-                subject: `New vendor order - ${order.orderNumber}`,
-                html: `<p>You have received a new order #${order.orderNumber} with ${items.length} item(s).</p><p>Total: ₹${vendorOrder.total}</p>`,
-                text: `You have received a new order #${order.orderNumber} with ${items.length} item(s). Total: ₹${vendorOrder.total}`,
+            if (recipientUserId) {
+              await notificationService.createNotification({
+                userId: recipientUserId,
+                type: 'VENDOR_ORDER_CONFIRMED',
+                title: 'New order placed',
+                message: `New order #${order.orderNumber} has been placed, please check your dashboard to process.`,
+                channel: 'IN_APP',
+                metadata: {
+                  orderId: order._id,
+                  vendorOrderId: vendorOrder._id,
+                  email: targetEmail,
+                  phone: targetPhone,
+                  idempotencyKey,
+                },
               }).catch(() => null);
             }
 
-            const rawPhone = String(owner?.phone || '').trim();
+            if (targetEmail) {
+              await emailService.sendEmail({
+                to: targetEmail,
+                subject: `New order #${order.orderNumber} placed - Please check your dashboard`,
+                html: `<div style="font-family:sans-serif;padding:16px;"><h2 style="color:#6B3E26;">New Order Received!</h2><p>New order has been placed, please check your dashboard to process.</p><p><strong>Order #:</strong> ${order.orderNumber}</p><p><strong>Total:</strong> ₹${vendorOrder.total}</p><p><strong>Items:</strong> ${(items || []).map((i) => `${i.productName} (x${i.quantity})`).join(', ')}</p></div>`,
+                text: `New order has been placed, please check your dashboard. Order #${order.orderNumber}, Items: ${items.length}, Total: ₹${vendorOrder.total}.`,
+              }).catch((err) => console.error('Failed to send vendor order email:', err?.message));
+            }
+
+            const rawPhone = String(targetPhone || '').trim();
             const digitsOnly = rawPhone.replace(/[^\d+]/g, '');
             const isValidPhone = /^\+?[0-9]{10,15}$/.test(digitsOnly);
             if (isValidPhone) {
               await smsService.sendSms({
                 to: rawPhone,
-                message: `Rupakar: New order #${order.orderNumber} received. Please check portal to process.`,
-              }).catch(() => null);
+                message: `Rupakar: New order has been placed, please check your dashboard to process #${order.orderNumber}.`,
+              }).catch((err) => console.error('Failed to send vendor order SMS:', err?.message));
             }
 
-            await scheduleNotification({
-              userId: vendor.ownerUserId,
-              type: 'VENDOR_ORDER_CONFIRMED',
-              title: 'New vendor order',
-              message: `Order ${order.orderNumber} is ready for processing.`,
-              metadata: { orderId: order._id, vendorOrderId: vendorOrder._id, email: owner?.email, phone: owner?.phone, idempotencyKey },
-            }).catch(() => null);
+            if (recipientUserId) {
+              await scheduleNotification({
+                userId: recipientUserId,
+                type: 'VENDOR_ORDER_CONFIRMED',
+                title: 'New order placed',
+                message: `New order #${order.orderNumber} has been placed, please check your dashboard to process.`,
+                metadata: { orderId: order._id, vendorOrderId: vendorOrder._id, email: targetEmail, phone: targetPhone, idempotencyKey },
+              }).catch(() => null);
+            }
           }
         } catch (notifError) {
           // Notification failures must never roll back order or payment

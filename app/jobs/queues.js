@@ -53,6 +53,60 @@ export function getEmailQueue() {
   return new Queue('email', { connection });
 }
 
+export function getFulfillmentQueue() {
+  return new Queue('order-fulfillment', { connection });
+}
+
+export async function scheduleVendorOrderPackReminder({ vendorOrderId, delayMs = 24 * 60 * 60 * 1000 }) {
+  if (!vendorOrderId) return null;
+  try {
+    const queue = getFulfillmentQueue();
+    const jobId = `pack-reminder:${vendorOrderId}`;
+    const job = await queue.add(
+      'vendor-order-pack-reminder',
+      { vendorOrderId },
+      {
+        jobId,
+        delay: Math.max(0, delayMs),
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: { age: 86400 },
+        removeOnFail: { age: 604800 },
+      },
+    );
+    await queue.close();
+    return job.id;
+  } catch (_error) {
+    if (env.NODE_ENV === 'production') throw _error;
+    return null;
+  }
+}
+
+export async function scheduleVendorOrderAutoCancel({ vendorOrderId, delayMs = 48 * 60 * 60 * 1000 }) {
+  if (!vendorOrderId) return null;
+  try {
+    const queue = getFulfillmentQueue();
+    const jobId = `auto-cancel:${vendorOrderId}`;
+    const job = await queue.add(
+      'vendor-order-auto-cancel',
+      { vendorOrderId },
+      {
+        jobId,
+        delay: Math.max(0, delayMs),
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: { age: 86400 },
+        removeOnFail: { age: 604800 },
+      },
+    );
+    await queue.close();
+    return job.id;
+  } catch (_error) {
+    if (env.NODE_ENV === 'production') throw _error;
+    return null;
+  }
+}
+
 export async function scheduleInvoiceGeneration({ orderId, customerId, vendorId = null, vendorOrderId = null }) {
   if (!orderId || !customerId) return null;
 
@@ -319,6 +373,32 @@ export async function startEmailWorker() {
 
   worker.on('failed', (job, error) => {
     console.error(`Email job ${job.id} failed:`, error);
+  });
+
+  return worker;
+}
+
+export async function startOrderFulfillmentWorker() {
+  const { orderFulfillmentService } = await import('../services/order-fulfillment.service.js');
+  const worker = new Worker(
+    'order-fulfillment',
+    async (job) => {
+      const { vendorOrderId } = job.data;
+      console.log(`Processing fulfillment job ${job.name} (${job.id}) for vendorOrder ${vendorOrderId}`);
+
+      if (job.name === 'vendor-order-pack-reminder') {
+        return await orderFulfillmentService.sendPackingReminder(vendorOrderId);
+      }
+      if (job.name === 'vendor-order-auto-cancel') {
+        return await orderFulfillmentService.autoCancelUnpackedVendorOrder(vendorOrderId);
+      }
+      throw new Error(`Unknown fulfillment job name: ${job.name}`);
+    },
+    { connection },
+  );
+
+  worker.on('failed', (job, error) => {
+    console.error(`Fulfillment job ${job?.id} failed:`, error);
   });
 
   return worker;

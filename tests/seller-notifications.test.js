@@ -5,6 +5,8 @@ jest.unstable_mockModule('../app/jobs/queues.js', () => ({
   scheduleNotification: jest.fn().mockResolvedValue('notif-job-1'),
   scheduleInvoiceGeneration: jest.fn().mockResolvedValue('invoice-job-1'),
   schedulePackingSlipGeneration: jest.fn().mockResolvedValue('packing-slip-job-1'),
+  scheduleVendorOrderPackReminder: jest.fn().mockResolvedValue('pack-reminder-job-1'),
+  scheduleVendorOrderAutoCancel: jest.fn().mockResolvedValue('auto-cancel-job-1'),
 }));
 
 const { paymentService } = await import('../app/services/payment.service.js');

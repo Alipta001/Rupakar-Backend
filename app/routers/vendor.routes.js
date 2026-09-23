@@ -25,6 +25,11 @@ import { listVendorOrders, getVendorOrder } from '../controllers/order.controlle
 import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
 import { packVendorOrder, processVendorOrder, readyVendorOrder, shipVendorOrder } from '../controllers/shipping.controller.js';
 import { listVendorInvoices, downloadVendorOrderInvoice, downloadVendorPackingSlip } from '../controllers/invoice.controller.js';
+import {
+  listVendorCancellationRequests,
+  approveVendorCancellationRequest,
+  rejectVendorCancellationRequest,
+} from '../controllers/cancellation.controller.js';
 
 const router = Router();
 
@@ -49,6 +54,9 @@ router.post('/orders/:id/ready-to-ship', readyVendorOrder);
 router.post('/orders/:id/ship', shipVendorOrder);
 router.get('/returns', listVendorReturns);
 router.get('/returns/:id', getVendorReturn);
+router.get('/cancellation-requests', listVendorCancellationRequests);
+router.post('/cancellation-requests/:id/approve', approveVendorCancellationRequest);
+router.post('/cancellation-requests/:id/reject', rejectVendorCancellationRequest);
 router.get('/invoices', listVendorInvoices);
 
 router.use(requireRole('admin'));

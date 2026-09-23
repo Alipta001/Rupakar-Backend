@@ -51,8 +51,8 @@ export class RefundService {
       throw new AppError(400, 'INVALID_REFUND_REQUEST', 'Refund payload is incomplete');
     }
 
-    const key = `${refundData.orderId}:${refundData.returnId ?? 'none'}:${refundData.amount}`;
-    if (this.isDuplicateRefund({ orderId: refundData.orderId, returnId: refundData.returnId, refundKey: key })) {
+    const key = `${refundData.orderId}:${refundData.returnId ?? refundData.cancellationRequestId ?? 'none'}:${refundData.amount}`;
+    if (this.isDuplicateRefund({ orderId: refundData.orderId, returnId: refundData.returnId || refundData.cancellationRequestId, refundKey: key })) {
       throw new AppError(409, 'DUPLICATE_REFUND', 'Duplicate refund request');
     }
 
@@ -78,7 +78,11 @@ export class RefundService {
         ? 'REFUND_PENDING'
         : 'REFUND_PENDING';
       await Order.updateOne({ _id: refundData.orderId }, { $set: { status: refundStatus, paymentStatus: refundStatus } });
-      await VendorOrder.updateMany({ parentOrderId: refundData.orderId }, { $set: { status: refundStatus } });
+      if (refundData.vendorOrderId) {
+        await VendorOrder.updateOne({ _id: refundData.vendorOrderId }, { $set: { status: refundStatus } });
+      } else {
+        await VendorOrder.updateMany({ parentOrderId: refundData.orderId }, { $set: { status: refundStatus } });
+      }
     }
 
     const refundNumber = `RF-${Date.now().toString(36).toUpperCase()}`;
@@ -88,6 +92,7 @@ export class RefundService {
       vendorOrderId: refundData.vendorOrderId || null,
       paymentId: refundData.paymentId,
       returnId: refundData.returnId || null,
+      cancellationRequestId: refundData.cancellationRequestId || null,
       customerId: refundData.customerId,
       vendorId: refundData.vendorId,
       amount: Number(refundData.amount || 0),

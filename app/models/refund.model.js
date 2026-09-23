@@ -9,6 +9,7 @@ const refundSchema = new Schema(
     vendorOrderId: { type: Schema.Types.ObjectId, ref: 'VendorOrder', default: null, index: true },
     paymentId: { type: Schema.Types.ObjectId, ref: 'Payment', required: true, index: true },
     returnId: { type: Schema.Types.ObjectId, ref: 'Return', default: null, index: true },
+    cancellationRequestId: { type: Schema.Types.ObjectId, ref: 'CancellationRequest', default: null, index: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', required: true, index: true },
     amount: { type: Number, required: true, min: 0 },
