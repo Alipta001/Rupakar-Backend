@@ -5,7 +5,11 @@ dotenv.config();
 const isProduction = process.env.NODE_ENV === 'production';
 const isDevelopment = ['development', 'local'].includes(process.env.NODE_ENV ?? 'development');
 const productionSecretNames = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
-const hasPlaceholder = (value) => !value || /change-me|dev-(access|refresh)-secret|^<.*>$|placeholder|example\.com/i.test(String(value).trim());
+const hasPlaceholder = (value) => {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return true;
+  return /change-me|dev-(access|refresh)-secret|^<.*>$|placeholder|localhost(:\d+)?$/i.test(normalized);
+};
 const hasRealDeliveryConfig = (url, token) => {
   const normalizedUrl = String(url ?? '').trim();
   const normalizedToken = String(token ?? '').trim();
