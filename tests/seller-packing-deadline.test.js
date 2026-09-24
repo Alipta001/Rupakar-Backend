@@ -195,6 +195,11 @@ describe('Seller Packing Deadline & Reminder Automation', () => {
         ownerUserId: vendorUserId1,
         email: 'seller@rupakar.in',
       }));
+      jest.spyOn(User, 'findById').mockReturnValue(query({
+        _id: vendorUserId1,
+        email: 'seller@rupakar.in',
+        phone: '+919876543210',
+      }));
 
       const stockSpy = jest.spyOn(inventoryService, 'increaseStock').mockResolvedValue({});
       const refundSpy = jest.spyOn(refundService, 'createRefund').mockResolvedValue({ refundId: 'rf-123' });
@@ -264,7 +269,8 @@ describe('Seller Packing Deadline & Reminder Automation', () => {
       jest.spyOn(VendorOrder, 'find').mockReturnValue({
         lean: jest.fn().mockResolvedValue([mockVendorOrder1, mockVendorOrder2]),
       });
-      jest.spyOn(Vendor, 'findById').mockReturnValue(query({ _id: vendorId1 }));
+      jest.spyOn(Vendor, 'findById').mockReturnValue(query({ _id: vendorId1, ownerUserId: vendorUserId1 }));
+      jest.spyOn(User, 'findById').mockReturnValue(query({ _id: vendorUserId1, email: 'seller@rupakar.in' }));
       jest.spyOn(inventoryReservationService, 'releaseReservation').mockResolvedValue(true);
       jest.spyOn(refundService, 'createRefund').mockResolvedValue({ refundId: 'rf-part' });
       jest.spyOn(notificationService, 'createNotification').mockResolvedValue({});

@@ -45,46 +45,20 @@ export class ResendEmailProvider {
 }
 
 export class GmailEmailProvider {
-  constructor() {
+  constructor({ host, port, secure } = {}) {
     const fromAddress = env.EMAIL_FROM || env.CONTACT_EMAIL || env.EMAIL_USER;
     this.from = `"Rupakar" <${fromAddress}>`;
-    this.transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: env.EMAIL_USER,
-        pass: env.EMAIL_PASSWORD,
-      },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000,
-    });
-  }
 
-  async send({ to, subject, html, text }) {
-    try {
-      const info = await this.transporter.sendMail({
-        from: this.from,
-        to,
-        subject,
-        text: text || subject,
-        html,
-      });
-      return { messageId: info.messageId, success: true };
-    } catch (error) {
-      console.error('[EMAIL ERROR: GMAIL]', error.message);
-      throw new Error(`Email send failed: ${error.message}`);
-    }
-  }
-}
+    this.port = Number(port ?? env.EMAIL_PORT ?? 587);
+    this.secure = typeof secure === 'boolean' ? secure : (this.port === 465);
+    const resolvedHost = host || env.EMAIL_HOST || 'smtp.gmail.com';
+    this.host = resolvedHost.includes('gmail') ? 'smtp.gmail.com' : resolvedHost;
 
-export class SmtpEmailProvider {
-  constructor() {
-    const fromAddress = env.EMAIL_FROM || env.CONTACT_EMAIL || (env.EMAIL_USER?.includes('@') ? env.EMAIL_USER : 'noreply@rupakar.com');
-    this.from = `"Rupakar" <${fromAddress}>`;
     this.transporter = nodemailer.createTransport({
-      host: env.EMAIL_HOST,
-      port: env.EMAIL_PORT,
-      secure: env.EMAIL_PORT === 465,
+      host: this.host,
+      port: this.port,
+      secure: this.secure,
+      requireTLS: !this.secure,
       auth: {
         user: env.EMAIL_USER,
         pass: env.EMAIL_PASSWORD,
@@ -109,7 +83,51 @@ export class SmtpEmailProvider {
       });
       return { messageId: info.messageId, success: true };
     } catch (error) {
-      console.error('[EMAIL ERROR: SMTP]', error.message);
+      console.error(`[EMAIL ERROR: GMAIL] (host: ${this.host}, port: ${this.port}, secure: ${this.secure})`, error.message);
+      throw new Error(`Email send failed: ${error.message}`);
+    }
+  }
+}
+
+export class SmtpEmailProvider {
+  constructor({ host, port, secure } = {}) {
+    const fromAddress = env.EMAIL_FROM || env.CONTACT_EMAIL || (env.EMAIL_USER?.includes('@') ? env.EMAIL_USER : 'noreply@rupakar.com');
+    this.from = `"Rupakar" <${fromAddress}>`;
+
+    this.host = host || env.EMAIL_HOST || 'smtp.example.com';
+    this.port = Number(port ?? env.EMAIL_PORT ?? 587);
+    this.secure = typeof secure === 'boolean' ? secure : (this.port === 465);
+
+    this.transporter = nodemailer.createTransport({
+      host: this.host,
+      port: this.port,
+      secure: this.secure,
+      requireTLS: !this.secure,
+      auth: {
+        user: env.EMAIL_USER,
+        pass: env.EMAIL_PASSWORD,
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
+    });
+  }
+
+  async send({ to, subject, html, text }) {
+    try {
+      const info = await this.transporter.sendMail({
+        from: this.from,
+        to,
+        subject,
+        text: text || subject,
+        html,
+      });
+      return { messageId: info.messageId, success: true };
+    } catch (error) {
+      console.error(`[EMAIL ERROR: SMTP] (host: ${this.host}, port: ${this.port}, secure: ${this.secure})`, error.message);
       throw new Error(`Email send failed: ${error.message}`);
     }
   }

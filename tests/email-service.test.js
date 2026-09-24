@@ -121,4 +121,25 @@ describe('EmailService and Providers', () => {
     expect(sentData.html).toContain('112233');
     expect(sentData.html).toContain('/reset-password?email=user%40example.com');
   });
+
+  it('GmailEmailProvider resolves port 587 with secure:false and requireTLS:true by default', () => {
+    const provider = new GmailEmailProvider();
+    expect(provider.port).toBe(587);
+    expect(provider.secure).toBe(false);
+    expect(provider.host).toBe('smtp.gmail.com');
+  });
+
+  it('GmailEmailProvider resolves port 465 with secure:true when configured', () => {
+    const provider = new GmailEmailProvider({ port: 465 });
+    expect(provider.port).toBe(465);
+    expect(provider.secure).toBe(true);
+    expect(provider.host).toBe('smtp.gmail.com');
+  });
+
+  it('SmtpEmailProvider resolves configured host, port 587, and secure:false', () => {
+    const provider = new SmtpEmailProvider({ host: 'smtp.sendgrid.net', port: 587 });
+    expect(provider.host).toBe('smtp.sendgrid.net');
+    expect(provider.port).toBe(587);
+    expect(provider.secure).toBe(false);
+  });
 });

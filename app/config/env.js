@@ -95,7 +95,7 @@ export const env = {
   REFRESH_TOKEN_MAX_AGE_MS: durationToMs(process.env.REFRESH_TOKEN_EXPIRATION ?? '7d', 7 * 24 * 60 * 60 * 1000),
   EMAIL_PROVIDER: process.env.EMAIL_PROVIDER ?? (process.env.RESEND_API_KEY ? 'resend' : 'smtp'),
   EMAIL_HOST: process.env.EMAIL_HOST ?? 'smtp.gmail.com',
-  EMAIL_PORT: Number(process.env.EMAIL_PORT ?? 465),
+  EMAIL_PORT: Number(process.env.EMAIL_PORT ?? 587),
   EMAIL_USER: process.env.EMAIL_USER ?? 'noreply@example.com',
   EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ?? process.env.EMAIL_PASS ?? 'change-me',
   EMAIL_FROM: process.env.EMAIL_FROM ?? process.env.CONTACT_EMAIL ?? (process.env.EMAIL_USER && process.env.EMAIL_USER.includes('@') ? process.env.EMAIL_USER : 'noreply@rupakar.com'),
