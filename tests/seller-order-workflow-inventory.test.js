@@ -8,6 +8,7 @@ import { InventoryReservation } from '../app/models/inventory-reservation.model.
 import { inventoryService } from '../app/services/inventory.service.js';
 import { inventoryReservationService } from '../app/services/inventory-reservation.service.js';
 import { shipmentStateService } from '../app/services/shipment-state.service.js';
+import { shippingService } from '../app/services/shipping.service.js';
 import { orderService } from '../app/services/order.service.js';
 import {
   processVendorOrder,
@@ -79,6 +80,128 @@ describe('Seller Order Workflow & Inventory Decrement at READY_TO_SHIP', () => {
       await expect(
         packVendorOrder({ params: { id: vendorOrderId.toHexString() }, user: { sub: vendorUserId }, headers: {} }, res, (err) => { throw err; })
       ).rejects.toThrow('Only approved vendors can manage orders');
+    });
+
+    it('first Pack click succeeds reliably when shipment does not exist yet without throwing TypeError', async () => {
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorId, ownerUserId: vendorUserId, status: 'APPROVED' });
+      const vo = {
+        _id: vendorOrderId,
+        vendorId,
+        parentOrderId,
+        status: 'PROCESSING',
+        save: jest.fn().mockResolvedValue(true),
+        toObject: () => ({ _id: vendorOrderId, status: 'PACKED' }),
+      };
+      jest.spyOn(VendorOrder, 'findOne').mockResolvedValue(vo);
+      jest.spyOn(VendorOrder, 'findOneAndUpdate').mockResolvedValue(vo);
+      jest.spyOn(VendorOrder, 'findById').mockReturnValue({
+        lean: jest.fn().mockResolvedValue({ ...vo, status: 'PACKED' }),
+      });
+      jest.spyOn(Order, 'findById').mockResolvedValue({ _id: parentOrderId, paymentStatus: 'PAID' });
+      jest.spyOn(orderService, 'syncParentOrderStatus').mockResolvedValue(true);
+
+      // First click: Shipment.findOne returns null
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue(null);
+      // createShipment returns shipment with save method
+      const createdShipment = {
+        _id: new mongoose.Types.ObjectId(),
+        vendorOrderId,
+        orderId: parentOrderId,
+        status: 'PACKED',
+        save: jest.fn().mockResolvedValue(true),
+        toObject: () => ({ status: 'PACKED' }),
+      };
+      jest.spyOn(shippingService, 'createShipment').mockResolvedValue(createdShipment);
+
+      const res = response();
+      await packVendorOrder(
+        { params: { id: vendorOrderId.toHexString() }, user: { sub: vendorUserId }, headers: {} },
+        res,
+        (err) => { throw err; }
+      );
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({
+          vendorOrder: expect.objectContaining({ status: 'PACKED' }),
+        }),
+      }));
+    });
+
+    it('repeated Pack request is idempotent and returns 200 without throwing 500 error', async () => {
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorId, ownerUserId: vendorUserId, status: 'APPROVED' });
+      const packedVo = {
+        _id: vendorOrderId,
+        vendorId,
+        parentOrderId,
+        status: 'PACKED', // Already PACKED
+        toObject: () => ({ _id: vendorOrderId, status: 'PACKED' }),
+      };
+      jest.spyOn(VendorOrder, 'findOne').mockResolvedValue(packedVo);
+      jest.spyOn(Order, 'findById').mockResolvedValue({ _id: parentOrderId, paymentStatus: 'PAID' });
+      const mockShipment = {
+        _id: new mongoose.Types.ObjectId(),
+        status: 'PACKED',
+        toObject: () => ({ status: 'PACKED' }),
+      };
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue(mockShipment);
+
+      const res = response();
+      await packVendorOrder(
+        { params: { id: vendorOrderId.toHexString() }, user: { sub: vendorUserId }, headers: {} },
+        res,
+        (err) => { throw err; }
+      );
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({
+          vendorOrder: expect.objectContaining({ status: 'PACKED' }),
+          isIdempotent: true,
+        }),
+      }));
+    });
+
+    it('concurrent Pack requests safely return idempotent response when another request wins the race', async () => {
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorId, ownerUserId: vendorUserId, status: 'APPROVED' });
+      const vo = {
+        _id: vendorOrderId,
+        vendorId,
+        parentOrderId,
+        status: 'PROCESSING',
+      };
+      // findOne returns PROCESSING initially
+      jest.spyOn(VendorOrder, 'findOne')
+        .mockResolvedValueOnce(vo)
+        // Later check in race handler returns PACKED
+        .mockResolvedValueOnce({
+          _id: vendorOrderId,
+          status: 'PACKED',
+          toObject: () => ({ _id: vendorOrderId, status: 'PACKED' }),
+        });
+      // findOneAndUpdate returns null because another concurrent request already transitioned it
+      jest.spyOn(VendorOrder, 'findOneAndUpdate').mockResolvedValue(null);
+      jest.spyOn(Order, 'findById').mockResolvedValue({ _id: parentOrderId, paymentStatus: 'PAID' });
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        _id: new mongoose.Types.ObjectId(),
+        status: 'PACKED',
+        toObject: () => ({ status: 'PACKED' }),
+      });
+
+      const res = response();
+      await packVendorOrder(
+        { params: { id: vendorOrderId.toHexString() }, user: { sub: vendorUserId }, headers: {} },
+        res,
+        (err) => { throw err; }
+      );
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({
+          vendorOrder: expect.objectContaining({ status: 'PACKED' }),
+          isIdempotent: true,
+        }),
+      }));
     });
   });
 

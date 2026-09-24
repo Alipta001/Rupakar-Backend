@@ -37,7 +37,7 @@ export class ShippingService {
 
     const existing = await Shipment.findOne({ vendorOrderId, status: { $in: ['PENDING', 'READY_TO_SHIP', 'PACKED', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY'] } });
     if (existing) {
-      return existing.toObject ? existing.toObject() : existing;
+      return existing;
     }
 
     const providerShipment = await deliveryProvider.createShipment({ shipmentNumber: `SHIP-${Date.now().toString(36).toUpperCase()}` });
@@ -56,7 +56,7 @@ export class ShippingService {
       metadata,
     });
 
-    return shipment.toObject ? shipment.toObject() : shipment;
+    return shipment;
   }
 
   async getTracking(shipmentId) {

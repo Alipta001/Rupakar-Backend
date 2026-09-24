@@ -300,10 +300,11 @@ export class CancellationService {
       await notificationService.createNotification({
         userId: vendor.ownerUserId,
         type: 'CANCELLATION_REQUEST_SUBMITTED',
-        title: 'New Cancellation Request',
-        message: `Customer requested cancellation for "${cancellationRequest.productName}" in Order #${orderNumber}. Reason: ${cancellationRequest.reason}`,
+        title: 'New Cancellation Request - Action Required',
+        message: `Customer requested cancellation for "${cancellationRequest.productName}" in Order #${orderNumber}. Reason: ${cancellationRequest.reason}. Action required: Please review and approve or reject from your seller dashboard.`,
         channel: 'IN_APP',
         metadata: {
+          idempotencyKey: `cancel_req_${cancellationRequest._id}_vendor_inapp`,
           requestId: cancellationRequest._id,
           orderId: order._id,
           vendorOrderId: vendorOrder._id,
@@ -314,9 +315,9 @@ export class CancellationService {
     if (targetEmail) {
       await emailService.sendEmail({
         to: targetEmail,
-        subject: `Cancellation Request for Order #${orderNumber}`,
-        html: `<p>A customer has requested cancellation for <strong>${cancellationRequest.productName}</strong> in order #${orderNumber}.</p><p>Reason: ${cancellationRequest.reason}</p><p>Please review and approve or reject from your seller dashboard.</p>`,
-        text: `Customer requested cancellation for ${cancellationRequest.productName} in order #${orderNumber}. Reason: ${cancellationRequest.reason}. Please review in your dashboard.`,
+        subject: `Cancellation Request for Order #${orderNumber} - Action Required`,
+        html: `<p>A customer has requested cancellation for <strong>${cancellationRequest.productName}</strong> in order #${orderNumber}.</p><p>Reason: ${cancellationRequest.reason}</p><p>Action is required: Please review and approve or reject this request from your seller dashboard.</p>`,
+        text: `Customer requested cancellation for ${cancellationRequest.productName} in order #${orderNumber}. Reason: ${cancellationRequest.reason}. Action required: Please review and approve or reject from your seller dashboard.`,
       }).catch(() => null);
     }
 
@@ -325,7 +326,7 @@ export class CancellationService {
     if (/^\+?[0-9]{10,15}$/.test(digitsOnly)) {
       await smsService.sendSms({
         to: rawPhone,
-        message: `Rupakar: Customer requested cancellation for order #${orderNumber} (${cancellationRequest.productName}). Please check your dashboard.`,
+        message: `Rupakar: Customer requested cancellation for order #${orderNumber} (${cancellationRequest.productName}). Action required: Please check your seller dashboard.`,
       }).catch(() => null);
     }
   }
@@ -342,6 +343,7 @@ export class CancellationService {
       message: `Your cancellation request for "${request.productName}" in Order #${orderNumber} has been approved. A refund of INR ${refundAmount} has been initiated.`,
       channel: 'IN_APP',
       metadata: {
+        idempotencyKey: `cancel_appr_${request._id}_customer_inapp`,
         requestId: request._id,
         orderId: request.orderId,
         refundAmount,
@@ -356,32 +358,52 @@ export class CancellationService {
         text: `Your cancellation request for ${request.productName} in order #${orderNumber} has been approved. A refund of INR ${refundAmount} has been initiated.`,
       }).catch(() => null);
     }
+
+    const rawPhone = String(customer?.phone || '').trim();
+    const digitsOnly = rawPhone.replace(/[^\d+]/g, '');
+    if (/^\+?[0-9]{10,15}$/.test(digitsOnly)) {
+      await smsService.sendSms({
+        to: rawPhone,
+        message: `Rupakar: Your cancellation request for "${request.productName}" in Order #${orderNumber} has been approved. Refund of INR ${refundAmount} initiated.`,
+      }).catch(() => null);
+    }
   }
 
   async notifyCustomerRejection({ request }) {
     const customer = await User.findById(request.customerId).select('email phone name').lean();
     const order = await Order.findById(request.orderId).select('orderNumber').lean();
     const orderNumber = order?.orderNumber || String(request.orderId).slice(-8);
+    const reasonText = request.rejectionReason || request.vendorRejectionReason || 'Seller rejected cancellation request';
 
     await notificationService.createNotification({
       userId: request.customerId,
       type: 'CANCELLATION_REJECTED',
       title: 'Cancellation Request Rejected',
-      message: `Your cancellation request for "${request.productName}" in Order #${orderNumber} was not approved. Reason: ${request.rejectionReason}`,
+      message: `Your cancellation request for "${request.productName}" in Order #${orderNumber} was not approved. Reason: ${reasonText}`,
       channel: 'IN_APP',
       metadata: {
+        idempotencyKey: `cancel_rej_${request._id}_customer_inapp`,
         requestId: request._id,
         orderId: request.orderId,
-        rejectionReason: request.rejectionReason,
+        rejectionReason: reasonText,
       },
     }).catch(() => null);
 
     if (customer?.email) {
       await emailService.sendEmail({
         to: customer.email,
-        subject: `Cancellation Request Update - Order #${orderNumber}`,
-        html: `<p>Your cancellation request for <strong>${request.productName}</strong> in order #${orderNumber} could not be approved by the seller.</p><p>Reason: ${request.rejectionReason}</p>`,
-        text: `Your cancellation request for ${request.productName} in order #${orderNumber} was rejected. Reason: ${request.rejectionReason}`,
+        subject: `Cancellation Request Rejected - Order #${orderNumber}`,
+        html: `<p>Your cancellation request for <strong>${request.productName}</strong> in order #${orderNumber} could not be approved by the seller.</p><p>Reason: ${reasonText}</p>`,
+        text: `Your cancellation request for ${request.productName} in order #${orderNumber} was rejected. Reason: ${reasonText}`,
+      }).catch(() => null);
+    }
+
+    const rawPhone = String(customer?.phone || '').trim();
+    const digitsOnly = rawPhone.replace(/[^\d+]/g, '');
+    if (/^\+?[0-9]{10,15}$/.test(digitsOnly)) {
+      await smsService.sendSms({
+        to: rawPhone,
+        message: `Rupakar: Your cancellation request for "${request.productName}" in Order #${orderNumber} was not approved. Reason: ${reasonText}`,
       }).catch(() => null);
     }
   }

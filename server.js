@@ -53,11 +53,13 @@ async function startServer() {
   const redis = app.locals.redis;
   if (env.REDIS_ENABLED) {
     try {
-      await redis.connect();
+      if (redis && (redis.status === 'wait' || redis.status === 'close' || redis.status === 'end')) {
+        await redis.connect();
+      }
       console.log('Redis connected');
-    } catch {
+    } catch (err) {
       if (env.NODE_ENV === 'production') {
-        throw new Error('Redis is required in production');
+        throw new Error(`Redis is required in production: ${err?.message || 'unknown error'}`);
       }
       console.warn('Redis unavailable; continuing without background queue processing');
     }

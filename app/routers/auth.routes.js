@@ -68,16 +68,25 @@ router.get('/status', (_req, res) => {
 router.get('/google', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
   const redirect = safeRedirectUrl(req.query.redirect || req.query.returnTo || undefined);
+  const callbackUrl = env.GOOGLE_REDIRECT_URI || `${env.BACKEND_URL}/api/v1/auth/google/callback`;
   const googleUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   googleUrl.searchParams.set('client_id', env.GOOGLE_CLIENT_ID || '');
-  googleUrl.searchParams.set('redirect_uri', env.GOOGLE_REDIRECT_URI || `${env.FRONTEND_URL}/api/v1/auth/google/callback`);
+  googleUrl.searchParams.set('redirect_uri', callbackUrl);
   googleUrl.searchParams.set('response_type', 'code');
   googleUrl.searchParams.set('scope', 'openid email profile');
   googleUrl.searchParams.set('state', state);
   googleUrl.searchParams.set('prompt', 'consent');
   googleUrl.searchParams.set('access_type', 'offline');
-  res.cookie('google_oauth_state', state, { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 10 * 60 * 1000, path: '/' });
-  res.cookie('google_oauth_redirect', redirect, { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 10 * 60 * 1000, path: '/' });
+  const cookieOpts = {
+    httpOnly: true,
+    secure: env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000,
+    path: '/',
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+  };
+  res.cookie('google_oauth_state', state, cookieOpts);
+  res.cookie('google_oauth_redirect', redirect, cookieOpts);
   res.redirect(googleUrl.toString());
 });
 
@@ -86,8 +95,15 @@ router.get('/google/callback', async (req, res, next) => {
     const { code, state, error } = req.query;
     const storedState = req.cookies?.google_oauth_state;
     const storedRedirect = req.cookies?.google_oauth_redirect || `${env.FRONTEND_URL}/account`;
-    res.clearCookie('google_oauth_state', { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax', path: '/' });
-    res.clearCookie('google_oauth_redirect', { httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax', path: '/' });
+    const clearCookieOpts = {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+    };
+    res.clearCookie('google_oauth_state', clearCookieOpts);
+    res.clearCookie('google_oauth_redirect', clearCookieOpts);
 
     if (error) {
       return res.redirect(`${env.FRONTEND_URL}/login?authError=${encodeURIComponent('Google sign-in was cancelled or unavailable.')}`);
@@ -96,6 +112,7 @@ router.get('/google/callback', async (req, res, next) => {
       return res.redirect(`${env.FRONTEND_URL}/login?authError=${encodeURIComponent('Google sign-in could not be verified. Please try again.')}`);
     }
 
+    const callbackUrl = env.GOOGLE_REDIRECT_URI || `${env.BACKEND_URL}/api/v1/auth/google/callback`;
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -103,7 +120,7 @@ router.get('/google/callback', async (req, res, next) => {
         code: String(code),
         client_id: env.GOOGLE_CLIENT_ID,
         client_secret: env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: env.GOOGLE_REDIRECT_URI || `${env.FRONTEND_URL}/api/v1/auth/google/callback`,
+        redirect_uri: callbackUrl,
         grant_type: 'authorization_code',
       }),
     });

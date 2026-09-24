@@ -10,7 +10,8 @@ export const errorHandler = (err, req, res, _next) => {
   const requestId = String(req.headers['x-request-id'] ?? '');
 
   if (err?.name === 'ZodError') {
-    sendError(res, 400, 'VALIDATION_ERROR', 'Request validation failed', requestId);
+    const detail = err.issues?.map((i) => i.message).filter(Boolean).join(', ') || 'Request validation failed';
+    sendError(res, 400, 'VALIDATION_ERROR', detail, requestId);
     return;
   }
 
@@ -38,6 +39,9 @@ export const errorHandler = (err, req, res, _next) => {
     sendError(res, err.statusCode, err.code, err.message, requestId);
     return;
   }
+
+  // Render-safe logging: log unexpected errors with requestId and root cause stack trace
+  console.error(`[SERVER_ERROR] [requestId=${requestId || 'none'}] ${req.method} ${req.originalUrl}:`, err?.stack || err?.message || err);
 
   if (err instanceof Error) {
     if (process.env.NODE_ENV === 'production') {

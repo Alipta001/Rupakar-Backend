@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { Order } from '../models/order.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
 import { OrderStatusHistory } from '../models/order-status-history.model.js';
@@ -13,6 +14,11 @@ import { inventoryService } from './inventory.service.js';
 import { InventoryReservation } from '../models/inventory-reservation.model.js';
 import { paymentService } from './payment.service.js';
 import { refundService } from './refund.service.js';
+import { notificationService } from './notification.service.js';
+import { emailService } from './email.service.js';
+import { smsService } from './sms.service.js';
+import { Vendor } from '../models/vendor.model.js';
+import { User } from '../models/user.model.js';
 import { env } from '../config/env.js';
 
 
@@ -127,6 +133,93 @@ export class OrderService {
     });
   }
 
+  async notifyVendorsOrderCancelled({ order, vendorOrders = [], reason = 'Customer cancelled' }) {
+    try {
+      if (mongoose.connection && mongoose.connection.readyState !== 1) {
+        return;
+      }
+      const orderNumber = order.orderNumber || String(order._id).slice(-8);
+      for (const vo of vendorOrders) {
+        if (!vo.vendorId) continue;
+        const vendor = await Vendor.findById(vo.vendorId).select('ownerUserId email phone name').lean();
+        if (!vendor) continue;
+        const owner = vendor.ownerUserId ? await User.findById(vendor.ownerUserId).select('email phone').lean() : null;
+        const targetEmail = owner?.email || vendor.email;
+        const targetPhone = owner?.phone || vendor.phone;
+
+        if (vendor.ownerUserId) {
+          await notificationService.createNotification({
+            userId: vendor.ownerUserId,
+            type: 'ORDER_CANCELLED',
+            title: 'Order Cancelled',
+            message: `Customer cancelled Order #${orderNumber}. Reason: ${reason}`,
+            channel: 'IN_APP',
+            metadata: {
+              idempotencyKey: `order_cancel_${order._id}_${vo._id}_vendor_inapp`,
+              orderId: order._id,
+              vendorOrderId: vo._id,
+              reason,
+            },
+          }).catch(() => null);
+        }
+
+        if (targetEmail) {
+          await emailService.sendEmail({
+            to: targetEmail,
+            subject: `Order #${orderNumber} Cancelled - Customer Action`,
+            html: `<p>Customer has cancelled Order #${orderNumber}.</p><p>Reason: ${reason}</p>`,
+            text: `Customer has cancelled Order #${orderNumber}. Reason: ${reason}`,
+          }).catch(() => null);
+        }
+
+        const rawPhone = String(targetPhone || '').trim();
+        const digitsOnly = rawPhone.replace(/[^\d+]/g, '');
+        if (/^\+?[0-9]{10,15}$/.test(digitsOnly)) {
+          await smsService.sendSms({
+            to: rawPhone,
+            message: `Rupakar: Order #${orderNumber} has been cancelled by customer. Reason: ${reason}.`,
+          }).catch(() => null);
+        }
+      }
+
+      if (order.customerId) {
+        await notificationService.createNotification({
+          userId: order.customerId,
+          type: 'ORDER_CANCELLED',
+          title: 'Order Cancelled',
+          message: `Your Order #${orderNumber} has been successfully cancelled.`,
+          channel: 'IN_APP',
+          metadata: {
+            idempotencyKey: `order_cancel_${order._id}_customer_inapp`,
+            orderId: order._id,
+            reason,
+          },
+        }).catch(() => null);
+
+        const customer = await User.findById(order.customerId).select('email phone name').lean();
+        if (customer?.email) {
+          await emailService.sendEmail({
+            to: customer.email,
+            subject: `Order #${orderNumber} Cancelled`,
+            html: `<p>Your Order #${orderNumber} has been successfully cancelled.</p>`,
+            text: `Your Order #${orderNumber} has been successfully cancelled.`,
+          }).catch(() => null);
+        }
+
+        const rawCustomerPhone = String(customer?.phone || '').trim();
+        const digitsOnlyCustomer = rawCustomerPhone.replace(/[^\d+]/g, '');
+        if (/^\+?[0-9]{10,15}$/.test(digitsOnlyCustomer)) {
+          await smsService.sendSms({
+            to: rawCustomerPhone,
+            message: `Rupakar: Your Order #${orderNumber} has been cancelled.`,
+          }).catch(() => null);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to send order cancellation notifications:', err?.message || err);
+    }
+  }
+
   async cancelOrder({ orderId, customerId, reason = 'Customer cancelled', actorType = 'CUSTOMER', actorId = null }) {
     if (!orderId) {
       throw new AppError(400, 'INVALID_ORDER_ID', 'Order id is required');
@@ -143,6 +236,99 @@ export class OrderService {
 
     if (order.status === 'CANCELLED') {
       return { ...order.toObject(), status: 'CANCELLED', paymentStatus: order.paymentStatus || 'CANCELLED' };
+    }
+
+    const vendorOrdersToCancel = await VendorOrder.find({ parentOrderId: order._id });
+
+    // Validate state conflicts: once packed or shipped, order cannot be directly cancelled by customer
+    if (actorType === 'CUSTOMER') {
+      if (['PACKED', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(order.status)) {
+        throw new AppError(409, 'ORDER_ALREADY_PACKED', 'This order can no longer be cancelled because it has already been packed');
+      }
+      const packedVo = vendorOrdersToCancel.find((vo) =>
+        ['PACKED', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(vo.status)
+      );
+      if (packedVo) {
+        throw new AppError(409, 'ORDER_ALREADY_PACKED', 'This order can no longer be cancelled because it has already been packed');
+      }
+    }
+
+    const payment = await paymentService.getPaymentForOrder(order._id);
+    let targetPaymentStatus = 'CANCELLED';
+    if (payment) {
+      const currentPaymentStatus = payment.status || 'PENDING';
+      if (['CAPTURED', 'PAID'].includes(currentPaymentStatus)) {
+        await paymentService.transitionPaymentStatus(currentPaymentStatus, 'REFUND_PENDING', {
+          paymentId: payment._id,
+          orderId: order._id,
+          actorType,
+          actorId,
+          reason,
+        });
+        if (typeof payment.save === 'function') {
+          payment.status = 'REFUND_PENDING';
+          await payment.save();
+        } else {
+          await Payment.findByIdAndUpdate(payment._id, { $set: { status: 'REFUND_PENDING' } });
+        }
+
+        // Process refunds: NEVER silently fail refunds!
+        if (vendorOrdersToCancel.length > 0) {
+          for (const vo of vendorOrdersToCancel) {
+            const voRefundAmount = Number(vo.total || 0);
+            if (voRefundAmount > 0) {
+              await refundService.createRefund({
+                refundData: {
+                  orderId: order._id,
+                  vendorOrderId: vo._id,
+                  paymentId: payment._id,
+                  customerId: order.customerId,
+                  vendorId: vo.vendorId,
+                  amount: voRefundAmount,
+                  reason: `ORDER_CANCELLED: ${reason}`,
+                  isCancellation: true,
+                },
+              });
+            }
+          }
+        } else {
+          const refundAmount = Number(order.total || payment.amount || 0);
+          if (refundAmount > 0) {
+            await refundService.createRefund({
+              refundData: {
+                orderId: order._id,
+                paymentId: payment._id,
+                customerId: order.customerId,
+                vendorId: order.vendorId || order.customerId,
+                amount: refundAmount,
+                reason: `ORDER_CANCELLED: ${reason}`,
+                isCancellation: true,
+              },
+            });
+          }
+        }
+        targetPaymentStatus = 'REFUND_PENDING';
+      } else if (['PENDING', 'AUTHORIZED', 'CREATED'].includes(currentPaymentStatus)) {
+        await paymentService.transitionPaymentStatus(currentPaymentStatus, 'CANCELLED', {
+          paymentId: payment._id,
+          orderId: order._id,
+          actorType,
+          actorId,
+          reason,
+        });
+        if (typeof payment.save === 'function') {
+          payment.status = 'CANCELLED';
+          payment.failureReason = reason;
+          await payment.save();
+        } else {
+          await Payment.findByIdAndUpdate(payment._id, {
+            $set: { status: 'CANCELLED', failureReason: reason },
+          });
+        }
+        targetPaymentStatus = 'CANCELLED';
+      } else if (['REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(currentPaymentStatus)) {
+        targetPaymentStatus = currentPaymentStatus;
+      }
     }
 
     const currentOrderStatus = order.status;
@@ -174,7 +360,6 @@ export class OrderService {
       }
     }
 
-    const vendorOrdersToCancel = await VendorOrder.find({ parentOrderId: order._id });
     for (const vo of vendorOrdersToCancel) {
       if (vo.inventoryDecremented) {
         for (const item of vo.items || []) {
@@ -192,77 +377,6 @@ export class OrderService {
       }
     }
 
-    const payment = await paymentService.getPaymentForOrder(order._id);
-    let targetPaymentStatus = 'CANCELLED';
-    if (payment) {
-      const currentPaymentStatus = payment.status || 'PENDING';
-      if (['CAPTURED', 'PAID'].includes(currentPaymentStatus)) {
-        await paymentService.transitionPaymentStatus(currentPaymentStatus, 'REFUND_PENDING', {
-          paymentId: payment._id,
-          orderId: order._id,
-          actorType,
-          actorId,
-          reason,
-        });
-        payment.status = 'REFUND_PENDING';
-        await payment.save();
-
-        if (vendorOrdersToCancel.length > 0) {
-          for (const vo of vendorOrdersToCancel) {
-            const voRefundAmount = Number(vo.total || 0);
-            if (voRefundAmount > 0) {
-              await refundService.createRefund({
-                refundData: {
-                  orderId: order._id,
-                  vendorOrderId: vo._id,
-                  paymentId: payment._id,
-                  customerId: order.customerId,
-                  vendorId: vo.vendorId,
-                  amount: voRefundAmount,
-                  reason: `ORDER_CANCELLED: ${reason}`,
-                  isCancellation: true,
-                },
-              }).catch((err) => {
-                console.error('Failed to create refund for vendor order on cancellation:', err?.message);
-              });
-            }
-          }
-        } else {
-          const refundAmount = Number(order.total || payment.amount || 0);
-          if (refundAmount > 0) {
-            await refundService.createRefund({
-              refundData: {
-                orderId: order._id,
-                paymentId: payment._id,
-                customerId: order.customerId,
-                vendorId: order.vendorId || order.customerId,
-                amount: refundAmount,
-                reason: `ORDER_CANCELLED: ${reason}`,
-                isCancellation: true,
-              },
-            }).catch((err) => {
-              console.error('Failed to create refund for order on cancellation:', err?.message);
-            });
-          }
-        }
-        targetPaymentStatus = 'REFUND_PENDING';
-      } else if (['PENDING', 'AUTHORIZED'].includes(currentPaymentStatus)) {
-        await paymentService.transitionPaymentStatus(currentPaymentStatus, 'CANCELLED', {
-          paymentId: payment._id,
-          orderId: order._id,
-          actorType,
-          actorId,
-          reason,
-        });
-        await Payment.findOneAndUpdate({ _id: payment._id }, {
-          $set: { status: 'CANCELLED', failureReason: reason },
-        }, { new: true });
-        targetPaymentStatus = 'CANCELLED';
-      } else if (['REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(currentPaymentStatus)) {
-        targetPaymentStatus = currentPaymentStatus;
-      }
-    }
-
     await VendorOrder.updateMany({ parentOrderId: order._id }, { $set: { status: 'CANCELLED' } });
 
     const updatedOrder = await Order.findByIdAndUpdate(order._id, {
@@ -273,6 +387,15 @@ export class OrderService {
         cancelledReason: reason,
       },
     }, { new: true });
+
+    // Asynchronously notify vendors & customer (failure-isolated)
+    this.notifyVendorsOrderCancelled({
+      order: updatedOrder || order,
+      vendorOrders: vendorOrdersToCancel,
+      reason,
+    }).catch((err) => {
+      console.error('Failed to notify parties of order cancellation:', err?.message || err);
+    });
 
     return updatedOrder ? (updatedOrder.toObject ? updatedOrder.toObject() : updatedOrder) : { status: 'CANCELLED', paymentStatus: targetPaymentStatus };
   }

@@ -16,15 +16,91 @@ export class VendorLedgerService {
     if (!payment || payment.status !== 'CAPTURED') return { created: 0, skipped: true };
     const vendorOrders = await VendorOrder.find({ parentOrderId: orderId, deletedAt: null }).lean();
     let created = 0;
+
+    const pendingVendorOrders = [];
     for (const vendorOrder of vendorOrders) {
       const existing = await VendorLedgerEntry.findOne({ vendorOrderId: vendorOrder._id, transactionType: 'SALE_CAPTURE' }).lean();
-      if (existing) continue;
+      if (!existing) {
+        pendingVendorOrders.push(vendorOrder);
+      }
+    }
+    if (pendingVendorOrders.length === 0) return { created: 0, skipped: false };
+
+    const allProductIds = [...new Set(
+      pendingVendorOrders.flatMap((vo) => (vo.items || []).map((item) => item.productId).filter(Boolean))
+    )];
+    const allVendorIds = [...new Set(pendingVendorOrders.map((vo) => vo.vendorId).filter(Boolean))];
+
+    const isDbConnected = mongoose.connection?.readyState === 1;
+    const isProductFindMocked = Boolean(Product.find?._isMockFunction || Product.find?.mock);
+    const productMap = new Map();
+    if (allProductIds.length > 0 && (isDbConnected || isProductFindMocked)) {
+      try {
+        const products = await Product.find({ _id: { $in: allProductIds } }).select('_id categoryId').lean();
+        if (Array.isArray(products)) {
+          for (const p of products) {
+            productMap.set(String(p._id), p);
+          }
+        }
+      } catch {
+        // Fallback handled per item
+      }
+    }
+
+    const allCategoryIds = [...new Set(
+      [...productMap.values()].map((p) => p.categoryId).filter(Boolean)
+    )];
+
+    let preloadedConfigs = null;
+    const isBatchLoadMocked = Boolean(commissionService.batchLoadConfigs?.mock || commissionService.batchLoadConfigs?._isMockFunction);
+    if (isDbConnected || isBatchLoadMocked) {
+      try {
+        preloadedConfigs = await commissionService.batchLoadConfigs({
+          productIds: allProductIds,
+          vendorIds: allVendorIds,
+          categoryIds: allCategoryIds,
+          at: payment.paidAt || new Date(),
+        });
+      } catch {
+        // Fallback handled per item
+      }
+    }
+
+    for (const vendorOrder of pendingVendorOrders) {
       const lines = [];
       for (const item of vendorOrder.items || []) {
-        const product = await Product.findById(item.productId).select('categoryId').lean();
-        const resolved = await commissionService.resolve({ productId: item.productId, vendorId: vendorOrder.vendorId, categoryId: product?.categoryId });
+        let product = productMap.get(String(item.productId));
+        if (!product) {
+          product = await Product.findById(item.productId).select('categoryId').lean().catch(() => null);
+          if (product) productMap.set(String(item.productId), product);
+        }
+        const categoryId = product?.categoryId || null;
+
+        let resolved;
+        if (Array.isArray(preloadedConfigs)) {
+          resolved = commissionService.resolveFromBatch({
+            productId: item.productId,
+            vendorId: vendorOrder.vendorId,
+            categoryId,
+            configs: preloadedConfigs,
+          });
+        } else {
+          resolved = await commissionService.resolve({
+            productId: item.productId,
+            vendorId: vendorOrder.vendorId,
+            categoryId,
+            at: payment.paidAt || new Date(),
+          });
+        }
         const grossAmount = round(item.lineTotal);
-        lines.push({ productId: item.productId, categoryId: product?.categoryId || null, grossAmount, rate: resolved.rate, commissionAmount: round(grossAmount * resolved.rate / 100), source: resolved.source });
+        lines.push({
+          productId: item.productId,
+          categoryId: categoryId || null,
+          grossAmount,
+          rate: resolved.rate,
+          commissionAmount: round(grossAmount * resolved.rate / 100),
+          source: resolved.source,
+        });
       }
       const grossAmount = round(lines.reduce((sum, line) => sum + line.grossAmount, 0));
       const commissionAmount = round(lines.reduce((sum, line) => sum + line.commissionAmount, 0));

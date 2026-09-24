@@ -22,6 +22,50 @@ export class CommissionService {
     return { rate: 0, source: 'DEFAULT', configId: null };
   }
 
+  async batchLoadConfigs({ productIds = [], vendorIds = [], categoryIds = [], at = new Date() }) {
+    const base = {
+      active: true,
+      $or: [{ effectiveFrom: null }, { effectiveFrom: { $lte: at } }],
+      $and: [{ $or: [{ effectiveTo: null }, { effectiveTo: { $gt: at } }] }],
+    };
+    const targetConditions = [{ scope: 'GLOBAL' }];
+    const validProductIds = productIds.filter(Boolean);
+    const validVendorIds = vendorIds.filter(Boolean);
+    const validCategoryIds = categoryIds.filter(Boolean);
+
+    if (validProductIds.length) targetConditions.push({ scope: 'PRODUCT', productId: { $in: validProductIds } });
+    if (validVendorIds.length) targetConditions.push({ scope: 'VENDOR', vendorId: { $in: validVendorIds } });
+    if (validCategoryIds.length) targetConditions.push({ scope: 'CATEGORY', categoryId: { $in: validCategoryIds } });
+
+    return CommissionConfig.find({
+      ...base,
+      $or: targetConditions,
+    }).sort({ effectiveFrom: -1, createdAt: -1 }).lean();
+  }
+
+  resolveFromBatch({ productId, vendorId, categoryId, configs = [] }) {
+    const strProd = productId ? String(productId) : null;
+    const strVendor = vendorId ? String(vendorId) : null;
+    const strCat = categoryId ? String(categoryId) : null;
+
+    if (strProd) {
+      const match = configs.find((c) => c.scope === 'PRODUCT' && String(c.productId) === strProd);
+      if (match) return { rate: Number(match.rate), source: 'PRODUCT', configId: match._id };
+    }
+    if (strVendor) {
+      const match = configs.find((c) => c.scope === 'VENDOR' && String(c.vendorId) === strVendor);
+      if (match) return { rate: Number(match.rate), source: 'VENDOR', configId: match._id };
+    }
+    if (strCat) {
+      const match = configs.find((c) => c.scope === 'CATEGORY' && String(c.categoryId) === strCat);
+      if (match) return { rate: Number(match.rate), source: 'CATEGORY', configId: match._id };
+    }
+    const globalMatch = configs.find((c) => c.scope === 'GLOBAL');
+    if (globalMatch) return { rate: Number(globalMatch.rate), source: 'GLOBAL', configId: globalMatch._id };
+
+    return { rate: 0, source: 'DEFAULT', configId: null };
+  }
+
   validateInput({ scope, rate, productId = null, vendorId = null, categoryId = null }) {
     if (!scopes.includes(scope)) throw new AppError(400, 'INVALID_COMMISSION_SCOPE', 'Invalid commission scope');
     if (!Number.isFinite(Number(rate)) || Number(rate) < 0 || Number(rate) > 100) throw new AppError(400, 'INVALID_COMMISSION_RATE', 'Commission rate must be between 0 and 100');

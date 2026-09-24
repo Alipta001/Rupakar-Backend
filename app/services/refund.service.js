@@ -54,7 +54,31 @@ export class RefundService {
 
     const key = `${refundData.orderId}:${refundData.returnId ?? refundData.cancellationRequestId ?? refundData.vendorOrderId ?? 'none'}:${refundData.amount}`;
     if (this.isDuplicateRefund({ orderId: refundData.orderId, returnId: refundData.returnId || refundData.cancellationRequestId || refundData.vendorOrderId, refundKey: key })) {
+      if (mongoose.isValidObjectId(refundData.orderId)) {
+        const query = { orderId: refundData.orderId };
+        if (mongoose.isValidObjectId(refundData.vendorOrderId)) query.vendorOrderId = refundData.vendorOrderId;
+        if (mongoose.isValidObjectId(refundData.returnId)) query.returnId = refundData.returnId;
+        if (mongoose.isValidObjectId(refundData.cancellationRequestId)) query.cancellationRequestId = refundData.cancellationRequestId;
+        query.status = { $in: ['REQUESTED', 'APPROVED', 'PROCESSING', 'COMPLETED'] };
+        const existing = await Refund.findOne(query);
+        if (existing) {
+          return existing.toObject ? existing.toObject() : existing;
+        }
+      }
       throw new AppError(409, 'DUPLICATE_REFUND', 'Duplicate refund request');
+    }
+
+    if (mongoose.isValidObjectId(refundData.orderId)) {
+      const query = { orderId: refundData.orderId };
+      if (mongoose.isValidObjectId(refundData.vendorOrderId)) query.vendorOrderId = refundData.vendorOrderId;
+      if (mongoose.isValidObjectId(refundData.returnId)) query.returnId = refundData.returnId;
+      if (mongoose.isValidObjectId(refundData.cancellationRequestId)) query.cancellationRequestId = refundData.cancellationRequestId;
+      query.status = { $in: ['REQUESTED', 'APPROVED', 'PROCESSING', 'COMPLETED'] };
+      const existingRefund = await Refund.findOne(query);
+      if (existingRefund) {
+        this.markRefundSeen({ orderId: refundData.orderId, returnId: refundData.returnId, refundKey: key });
+        return existingRefund.toObject ? existingRefund.toObject() : existingRefund;
+      }
     }
 
     const payment = await Payment.findById(refundData.paymentId);
@@ -66,15 +90,27 @@ export class RefundService {
       if (!payment.providerPaymentId && payment.provider === 'razorpay') {
         throw new AppError(409, 'PAYMENT_NOT_CAPTURED', 'Captured payment is required before refund');
       }
-      const providerRefund = await paymentService.provider.refundPayment({
-        providerPaymentId: payment.providerPaymentId,
-        amount: Number(refundData.amount || 0),
-        notes: { reason: refundData.reason || 'RETURN_APPROVED' },
-      });
-      providerRefundId = providerRefund?.id ?? providerRefundId;
-      status = 'PROCESSING';
+      try {
+        const providerRefund = await paymentService.provider.refundPayment({
+          providerPaymentId: payment.providerPaymentId,
+          amount: Number(refundData.amount || 0),
+          notes: { reason: refundData.reason || 'RETURN_APPROVED' },
+        });
+        providerRefundId = providerRefund?.id ?? providerRefundId;
+        status = 'PROCESSING';
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        console.error(`[REFUND_PROVIDER_ERROR] orderId=${refundData.orderId}:`, err?.message || err);
+        const description = err?.error?.description || err?.message || 'Payment provider refund failed';
+        throw new AppError(502, 'REFUND_FAILED', `We couldn't complete the refund yet: ${description}. Your order has not been cancelled. Please try again.`);
+      }
+
       payment.status = 'REFUND_PENDING';
-      await payment.save();
+      if (typeof payment.save === 'function') {
+        await payment.save();
+      } else if (mongoose.isValidObjectId(payment._id)) {
+        await Payment.findByIdAndUpdate(payment._id, { $set: { status: 'REFUND_PENDING' } });
+      }
       const refundStatus = 'REFUND_PENDING';
       const orderToUpdate = mongoose.isValidObjectId(refundData.orderId)
         ? await Order.findById(refundData.orderId)

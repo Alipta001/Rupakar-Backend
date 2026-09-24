@@ -37,15 +37,19 @@ import contactRoutes from './app/routers/contact.routes.js';
 
 export function createApp() {
   const app = express();
+  app.set('trust proxy', 1);
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   let redis = null;
 
   if (env.REDIS_ENABLED) {
+    const isTls = env.REDIS_URL?.startsWith('rediss://');
     redis = new Redis(env.REDIS_URL, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       lazyConnect: true,
+      retryStrategy: (times) => Math.min(times * 100, 3000),
+      ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
     });
 
     redis.on('error', () => {

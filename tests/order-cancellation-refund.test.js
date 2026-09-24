@@ -282,4 +282,208 @@ describe('Order Cancellation & Refund Regression Tests', () => {
     expect(mockParentOrder.status).toBe('CONFIRMED');
     expect(mockParentOrder.paymentStatus).toBe('PARTIALLY_REFUNDED');
   });
+
+  it('cancels order safely when payment is a plain object without .save() method (production bug reproduction)', async () => {
+    const mockOrder = {
+      _id: orderId,
+      customerId,
+      status: 'CONFIRMED',
+      paymentStatus: 'PAID',
+      items: [{ variantId: variantId1, quantity: 1, unitPrice: 500, lineTotal: 500 }],
+      total: 500,
+      toObject: () => ({ _id: orderId, customerId, status: 'CONFIRMED', paymentStatus: 'PAID' }),
+    };
+
+    const mockVendorOrder = {
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      parentOrderId: orderId,
+      vendorId: vendorId1,
+      total: 500,
+      status: 'CONFIRMED',
+      inventoryDecremented: false,
+      items: [{ variantId: variantId1, quantity: 1 }],
+      save: jest.fn().mockResolvedValue(true),
+    };
+
+    // Plain JS object simulating what paymentService.getPaymentForOrder returns via .toObject()
+    const plainPayment = {
+      _id: paymentId,
+      orderId,
+      status: 'CAPTURED',
+      amount: 500,
+      provider: 'mock',
+      // Explicitly NO save property: save is undefined
+    };
+
+    jest.spyOn(Order, 'findById').mockResolvedValue(mockOrder);
+    jest.spyOn(OrderStatusHistory, 'create').mockResolvedValue({ _id: 'history-1' });
+    jest.spyOn(inventoryReservationService, 'releaseReservation').mockResolvedValue({ status: 'RELEASED' });
+    jest.spyOn(VendorOrder, 'find').mockResolvedValue([mockVendorOrder]);
+    jest.spyOn(VendorOrder, 'updateMany').mockResolvedValue({ acknowledged: true });
+    jest.spyOn(paymentService, 'getPaymentForOrder').mockResolvedValue(plainPayment);
+    jest.spyOn(paymentService, 'transitionPaymentStatus').mockResolvedValue(true);
+    const paymentUpdateSpy = jest.spyOn(Payment, 'findByIdAndUpdate').mockResolvedValue({ _id: paymentId, status: 'REFUND_PENDING' });
+    jest.spyOn(refundService, 'createRefund').mockResolvedValue({ _id: 'refund-1', status: 'PROCESSING' });
+    jest.spyOn(Order, 'findByIdAndUpdate').mockResolvedValue({ _id: orderId, status: 'CANCELLED', paymentStatus: 'REFUND_PENDING' });
+
+    const result = await orderService.cancelOrder({
+      orderId,
+      customerId,
+      reason: 'Testing POJO payment handling',
+      actorType: 'CUSTOMER',
+      actorId: customerId,
+    });
+
+    expect(result.status).toBe('CANCELLED');
+    expect(paymentUpdateSpy).toHaveBeenCalledWith(paymentId, { $set: { status: 'REFUND_PENDING' } });
+  });
+
+  it('fails with 502 REFUND_FAILED and aborts cancellation when refund provider fails', async () => {
+    const mockOrder = {
+      _id: orderId,
+      customerId,
+      status: 'CONFIRMED',
+      paymentStatus: 'PAID',
+      items: [{ variantId: variantId1, quantity: 1, unitPrice: 500, lineTotal: 500 }],
+      total: 500,
+      toObject: () => ({ _id: orderId, customerId, status: 'CONFIRMED', paymentStatus: 'PAID' }),
+    };
+
+    const mockVendorOrder = {
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      parentOrderId: orderId,
+      vendorId: vendorId1,
+      total: 500,
+      status: 'CONFIRMED',
+      inventoryDecremented: false,
+      items: [{ variantId: variantId1, quantity: 1 }],
+      save: jest.fn().mockResolvedValue(true),
+    };
+
+    const mockPayment = {
+      _id: paymentId,
+      orderId,
+      status: 'CAPTURED',
+      amount: 500,
+      provider: 'mock',
+    };
+
+    jest.spyOn(Order, 'findById').mockResolvedValue(mockOrder);
+    jest.spyOn(OrderStatusHistory, 'create').mockResolvedValue({ _id: 'history-1' });
+    jest.spyOn(inventoryReservationService, 'releaseReservation').mockResolvedValue({ status: 'RELEASED' });
+    jest.spyOn(VendorOrder, 'find').mockResolvedValue([mockVendorOrder]);
+    jest.spyOn(paymentService, 'getPaymentForOrder').mockResolvedValue(mockPayment);
+    jest.spyOn(paymentService, 'transitionPaymentStatus').mockResolvedValue(true);
+    jest.spyOn(Payment, 'findByIdAndUpdate').mockResolvedValue({ _id: paymentId, status: 'REFUND_PENDING' });
+    const orderUpdateSpy = jest.spyOn(Order, 'findByIdAndUpdate');
+
+    // Refund provider failure
+    const { AppError } = await import('../app/utils/app-error.js');
+    jest.spyOn(refundService, 'createRefund').mockRejectedValue(
+      new AppError(502, 'REFUND_FAILED', "We couldn't complete the refund yet. Your order has not been cancelled. Please try again.")
+    );
+
+    await expect(
+      orderService.cancelOrder({
+        orderId,
+        customerId,
+        reason: 'Customer cancelled',
+        actorType: 'CUSTOMER',
+        actorId: customerId,
+      })
+    ).rejects.toThrow("We couldn't complete the refund yet");
+
+    // Order status must NOT have been changed to CANCELLED in DB
+    expect(orderUpdateSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects cancellation with 409 ORDER_ALREADY_PACKED when vendor order is already PACKED', async () => {
+    const mockOrder = {
+      _id: orderId,
+      customerId,
+      status: 'PROCESSING',
+      paymentStatus: 'PAID',
+      items: [{ variantId: variantId1, quantity: 1, unitPrice: 500, lineTotal: 500 }],
+      total: 500,
+      toObject: () => ({ _id: orderId, customerId, status: 'PROCESSING', paymentStatus: 'PAID' }),
+    };
+
+    const mockVendorOrder = {
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      parentOrderId: orderId,
+      vendorId: vendorId1,
+      total: 500,
+      status: 'PACKED', // Already packed!
+      inventoryDecremented: false,
+      items: [{ variantId: variantId1, quantity: 1 }],
+    };
+
+    jest.spyOn(Order, 'findById').mockResolvedValue(mockOrder);
+    jest.spyOn(VendorOrder, 'find').mockResolvedValue([mockVendorOrder]);
+
+    await expect(
+      orderService.cancelOrder({
+        orderId,
+        customerId,
+        reason: 'Customer cancelled',
+        actorType: 'CUSTOMER',
+        actorId: customerId,
+      })
+    ).rejects.toThrow('This order can no longer be cancelled because it has already been packed');
+  });
+
+  it('cancels uncaptured payment cleanly without invoking refundService', async () => {
+    const mockOrder = {
+      _id: orderId,
+      customerId,
+      status: 'PENDING_PAYMENT',
+      paymentStatus: 'PENDING',
+      items: [{ variantId: variantId1, quantity: 1, unitPrice: 500, lineTotal: 500 }],
+      total: 500,
+      toObject: () => ({ _id: orderId, customerId, status: 'PENDING_PAYMENT', paymentStatus: 'PENDING' }),
+    };
+
+    const mockVendorOrder = {
+      _id: new mongoose.Types.ObjectId().toHexString(),
+      parentOrderId: orderId,
+      vendorId: vendorId1,
+      total: 500,
+      status: 'PENDING_PAYMENT',
+      inventoryDecremented: false,
+      items: [{ variantId: variantId1, quantity: 1 }],
+      save: jest.fn().mockResolvedValue(true),
+    };
+
+    const uncapturedPayment = {
+      _id: paymentId,
+      orderId,
+      status: 'CREATED',
+      amount: 500,
+      provider: 'mock',
+    };
+
+    jest.spyOn(Order, 'findById').mockResolvedValue(mockOrder);
+    jest.spyOn(OrderStatusHistory, 'create').mockResolvedValue({ _id: 'history-1' });
+    jest.spyOn(inventoryReservationService, 'releaseReservation').mockResolvedValue({ status: 'RELEASED' });
+    jest.spyOn(VendorOrder, 'find').mockResolvedValue([mockVendorOrder]);
+    jest.spyOn(VendorOrder, 'updateMany').mockResolvedValue({ acknowledged: true });
+    jest.spyOn(paymentService, 'getPaymentForOrder').mockResolvedValue(uncapturedPayment);
+    const transitionSpy = jest.spyOn(paymentService, 'transitionPaymentStatus').mockResolvedValue(true);
+    jest.spyOn(Payment, 'findByIdAndUpdate').mockResolvedValue({ _id: paymentId, status: 'CANCELLED' });
+    const refundSpy = jest.spyOn(refundService, 'createRefund');
+    jest.spyOn(Order, 'findByIdAndUpdate').mockResolvedValue({ _id: orderId, status: 'CANCELLED', paymentStatus: 'CANCELLED' });
+
+    const result = await orderService.cancelOrder({
+      orderId,
+      customerId,
+      reason: 'Changed my mind',
+      actorType: 'CUSTOMER',
+      actorId: customerId,
+    });
+
+    expect(result.status).toBe('CANCELLED');
+    expect(transitionSpy).toHaveBeenCalledWith('CREATED', 'CANCELLED', expect.anything());
+    expect(refundSpy).not.toHaveBeenCalled();
+  });
 });
+

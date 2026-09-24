@@ -14,6 +14,7 @@ import { vendorLedgerService } from './vendor-ledger.service.js';
 import {
   scheduleInvoiceGeneration,
   scheduleNotification,
+  scheduleEmail,
   scheduleVendorOrderPackReminder,
   scheduleVendorOrderAutoCancel,
 } from '../jobs/queues.js';
@@ -21,13 +22,13 @@ import { Vendor } from '../models/vendor.model.js';
 import { User } from '../models/user.model.js';
 import { Notification } from '../models/notification.model.js';
 import { notificationService } from './notification.service.js';
-import { emailService } from './email.service.js';
-import { smsService } from './sms.service.js';
 
 const PAYMENT_STATUS_TRANSITIONS = {
+  CREATED: ['PENDING', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED'],
   PENDING: ['AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED'],
   AUTHORIZED: ['CAPTURED', 'FAILED', 'CANCELLED'],
   CAPTURED: ['REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED'],
+  PAID: ['REFUND_PENDING', 'REFUNDED', 'PARTIALLY_REFUNDED'],
   FAILED: [],
   CANCELLED: [],
   REFUND_PENDING: ['REFUNDED', 'PARTIALLY_REFUNDED'],
@@ -184,31 +185,29 @@ export class PaymentService {
               }).catch(() => null);
             }
 
-            const notifPromises = [];
             if (targetEmail) {
-              notifPromises.push(
-                emailService.sendEmail({
-                  to: targetEmail,
-                  subject: `New order #${order.orderNumber} placed - Please check your dashboard`,
-                  html: `<div style="font-family:sans-serif;padding:16px;"><h2 style="color:#6B3E26;">New Order Received!</h2><p>New order has been placed, please check your dashboard to process.</p><p><strong>Order #:</strong> ${order.orderNumber}</p><p><strong>Total:</strong> ₹${vendorOrder.total}</p><p><strong>Items:</strong> ${(items || []).map((i) => `${i.productName} (x${i.quantity})`).join(', ')}</p></div>`,
-                  text: `New order has been placed, please check your dashboard. Order #${order.orderNumber}, Items: ${items.length}, Total: ₹${vendorOrder.total}.`,
-                }).catch((err) => console.error('Failed to send vendor order email:', err?.message))
-              );
+              await scheduleEmail({
+                to: targetEmail,
+                subject: `New order #${order.orderNumber} placed - Please check your dashboard`,
+                html: `<div style="font-family:sans-serif;padding:16px;"><h2 style="color:#6B3E26;">New Order Received!</h2><p>New order has been placed, please check your dashboard to process.</p><p><strong>Order #:</strong> ${order.orderNumber}</p><p><strong>Total:</strong> ₹${vendorOrder.total}</p><p><strong>Items:</strong> ${(items || []).map((i) => `${i.productName} (x${i.quantity})`).join(', ')}</p></div>`,
+                text: `New order has been placed, please check your dashboard. Order #${order.orderNumber}, Items: ${items.length}, Total: ₹${vendorOrder.total}.`,
+                jobType: 'send-email',
+                jobId: `vendor-order-email:${vendorOrder._id}`,
+              }).catch((err) => console.error('Failed to schedule vendor order email:', err?.message));
             }
 
             const rawPhone = String(targetPhone || '').trim();
             const digitsOnly = rawPhone.replace(/[^\d+]/g, '');
             const isValidPhone = /^\+?[0-9]{10,15}$/.test(digitsOnly);
             if (isValidPhone) {
-              notifPromises.push(
-                smsService.sendSms({
-                  to: rawPhone,
-                  message: `Rupakar: New order has been placed, please check your dashboard to process #${order.orderNumber}.`,
-                }).catch((err) => console.error('Failed to send vendor order SMS:', err?.message))
-              );
+              await scheduleEmail({
+                to: rawPhone,
+                subject: `New order #${order.orderNumber}`,
+                text: `Rupakar: New order has been placed, please check your dashboard to process #${order.orderNumber}.`,
+                jobType: 'send-notification-sms',
+                jobId: `vendor-order-sms:${vendorOrder._id}`,
+              }).catch((err) => console.error('Failed to schedule vendor order SMS:', err?.message));
             }
-
-            await Promise.all(notifPromises);
 
             if (recipientUserId) {
               await scheduleNotification({

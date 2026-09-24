@@ -15,23 +15,33 @@ import { packingSlipService } from '../services/packing-slip.service.js';
 import { Shipment } from '../models/shipment.model.js';
 import { smsService } from '../services/sms.service.js';
 
+const isTls = env.REDIS_URL?.startsWith('rediss://');
+
 const connection = new IORedis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableOfflineQueue: false,
   lazyConnect: true,
-  retryStrategy: () => null,
+  retryStrategy: (times) => Math.min(times * 100, 3000),
+  ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
 });
 
 export const getQueueConnection = () => connection;
-connection.on('error', () => {
+connection.on('error', (err) => {
   // Suppress unhandled redis connection errors when Redis is not running locally
+  if (env.NODE_ENV === 'production') {
+    console.error('[REDIS QUEUE ERROR]', err?.message);
+  }
 });
 
 export async function ensureQueueConnection() {
   if (env.NODE_ENV === 'production' && !env.REDIS_ENABLED) {
     throw new Error('Redis is required for production queue processing');
   }
-  if (connection.status === 'wait') await connection.connect();
+  if (connection.status === 'wait' || connection.status === 'close' || connection.status === 'end') {
+    await connection.connect().catch((err) => {
+      console.warn('[REDIS QUEUE CONNECT FAILED]', err?.message);
+    });
+  }
   if (connection.status !== 'ready') {
     throw new Error(`Redis is not ready (status: ${connection.status})`);
   }
@@ -168,14 +178,14 @@ export async function scheduleNotification({ userId, type, title, message, chann
   }
 }
 
-export async function scheduleEmail({ to, subject, html, text, jobType = 'send-email' }) {
+export async function scheduleEmail({ to, subject, html, text, jobType = 'send-email', jobId = null }) {
   if (!to || !subject) return null;
 
   try {
     const queue = getEmailQueue();
-    const jobId = `email:${to}:${subject}:${Date.now()}`;
+    const finalJobId = jobId || `email:${to}:${subject}:${Date.now()}`;
     const job = await queue.add(jobType, { to, subject, html, text }, {
-      jobId,
+      jobId: finalJobId,
       attempts: 3,
       backoff: { type: 'exponential', delay: 2000 },
       removeOnComplete: { age: 7200 },

@@ -22,14 +22,14 @@ const durationToMs = (value, fallback) => {
 };
 
 if (isProduction) {
+  const hasResend = Boolean(process.env.RESEND_API_KEY && !hasPlaceholder(process.env.RESEND_API_KEY));
+  const hasSmtp = Boolean(!hasPlaceholder(process.env.EMAIL_HOST) && !hasPlaceholder(process.env.EMAIL_USER) && !hasPlaceholder(process.env.EMAIL_PASSWORD));
+
   const missing = [
     'MONGODB_URI',
     'REDIS_URL',
     'FRONTEND_URL',
     'CORS_ALLOWED_ORIGINS',
-    'EMAIL_HOST',
-    'EMAIL_USER',
-    'EMAIL_PASSWORD',
     'STORAGE_BUCKET',
     'CLOUDINARY_CLOUD_NAME',
     'CLOUDINARY_API_KEY',
@@ -41,6 +41,10 @@ if (isProduction) {
     'GOOGLE_CLIENT_SECRET',
     ...productionSecretNames,
   ].filter((name) => hasPlaceholder(process.env[name]));
+
+  if (!hasResend && !hasSmtp) {
+    missing.push('EMAIL_HOST, EMAIL_USER, EMAIL_PASSWORD (or RESEND_API_KEY)');
+  }
 
   if (missing.length > 0) {
     throw new Error(`Missing production configuration: ${missing.join(', ')}`);
@@ -69,6 +73,8 @@ if (isProduction && process.env.PAYMENT_MOCK_ENABLED === 'true') {
   throw new Error('PAYMENT_MOCK_ENABLED cannot be enabled in production');
 }
 
+const defaultBackendUrl = isProduction ? 'https://api.rupakar.com' : `http://localhost:${process.env.PORT ?? 4000}`;
+
 export const env = {
   NODE_ENV: process.env.NODE_ENV ?? 'development',
   PORT: Number(process.env.PORT ?? 4000),
@@ -78,26 +84,33 @@ export const env = {
   WORKER_ENABLED: process.env.WORKER_ENABLED !== 'false',
   JWT_ACCESS_SECRET: process.env.JWT_ACCESS_SECRET ?? process.env.JWT_SECRET ?? 'dev-access-secret',
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET ?? (process.env.JWT_SECRET ? `${process.env.JWT_SECRET}_refresh` : 'dev-refresh-secret'),
-  FRONTEND_URL: process.env.FRONTEND_URL ?? 'http://localhost:3000',
-  CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS ?? 'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000',
-  SELLER_FRONTEND_URL: process.env.SELLER_FRONTEND_URL ?? '',
+  FRONTEND_URL: process.env.FRONTEND_URL ?? (isProduction ? 'https://rupakar.com' : 'http://localhost:3000'),
+  BACKEND_URL: process.env.BACKEND_URL ?? defaultBackendUrl,
+  CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS ?? (isProduction ? 'https://rupakar.com,https://seller.rupakar.com' : 'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000'),
+  SELLER_FRONTEND_URL: process.env.SELLER_FRONTEND_URL ?? (isProduction ? 'https://seller.rupakar.com' : ''),
   COOKIE_DOMAIN: process.env.COOKIE_DOMAIN ?? '',
   COOKIE_SAMESITE: (process.env.COOKIE_SAMESITE ?? '').toLowerCase(),
-  ACCESS_TOKEN_EXPIRATION: process.env.ACCESS_TOKEN_EXPIRATION ?? '1m',
+  ACCESS_TOKEN_EXPIRATION: process.env.ACCESS_TOKEN_EXPIRATION ?? '15m',
   REFRESH_TOKEN_EXPIRATION: process.env.REFRESH_TOKEN_EXPIRATION ?? '7d',
   REFRESH_TOKEN_MAX_AGE_MS: durationToMs(process.env.REFRESH_TOKEN_EXPIRATION ?? '7d', 7 * 24 * 60 * 60 * 1000),
+  EMAIL_PROVIDER: process.env.EMAIL_PROVIDER ?? (process.env.RESEND_API_KEY ? 'resend' : 'smtp'),
   EMAIL_HOST: process.env.EMAIL_HOST ?? 'smtp.gmail.com',
   EMAIL_PORT: Number(process.env.EMAIL_PORT ?? 465),
   EMAIL_USER: process.env.EMAIL_USER ?? 'noreply@example.com',
   EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ?? process.env.EMAIL_PASS ?? 'change-me',
+  EMAIL_FROM: process.env.EMAIL_FROM ?? process.env.CONTACT_EMAIL ?? (process.env.EMAIL_USER && process.env.EMAIL_USER.includes('@') ? process.env.EMAIL_USER : 'noreply@rupakar.com'),
   CONTACT_EMAIL: process.env.CONTACT_EMAIL ?? process.env.EMAIL_USER ?? 'noreply@example.com',
+  RESEND_API_KEY: process.env.RESEND_API_KEY ?? '',
   SMS_PROVIDER: process.env.SMS_PROVIDER ?? 'twilio',
   SMS_API_URL: process.env.SMS_API_URL ?? '',
   SMS_API_KEY: process.env.SMS_API_KEY ?? '',
-  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ?? '',
-  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ?? '',
-  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI ?? 'http://localhost:4000/api/v1/auth/google/callback',
-  RUPAKAR_LOGO_URL: process.env.RUPAKAR_LOGO_URL ?? 'https://rupakar-backend.onrender.com/Rupakar-logo.jpeg',
+  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID ?? process.env.SMS_ACCOUNT_SID ?? '',
+  TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN ?? process.env.SMS_AUTH_TOKEN ?? '',
+  TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER ?? process.env.TWILIO_FROM_NUMBER ?? process.env.SMS_FROM ?? '',
+  GOOGLE_CLIENT_ID: (process.env.GOOGLE_CLIENT_ID ?? '').trim(),
+  GOOGLE_CLIENT_SECRET: (process.env.GOOGLE_CLIENT_SECRET ?? '').trim(),
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI ?? `${defaultBackendUrl}/api/v1/auth/google/callback`,
+  RUPAKAR_LOGO_URL: process.env.RUPAKAR_LOGO_URL ?? `${defaultBackendUrl}/Rupakar-logo.jpeg`,
   STORAGE_BUCKET: process.env.STORAGE_BUCKET ?? 'rupakar-dev',
   STORAGE_PROVIDER: process.env.STORAGE_PROVIDER ?? 'cloudinary', S3_BUCKET_NAME: process.env.S3_BUCKET_NAME ?? '', S3_REGION: process.env.S3_REGION ?? 'us-east-1', S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? '', S3_SECRET_ACCESS_KEY: process.env.S3_SECRET_ACCESS_KEY ?? '', S3_ENDPOINT: process.env.S3_ENDPOINT ?? '',
   CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME ?? '',

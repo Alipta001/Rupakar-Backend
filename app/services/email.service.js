@@ -8,24 +8,62 @@ export class MockEmailProvider {
   }
 }
 
+export class ResendEmailProvider {
+  constructor({ apiKey, from } = {}) {
+    this.apiKey = apiKey || env.RESEND_API_KEY;
+    this.from = from || env.EMAIL_FROM || 'noreply@rupakar.com';
+  }
+
+  async send({ to, subject, html, text }) {
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: this.from,
+          to: Array.isArray(to) ? to : [to],
+          subject,
+          html,
+          text: text || subject,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.message || data.error?.message || `Resend error (${response.status})`);
+      }
+
+      return { messageId: data.id || `resend-${Date.now()}`, success: true };
+    } catch (error) {
+      console.error('[EMAIL ERROR: RESEND]', error.message);
+      throw new Error(`Email send failed: ${error.message}`);
+    }
+  }
+}
+
 export class GmailEmailProvider {
   constructor() {
+    const fromAddress = env.EMAIL_FROM || env.CONTACT_EMAIL || env.EMAIL_USER;
+    this.from = `"Rupakar" <${fromAddress}>`;
     this.transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
         user: env.EMAIL_USER,
         pass: env.EMAIL_PASSWORD,
       },
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 5000,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
     });
   }
 
   async send({ to, subject, html, text }) {
     try {
       const info = await this.transporter.sendMail({
-        from: `"Rupakar" <${env.EMAIL_USER}>`,
+        from: this.from,
         to,
         subject,
         text: text || subject,
@@ -33,7 +71,7 @@ export class GmailEmailProvider {
       });
       return { messageId: info.messageId, success: true };
     } catch (error) {
-      console.error('[EMAIL ERROR]', error);
+      console.error('[EMAIL ERROR: GMAIL]', error.message);
       throw new Error(`Email send failed: ${error.message}`);
     }
   }
@@ -41,6 +79,8 @@ export class GmailEmailProvider {
 
 export class SmtpEmailProvider {
   constructor() {
+    const fromAddress = env.EMAIL_FROM || env.CONTACT_EMAIL || (env.EMAIL_USER?.includes('@') ? env.EMAIL_USER : 'noreply@rupakar.com');
+    this.from = `"Rupakar" <${fromAddress}>`;
     this.transporter = nodemailer.createTransport({
       host: env.EMAIL_HOST,
       port: env.EMAIL_PORT,
@@ -49,16 +89,19 @@ export class SmtpEmailProvider {
         user: env.EMAIL_USER,
         pass: env.EMAIL_PASSWORD,
       },
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 5000,
+      tls: {
+        rejectUnauthorized: false,
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
     });
   }
 
   async send({ to, subject, html, text }) {
     try {
       const info = await this.transporter.sendMail({
-        from: `"Rupakar" <${env.EMAIL_USER}>`,
+        from: this.from,
         to,
         subject,
         text: text || subject,
@@ -66,7 +109,7 @@ export class SmtpEmailProvider {
       });
       return { messageId: info.messageId, success: true };
     } catch (error) {
-      console.error('[EMAIL ERROR]', error);
+      console.error('[EMAIL ERROR: SMTP]', error.message);
       throw new Error(`Email send failed: ${error.message}`);
     }
   }
@@ -74,18 +117,28 @@ export class SmtpEmailProvider {
 
 export class EmailService {
   constructor(provider) {
-    const hasCredentials =
+    if (provider) {
+      this.provider = provider;
+      return;
+    }
+
+    const hasResend = Boolean(env.RESEND_API_KEY && env.RESEND_API_KEY.length > 5);
+    const hasSmtpCredentials = Boolean(
       env.EMAIL_USER &&
       env.EMAIL_USER !== 'noreply@example.com' &&
       env.EMAIL_PASSWORD &&
-      env.EMAIL_PASSWORD !== 'change-me';
+      env.EMAIL_PASSWORD !== 'change-me'
+    );
 
-    if (provider) {
-      this.provider = provider;
-    } else if (hasCredentials) {
-      this.provider = new GmailEmailProvider();
+    if (env.EMAIL_PROVIDER === 'resend' || (hasResend && !hasSmtpCredentials)) {
+      this.provider = new ResendEmailProvider({ apiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM });
+    } else if (hasSmtpCredentials) {
+      const isGmail = env.EMAIL_HOST?.includes('gmail') || env.EMAIL_PROVIDER === 'gmail' || (env.EMAIL_USER?.includes('@gmail.com') && (!env.EMAIL_HOST || env.EMAIL_HOST === 'smtp.example.com' || env.EMAIL_HOST === 'smtp.gmail.com'));
+      this.provider = isGmail ? new GmailEmailProvider() : new SmtpEmailProvider();
     } else if (process.env.NODE_ENV === 'production') {
-      this.provider = new SmtpEmailProvider();
+      this.provider = hasResend
+        ? new ResendEmailProvider({ apiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM })
+        : new SmtpEmailProvider();
     } else {
       this.provider = new MockEmailProvider();
     }
@@ -99,6 +152,7 @@ export class EmailService {
   }
 
   async sendOtpEmail({ email, name, otp }) {
+    const verifyUrl = `${env.FRONTEND_URL}/verify-otp?email=${encodeURIComponent(email)}`;
     const html = `
       <div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px 24px; background-color: #FBF9F5; border: 1px solid #EAE2D5; border-radius: 12px;">
         <div style="text-align: center; margin-bottom: 28px;">
@@ -114,6 +168,9 @@ export class EmailService {
               ${otp}
             </span>
           </div>
+          <div style="text-align: center; margin: 20px 0;">
+            <a href="${verifyUrl}" style="background-color: #6B3E26; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Verify Email Online</a>
+          </div>
           <p style="color: #7A6B5D; font-size: 13px; line-height: 1.5;">This code will expire in <strong>10 minutes</strong>. If you did not create an account on Rupakar, please disregard this email.</p>
         </div>
         <div style="text-align: center; margin-top: 24px; color: #9C8E82; font-size: 12px;">
@@ -125,11 +182,12 @@ export class EmailService {
       to: email,
       subject: `${otp} is your Rupakar verification code`,
       html,
-      text: `Your Rupakar verification code is: ${otp}. It will expire in 10 minutes.`,
+      text: `Your Rupakar verification code is: ${otp}. It will expire in 10 minutes. Verify online at: ${verifyUrl}`,
     });
   }
 
   async sendPasswordResetOtp({ email, otp }) {
+    const resetUrl = `${env.FRONTEND_URL}/reset-password?email=${encodeURIComponent(email)}`;
     const html = `
       <div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px 24px; background-color: #FBF9F5; border: 1px solid #EAE2D5; border-radius: 12px;">
         <div style="text-align: center; margin-bottom: 28px;">
@@ -145,6 +203,9 @@ export class EmailService {
               ${otp}
             </span>
           </div>
+          <div style="text-align: center; margin: 20px 0;">
+            <a href="${resetUrl}" style="background-color: #6B3E26; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Reset Password Online</a>
+          </div>
           <p style="color: #7A6B5D; font-size: 13px; line-height: 1.5;">This code will expire in <strong>10 minutes</strong>. If you did not request a password reset, you can safely ignore this email.</p>
         </div>
         <div style="text-align: center; margin-top: 24px; color: #9C8E82; font-size: 12px;">
@@ -156,7 +217,7 @@ export class EmailService {
       to: email,
       subject: `${otp} is your Rupakar password reset code`,
       html,
-      text: `Your Rupakar password reset code is: ${otp}. It will expire in 10 minutes.`,
+      text: `Your Rupakar password reset code is: ${otp}. It will expire in 10 minutes. Reset online at: ${resetUrl}`,
     });
   }
 
@@ -170,20 +231,24 @@ export class EmailService {
   }
 
   async sendEmailVerification({ email, verificationLink }) {
-    const html = `<p>Please verify your email by clicking the link below:</p><p><a href="${verificationLink}">Verify Email</a></p>`;
+    const link = verificationLink || `${env.FRONTEND_URL}/verify-otp?email=${encodeURIComponent(email)}`;
+    const html = `<p>Please verify your email by clicking the link below:</p><p><a href="${link}">Verify Email</a></p>`;
     return this.sendEmail({
       to: email,
       subject: 'Verify Your Email',
       html,
+      text: `Please verify your email: ${link}`,
     });
   }
 
   async sendPasswordReset({ email, resetLink }) {
-    const html = `<p>Click the link below to reset your password:</p><p><a href="${resetLink}">Reset Password</a></p>`;
+    const link = resetLink || `${env.FRONTEND_URL}/reset-password?email=${encodeURIComponent(email)}`;
+    const html = `<p>Click the link below to reset your password:</p><p><a href="${link}">Reset Password</a></p>`;
     return this.sendEmail({
       to: email,
       subject: 'Reset Your Password',
       html,
+      text: `Reset your password: ${link}`,
     });
   }
 

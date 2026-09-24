@@ -26,6 +26,60 @@ describe('commission resolution', () => {
     expect(result).toMatchObject({ rate: 12, source: 'VENDOR' });
     expect(findOne).toHaveBeenNthCalledWith(2, expect.objectContaining({ scope: 'VENDOR', vendorId }));
   });
+
+  it('resolveFromBatch preserves exact PRODUCT > VENDOR > CATEGORY > GLOBAL > DEFAULT hierarchy', () => {
+    const prodId = id();
+    const vendId = id();
+    const catId = id();
+    const otherProdId = id();
+
+    const configs = [
+      { _id: id(), scope: 'GLOBAL', rate: 5 },
+      { _id: id(), scope: 'CATEGORY', categoryId: catId, rate: 8 },
+      { _id: id(), scope: 'VENDOR', vendorId: vendId, rate: 12 },
+      { _id: id(), scope: 'PRODUCT', productId: prodId, rate: 15 },
+    ];
+
+    // 1. Product rule matches first
+    expect(commissionService.resolveFromBatch({
+      productId: prodId,
+      vendorId: vendId,
+      categoryId: catId,
+      configs,
+    })).toMatchObject({ rate: 15, source: 'PRODUCT' });
+
+    // 2. Fallback to Vendor rule when product rule is for different product
+    expect(commissionService.resolveFromBatch({
+      productId: otherProdId,
+      vendorId: vendId,
+      categoryId: catId,
+      configs,
+    })).toMatchObject({ rate: 12, source: 'VENDOR' });
+
+    // 3. Fallback to Category rule when vendor has no rule
+    expect(commissionService.resolveFromBatch({
+      productId: otherProdId,
+      vendorId: id(),
+      categoryId: catId,
+      configs,
+    })).toMatchObject({ rate: 8, source: 'CATEGORY' });
+
+    // 4. Fallback to Global rule when category has no rule
+    expect(commissionService.resolveFromBatch({
+      productId: otherProdId,
+      vendorId: id(),
+      categoryId: id(),
+      configs,
+    })).toMatchObject({ rate: 5, source: 'GLOBAL' });
+
+    // 5. Fallback to DEFAULT (0%) when no configs match
+    expect(commissionService.resolveFromBatch({
+      productId: otherProdId,
+      vendorId: id(),
+      categoryId: id(),
+      configs: [],
+    })).toMatchObject({ rate: 0, source: 'DEFAULT' });
+  });
 });
 
 describe('vendor ledger', () => {

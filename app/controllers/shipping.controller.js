@@ -108,33 +108,89 @@ export const packVendorOrder = async (req, res, next) => {
 
     const order = await Order.findById(vendorOrder.parentOrderId);
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
+
+    // Idempotent return if already packed
+    if (vendorOrder.status === 'PACKED') {
+      const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
+      const orderQuery = Order.findById(order._id);
+      const updatedOrder = typeof orderQuery?.lean === 'function' ? await orderQuery.lean() : await orderQuery;
+      return sendSuccess(res, {
+        shipment: shipment ? (shipment.toObject ? shipment.toObject() : shipment) : null,
+        vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder,
+        order: updatedOrder || (order.toObject ? order.toObject() : order),
+        isIdempotent: true,
+      }, 'Order packed', String(req.headers['x-request-id'] ?? ''));
+    }
+
     if (!['PAID', 'CAPTURED'].includes(order.paymentStatus) || vendorOrder.status !== 'PROCESSING') {
       throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order is not ready to be packed');
     }
 
-    const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id }) || await shippingService.createShipment({
+    // Atomic claim/transition to avoid race conditions or double clicks
+    const updatedVendorOrder = await VendorOrder.findOneAndUpdate(
+      { _id: vendorOrder._id, status: 'PROCESSING' },
+      { $set: { status: 'PACKED' } },
+      { new: true }
+    );
+    if (!updatedVendorOrder) {
+      const currentVo = await VendorOrder.findById(vendorOrder._id);
+      if (currentVo?.status === 'PACKED') {
+        const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
+        const orderQuery = Order.findById(order._id);
+        const updatedOrder = typeof orderQuery?.lean === 'function' ? await orderQuery.lean() : await orderQuery;
+        return sendSuccess(res, {
+          shipment: shipment ? (shipment.toObject ? shipment.toObject() : shipment) : null,
+          vendorOrder: currentVo.toObject ? currentVo.toObject() : currentVo,
+          order: updatedOrder || (order.toObject ? order.toObject() : order),
+          isIdempotent: true,
+        }, 'Order packed', String(req.headers['x-request-id'] ?? ''));
+      }
+      throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order is not ready to be packed');
+    }
+
+    let shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
+    if (!shipment) {
+      shipment = await shippingService.createShipment({
+        orderId: order._id,
+        vendorOrderId: vendorOrder._id,
+        vendorId: vendor._id,
+        customerId: order.customerId,
+        shippingMethod: 'standard',
+        carrier: 'mock-carrier',
+      });
+    }
+
+    const nextStatus = 'PACKED';
+    await shipmentStateService.transitionShipmentStatus(shipment.status || 'PENDING', nextStatus, {
+      shipmentId: shipment._id,
+      actorType: 'VENDOR',
+      actorId: req.user.sub,
+      reason: 'Packed by vendor',
+    });
+
+    if (typeof shipment.save === 'function') {
+      shipment.status = nextStatus;
+      await shipment.save();
+    } else {
+      await Shipment.updateOne({ _id: shipment._id }, { $set: { status: nextStatus } });
+      shipment.status = nextStatus;
+    }
+
+    await schedulePackingSlipGeneration({
       orderId: order._id,
       vendorOrderId: vendorOrder._id,
       vendorId: vendor._id,
       customerId: order.customerId,
-      shippingMethod: 'standard',
-      carrier: 'mock-carrier',
-    });
-
-    const nextStatus = 'PACKED';
-    await shipmentStateService.transitionShipmentStatus(shipment.status || 'PENDING', nextStatus, { shipmentId: shipment._id, actorType: 'VENDOR', actorId: req.user.sub, reason: 'Packed by vendor' });
-
-    shipment.status = nextStatus;
-    await shipment.save();
-
-    vendorOrder.status = nextStatus;
-    await vendorOrder.save();
-
-    await schedulePackingSlipGeneration({ orderId: order._id, vendorOrderId: vendorOrder._id, vendorId: vendor._id, customerId: order.customerId });
+    }).catch(() => null);
 
     await orderService.syncParentOrderStatus(order._id);
-    const updatedOrder = await Order.findById(order._id).lean();
-    sendSuccess(res, { shipment: shipment.toObject ? shipment.toObject() : shipment, vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder, order: updatedOrder || (order.toObject ? order.toObject() : order) }, 'Order packed', String(req.headers['x-request-id'] ?? ''));
+    const orderQuery = Order.findById(order._id);
+    const updatedOrder = typeof orderQuery?.lean === 'function' ? await orderQuery.lean() : await orderQuery;
+    sendSuccess(res, {
+      shipment: shipment.toObject ? shipment.toObject() : shipment,
+      vendorOrder: updatedVendorOrder.toObject ? updatedVendorOrder.toObject() : updatedVendorOrder,
+      order: updatedOrder || (order.toObject ? order.toObject() : order),
+    }, 'Order packed', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -188,7 +244,11 @@ export const shipVendorOrder = async (req, res, next) => {
 
     shipment.status = nextStatus;
     shipment.shippedAt = shipment.shippedAt || new Date();
-    await shipment.save();
+    if (typeof shipment.save === 'function') {
+      await shipment.save();
+    } else {
+      await Shipment.updateOne({ _id: shipment._id }, { $set: { status: nextStatus, shippedAt: shipment.shippedAt } });
+    }
 
     vendorOrder.status = nextStatus;
     await vendorOrder.save();
