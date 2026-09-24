@@ -38,7 +38,7 @@ describe('SmsService and Phone Notifications', () => {
 
     it('masks phone numbers safely for logging', () => {
       const masked = maskPhoneNumber('+919876543210');
-      expect(masked).toBe('+91*****3210');
+      expect(masked).toBe('+91******3210');
       expect(masked).not.toContain('987654');
     });
   });

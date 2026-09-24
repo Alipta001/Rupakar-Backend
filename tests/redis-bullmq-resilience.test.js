@@ -20,7 +20,10 @@ describe('Redis & BullMQ Queue Resilience', () => {
   it('ensureQueueConnection reconnects if connection status is not ready', async () => {
     const connection = getQueueConnection();
     const originalStatus = connection.status;
-    const connectSpy = jest.spyOn(connection, 'connect').mockResolvedValue(true);
+    const connectSpy = jest.spyOn(connection, 'connect').mockImplementation(async () => {
+      connection.status = 'ready';
+      return true;
+    });
 
     try {
       connection.status = 'wait';
@@ -32,9 +35,10 @@ describe('Redis & BullMQ Queue Resilience', () => {
     }
   });
 
-  it('email queue correctly registers BullMQ job structure', () => {
+  it('email queue correctly registers BullMQ job structure', async () => {
     const queue = getEmailQueue();
     expect(queue.name).toBe('email');
     expect(queue.opts.connection).toBeDefined();
+    await queue.close();
   });
 });

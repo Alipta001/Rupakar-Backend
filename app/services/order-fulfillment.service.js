@@ -16,7 +16,7 @@ export class OrderFulfillmentService {
   /**
    * Send a packing reminder to the vendor if the order is still unpacked within the deadline window.
    */
-  async sendPackingReminder(vendorOrderId) {
+  async sendPackingReminder(vendorOrderId, reminderStep = 1) {
     if (!vendorOrderId) return { skipped: true, reason: 'INVALID_ID' };
 
     const vendorOrder = await VendorOrder.findById(vendorOrderId);
@@ -27,7 +27,11 @@ export class OrderFulfillmentService {
       return { skipped: true, reason: 'ORDER_NOT_UNPACKED', status: vendorOrder.status };
     }
 
-    const idempotencyKey = `vendor-order-pack-reminder:${vendorOrder._id}`;
+    const step = Number(reminderStep) || 1;
+    const idempotencyKey = step === 1
+      ? `vendor-order-pack-reminder:${vendorOrder._id}`
+      : `vendor-order-pack-reminder:${vendorOrder._id}:${step}`;
+
     const vendor = await Vendor.findById(vendorOrder.vendorId).select('ownerUserId email phone businessName').lean();
     if (!vendor) return { skipped: true, reason: 'VENDOR_NOT_FOUND' };
 
@@ -48,19 +52,23 @@ export class OrderFulfillmentService {
     const parentOrder = await Order.findById(vendorOrder.parentOrderId).select('orderNumber').lean();
     const orderNumber = parentOrder?.orderNumber || String(vendorOrder.parentOrderId).slice(-8);
 
+    const remainingHours = step === 1 ? 36 : step === 2 ? 24 : step === 3 ? 12 : 24;
+
     try {
       if (recipientUserId) {
         await notificationService.createNotification({
           userId: recipientUserId,
           type: 'VENDOR_ORDER_PACK_REMINDER',
-          title: 'Action required: Please pack order',
-          message: `Order #${orderNumber} must be packed within 24 hours to avoid automatic cancellation.`,
+          title: `Action required: Please pack order (${remainingHours}h remaining)`,
+          message: `Order #${orderNumber} must be packed within ${remainingHours} hours to avoid automatic cancellation.`,
           channel: 'IN_APP',
           metadata: {
             orderId: vendorOrder.parentOrderId,
             vendorOrderId: vendorOrder._id,
             email: targetEmail,
             phone: targetPhone,
+            reminderStep: step,
+            remainingHours,
             idempotencyKey,
           },
         }).catch(() => null);
@@ -69,9 +77,9 @@ export class OrderFulfillmentService {
       if (targetEmail) {
         await emailService.sendEmail({
           to: targetEmail,
-          subject: `Urgent Reminder: Please pack order #${orderNumber}`,
-          html: `<div style="font-family:sans-serif;padding:16px;"><h2 style="color:#6B3E26;">Urgent: Action Required</h2><p>Your order <strong>#${orderNumber}</strong> has not been packed yet. Please pack it within 24 hours on your seller dashboard to avoid automatic order cancellation and customer refund.</p><p>Total: ₹${vendorOrder.total}</p></div>`,
-          text: `Urgent: Please pack order #${orderNumber} within 24 hours to avoid automatic cancellation. Total: ₹${vendorOrder.total}.`,
+          subject: `Urgent Reminder: Please pack order #${orderNumber} (${remainingHours}h remaining)`,
+          html: `<div style="font-family:sans-serif;padding:16px;"><h2 style="color:#6B3E26;">Urgent: Action Required</h2><p>Your order <strong>#${orderNumber}</strong> has not been packed yet. Please pack it within ${remainingHours} hours on your seller dashboard to avoid automatic order cancellation and customer refund.</p><p>Total: ₹${vendorOrder.total}</p></div>`,
+          text: `Urgent: Please pack order #${orderNumber} within ${remainingHours} hours to avoid automatic cancellation. Total: ₹${vendorOrder.total}.`,
         }).catch((err) => console.error('Failed to send vendor reminder email:', err?.message));
       }
 
@@ -81,11 +89,11 @@ export class OrderFulfillmentService {
       if (isValidPhone) {
         await smsService.sendSms({
           to: rawPhone,
-          message: `Rupakar Urgent: Please pack order #${orderNumber} within 24h to avoid automatic cancellation.`,
+          message: `Rupakar Urgent: Please pack order #${orderNumber} within ${remainingHours}h to avoid automatic cancellation.`,
         }).catch((err) => console.error('Failed to send vendor reminder SMS:', err?.message));
       }
 
-      return { success: true, reminderSent: true, vendorOrderId: vendorOrder._id };
+      return { success: true, reminderSent: true, vendorOrderId: vendorOrder._id, reminderStep: step, remainingHours };
     } catch (err) {
       console.error('Error sending packing reminder:', err?.message);
       return { success: false, error: err?.message };

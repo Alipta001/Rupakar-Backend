@@ -67,25 +67,56 @@ export function getFulfillmentQueue() {
   return new Queue('order-fulfillment', { connection });
 }
 
-export async function scheduleVendorOrderPackReminder({ vendorOrderId, delayMs = 24 * 60 * 60 * 1000 }) {
+export async function scheduleVendorOrderPackReminder({ vendorOrderId, delayMs = null, reminderStep = null }) {
   if (!vendorOrderId) return null;
   try {
     const queue = getFulfillmentQueue();
-    const jobId = `pack-reminder:${vendorOrderId}`;
-    const job = await queue.add(
-      'vendor-order-pack-reminder',
-      { vendorOrderId },
-      {
-        jobId,
-        delay: Math.max(0, delayMs),
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
-        removeOnComplete: { age: 86400 },
-        removeOnFail: { age: 604800 },
-      },
-    );
+
+    if (delayMs !== null) {
+      const step = reminderStep || 1;
+      const jobId = step === 1 ? `pack-reminder:${vendorOrderId}` : `pack-reminder:${vendorOrderId}:${step}`;
+      const job = await queue.add(
+        'vendor-order-pack-reminder',
+        { vendorOrderId, reminderStep: step },
+        {
+          jobId,
+          delay: Math.max(0, delayMs),
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: { age: 86400 },
+          removeOnFail: { age: 604800 },
+        },
+      );
+      await queue.close();
+      return job.id;
+    }
+
+    const intervals = [
+      { step: 1, delay: 12 * 60 * 60 * 1000 },
+      { step: 2, delay: 24 * 60 * 60 * 1000 },
+      { step: 3, delay: 36 * 60 * 60 * 1000 },
+    ];
+
+    let lastJobId = null;
+    for (const { step, delay } of intervals) {
+      const jobId = step === 1 ? `pack-reminder:${vendorOrderId}` : `pack-reminder:${vendorOrderId}:${step}`;
+      const job = await queue.add(
+        'vendor-order-pack-reminder',
+        { vendorOrderId, reminderStep: step },
+        {
+          jobId,
+          delay,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: { age: 86400 },
+          removeOnFail: { age: 604800 },
+        },
+      );
+      lastJobId = job.id;
+    }
+
     await queue.close();
-    return job.id;
+    return lastJobId;
   } catch (_error) {
     if (env.NODE_ENV === 'production') throw _error;
     return null;
@@ -397,7 +428,7 @@ export async function startOrderFulfillmentWorker() {
       console.log(`Processing fulfillment job ${job.name} (${job.id}) for vendorOrder ${vendorOrderId}`);
 
       if (job.name === 'vendor-order-pack-reminder') {
-        return await orderFulfillmentService.sendPackingReminder(vendorOrderId);
+        return await orderFulfillmentService.sendPackingReminder(vendorOrderId, job.data?.reminderStep);
       }
       if (job.name === 'vendor-order-auto-cancel') {
         return await orderFulfillmentService.autoCancelUnpackedVendorOrder(vendorOrderId);
