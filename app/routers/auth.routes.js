@@ -140,7 +140,10 @@ router.get('/google/callback', async (req, res, next) => {
       throw new Error(profilePayload.error || 'Google profile request failed');
     }
 
-    if (profilePayload.email !== verifiedProfile.email || profilePayload.sub !== verifiedProfile.sub) {
+    if (
+      profilePayload.email?.toLowerCase().trim() !== verifiedProfile.email?.toLowerCase().trim() ||
+      String(profilePayload.sub || '').trim() !== String(verifiedProfile.sub || '').trim()
+    ) {
       throw new Error('Google profile data does not match the verified ID token');
     }
 
@@ -150,9 +153,51 @@ router.get('/google/callback', async (req, res, next) => {
       email_verified: verifiedProfile.email_verified,
     });
     setRefreshCookie(res, result.refreshToken, req);
+    const accessToken = result.accessToken;
     delete result.refreshToken;
     const redirectTarget = safeRedirectUrl(storedRedirect);
-    return res.redirect(redirectTarget);
+    const targetUrl = new URL(redirectTarget);
+    if (accessToken) {
+      targetUrl.searchParams.set('token', accessToken);
+    }
+    return res.redirect(targetUrl.toString());
+  } catch (error) {
+    next(error);
+  }
+});
+
+const googleAuthSchema = z.object({
+  credential: z.string().optional(),
+  idToken: z.string().optional(),
+  token: z.string().optional(),
+}).refine((data) => data.credential || data.idToken || data.token, {
+  message: 'Credential or idToken is required',
+});
+
+router.post('/google', async (req, res, next) => {
+  try {
+    const payload = googleAuthSchema.parse(req.body);
+    const idToken = payload.credential || payload.idToken || payload.token;
+    const verifiedProfile = await authService.verifyGoogleIdToken(idToken);
+    const result = await authService.handleGoogleUser(verifiedProfile);
+    setRefreshCookie(res, result.refreshToken, req);
+    delete result.refreshToken;
+
+    const guestSessionId = req.headers['x-guest-session-id'] || req.body?.guestSessionId;
+    if (guestSessionId && result.user?.id) {
+      try {
+        await cartService.mergeGuestCart({ userId: result.user.id, guestSessionId });
+      } catch (mergeErr) {
+        console.warn('[GOOGLE_LOGIN_CART_MERGE_WARNING]', mergeErr.message);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: 'Google login successful',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
   } catch (error) {
     next(error);
   }

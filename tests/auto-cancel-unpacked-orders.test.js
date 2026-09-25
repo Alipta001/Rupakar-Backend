@@ -264,7 +264,7 @@ describe('Auto-Cancel Unpacked Orders & Packing Reminder', () => {
       await orderFulfillmentService.autoCancelUnpackedVendorOrder(vendorOrderId1);
 
       expect(mockParentOrder.status).toBe('CANCELLED');
-      expect(mockParentOrder.paymentStatus).toBe('REFUNDED');
+      expect(mockParentOrder.paymentStatus).toBe('REFUND_PENDING');
     });
   });
 });

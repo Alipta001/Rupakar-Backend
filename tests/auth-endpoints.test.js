@@ -131,7 +131,33 @@ describe('google oauth customer flow', () => {
       .query({ code: 'auth-code', state: 'valid-state' });
 
     expect(response.status).toBe(302);
-    expect(response.headers.location).toBe('http://localhost:3000/account');
+    expect(response.headers.location).toBe('http://localhost:3000/account?token=google-access-token');
+  });
+
+  it('authenticates a user directly via POST /api/v1/auth/google', async () => {
+    const googleProfile = {
+      sub: 'google-user-456',
+      email: 'post-google@example.com',
+      email_verified: true,
+      name: 'Direct Google User',
+    };
+    const result = {
+      user: { id: 'user-456', role: 'customer', email: 'post-google@example.com' },
+      accessToken: 'direct-access-token',
+      refreshToken: 'direct-refresh-token',
+    };
+
+    jest.spyOn(authService, 'verifyGoogleIdToken').mockResolvedValue(googleProfile);
+    jest.spyOn(authService, 'handleGoogleUser').mockResolvedValue(result);
+
+    const response = await request(app)
+      .post('/api/v1/auth/google')
+      .send({ credential: 'valid-google-credential' });
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.accessToken).toBe('direct-access-token');
+    expect(response.headers['set-cookie']).toEqual(expect.arrayContaining([expect.stringContaining('refresh_token=')]));
   });
 
   it('rejects an invalid Google token', async () => {

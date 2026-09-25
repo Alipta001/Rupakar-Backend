@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { beforeEach, afterAll, describe, expect, it, jest } from '@jest/globals';
 import { orderFulfillmentService } from '../app/services/order-fulfillment.service.js';
-import { scheduleVendorOrderPackReminder, scheduleVendorOrderAutoCancel } from '../app/jobs/queues.js';
+import { scheduleVendorOrderPackReminder, scheduleVendorOrderAutoCancel, closeQueueConnection } from '../app/jobs/queues.js';
 import { Order } from '../app/models/order.model.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
 import { Vendor } from '../app/models/vendor.model.js';
@@ -33,6 +33,10 @@ describe('Seller Packing Deadline & Reminder Automation', () => {
   beforeEach(() => {
     jest.restoreAllMocks();
     jest.clearAllMocks();
+  });
+
+  afterAll(async () => {
+    await closeQueueConnection();
   });
 
   describe('1. Reminder scheduling and 12-hour interval handling', () => {

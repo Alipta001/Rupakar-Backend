@@ -125,7 +125,11 @@ export class AuthService {
     user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
     await user.save();
 
-    await emailService.sendPasswordResetOtp({ email: user.email, otp });
+    try {
+      await emailService.sendPasswordResetOtp({ email: user.email, otp });
+    } catch (emailError) {
+      console.error('[AUTH FORGOT_PASSWORD EMAIL ERROR]', emailError?.message || emailError);
+    }
 
     return { message: 'Password reset code sent to your email' };
   }
@@ -241,14 +245,14 @@ export class AuthService {
     const email = String(profile.email || '').trim().toLowerCase();
     const name = String(profile.name || profile.given_name || 'Customer').trim();
     const picture = profile.picture || '';
-    const googleId = String(profile.sub || '').trim();
+    const googleId = String(profile.sub || profile.id || '').trim();
     const emailVerified = Boolean(profile.email_verified || (profile.verified_email ?? false));
 
     if (!email) throw new AppError(400, 'INVALID_GOOGLE_PROFILE', 'Google profile did not include an email');
     if (!googleId) throw new AppError(400, 'INVALID_GOOGLE_PROFILE', 'Google profile did not include a valid subject');
     if (!emailVerified) throw new AppError(400, 'GOOGLE_EMAIL_UNVERIFIED', 'Google email must be verified before signing in');
 
-    let user = await User.findOne({ email });
+    let user = await User.findOne({ $or: [{ googleId }, { email }] });
     if (!user) {
       const googlePassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
       user = await User.create({
@@ -263,7 +267,7 @@ export class AuthService {
         lastLogin: new Date(),
       });
     } else {
-      if (user.role !== 'customer') {
+      if (user.role && user.role !== 'customer') {
         throw new AppError(409, 'GOOGLE_ACCOUNT_EXISTS', 'An account with this email already exists. Please sign in with your existing email and password.');
       }
       user.name = user.name || name || email.split('@')[0];

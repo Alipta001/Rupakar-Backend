@@ -15,6 +15,10 @@ export class ResendEmailProvider {
   }
 
   async send({ to, subject, html, text }) {
+    if (!this.apiKey) {
+      throw new Error('Email send failed: Resend API key is required');
+    }
+
     try {
       const response = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -44,21 +48,76 @@ export class ResendEmailProvider {
   }
 }
 
+export class BrevoEmailProvider {
+  constructor({ apiKey, from } = {}) {
+    this.apiKey = apiKey || env.BREVO_API_KEY;
+    this.from = from || env.EMAIL_FROM || 'noreply@rupakar.com';
+  }
+
+  async send({ to, subject, html, text }) {
+    if (!this.apiKey) {
+      throw new Error('Email send failed: Brevo API key is required');
+    }
+
+    let senderName = 'Rupakar';
+    let senderEmail = this.from;
+    const match = String(this.from || '').match(/^(?:"?([^"]*)"?\s*)?<([^>]+)>$/);
+    if (match) {
+      if (match[1]?.trim()) senderName = match[1].trim();
+      if (match[2]?.trim()) senderEmail = match[2].trim();
+    }
+
+    const recipients = (Array.isArray(to) ? to : [to]).map((recipient) => {
+      if (typeof recipient === 'string') return { email: recipient.trim() };
+      if (recipient && recipient.email) return { email: String(recipient.email).trim() };
+      return { email: String(recipient).trim() };
+    });
+
+    try {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'api-key': this.apiKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          sender: { name: senderName, email: senderEmail },
+          to: recipients,
+          subject,
+          htmlContent: html,
+          textContent: text || subject,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.message || data.error?.message || `Brevo error (${response.status})`);
+      }
+
+      return { messageId: data.messageId || `brevo-${Date.now()}`, success: true };
+    } catch (error) {
+      console.error('[EMAIL ERROR: BREVO]', error.message);
+      throw new Error(`Email send failed: ${error.message}`);
+    }
+  }
+}
+
 export class GmailEmailProvider {
   constructor({ host, port, secure } = {}) {
     const fromAddress = env.EMAIL_FROM || env.CONTACT_EMAIL || env.EMAIL_USER;
     this.from = `"Rupakar" <${fromAddress}>`;
 
-    this.port = Number(port ?? env.EMAIL_PORT ?? 587);
+    this.port = Number(port ?? (env.EMAIL_HOST?.includes('gmail') ? env.EMAIL_PORT : undefined) ?? 587);
     this.secure = typeof secure === 'boolean' ? secure : (this.port === 465);
-    const resolvedHost = host || env.EMAIL_HOST || 'smtp.gmail.com';
-    this.host = resolvedHost.includes('gmail') ? 'smtp.gmail.com' : resolvedHost;
+    this.requireTLS = !this.secure;
+    this.host = host || (env.EMAIL_HOST?.includes('gmail') ? env.EMAIL_HOST : 'smtp.gmail.com');
 
     this.transporter = nodemailer.createTransport({
       host: this.host,
       port: this.port,
       secure: this.secure,
-      requireTLS: !this.secure,
+      requireTLS: this.requireTLS,
       auth: {
         user: env.EMAIL_USER,
         pass: env.EMAIL_PASSWORD,
@@ -137,26 +196,29 @@ export class EmailService {
   constructor(provider) {
     if (provider) {
       this.provider = provider;
+      this.isCustomProvider = true;
       return;
     }
+    this.isCustomProvider = false;
 
-    const hasResend = Boolean(env.RESEND_API_KEY && env.RESEND_API_KEY.length > 5);
-    const hasSmtpCredentials = Boolean(
-      env.EMAIL_USER &&
-      env.EMAIL_USER !== 'noreply@example.com' &&
-      env.EMAIL_PASSWORD &&
-      env.EMAIL_PASSWORD !== 'change-me'
-    );
+    const configuredProvider = String(env.EMAIL_PROVIDER || '').toLowerCase().trim();
 
-    if (env.EMAIL_PROVIDER === 'resend' || (hasResend && !hasSmtpCredentials)) {
+    if (configuredProvider === 'resend') {
       this.provider = new ResendEmailProvider({ apiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM });
-    } else if (hasSmtpCredentials) {
-      const isGmail = env.EMAIL_HOST?.includes('gmail') || env.EMAIL_PROVIDER === 'gmail' || (env.EMAIL_USER?.includes('@gmail.com') && (!env.EMAIL_HOST || env.EMAIL_HOST === 'smtp.example.com' || env.EMAIL_HOST === 'smtp.gmail.com'));
-      this.provider = isGmail ? new GmailEmailProvider() : new SmtpEmailProvider();
+    } else if (configuredProvider === 'brevo') {
+      this.provider = new BrevoEmailProvider({ apiKey: env.BREVO_API_KEY, from: env.EMAIL_FROM });
+    } else if (configuredProvider === 'gmail') {
+      this.provider = new GmailEmailProvider();
+    } else if (configuredProvider === 'smtp') {
+      this.provider = new SmtpEmailProvider();
     } else if (process.env.NODE_ENV === 'production') {
-      this.provider = hasResend
-        ? new ResendEmailProvider({ apiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM })
-        : new SmtpEmailProvider();
+      if (env.RESEND_API_KEY) {
+        this.provider = new ResendEmailProvider({ apiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM });
+      } else if (env.BREVO_API_KEY) {
+        this.provider = new BrevoEmailProvider({ apiKey: env.BREVO_API_KEY, from: env.EMAIL_FROM });
+      } else {
+        this.provider = new SmtpEmailProvider();
+      }
     } else {
       this.provider = new MockEmailProvider();
     }
@@ -196,11 +258,33 @@ export class EmailService {
         </div>
       </div>
     `;
+    const subject = `${otp} is your Rupakar verification code`;
+    const text = `Your Rupakar verification code is: ${otp}. It will expire in 10 minutes. Verify online at: ${verifyUrl}`;
+
+    if (env.REDIS_ENABLED && env.WORKER_ENABLED && !this.isCustomProvider) {
+      try {
+        const { scheduleEmail } = await import('../jobs/queues.js');
+        const jobId = await scheduleEmail({
+          to: email,
+          subject,
+          html,
+          text,
+          jobType: 'send-otp-email',
+          jobId: `otp-email:${email}:${Date.now()}`,
+        });
+        if (jobId) {
+          return { messageId: jobId, queued: true, success: true };
+        }
+      } catch (err) {
+        console.warn('[EMAIL QUEUE FALLBACK] Failed to queue OTP email, sending directly:', err?.message);
+      }
+    }
+
     return this.sendEmail({
       to: email,
-      subject: `${otp} is your Rupakar verification code`,
+      subject,
       html,
-      text: `Your Rupakar verification code is: ${otp}. It will expire in 10 minutes. Verify online at: ${verifyUrl}`,
+      text,
     });
   }
 
@@ -231,19 +315,62 @@ export class EmailService {
         </div>
       </div>
     `;
+    const subject = `${otp} is your Rupakar password reset code`;
+    const text = `Your Rupakar password reset code is: ${otp}. It will expire in 10 minutes. Reset online at: ${resetUrl}`;
+
+    if (env.REDIS_ENABLED && env.WORKER_ENABLED && !this.isCustomProvider) {
+      try {
+        const { scheduleEmail } = await import('../jobs/queues.js');
+        const jobId = await scheduleEmail({
+          to: email,
+          subject,
+          html,
+          text,
+          jobType: 'send-reset-otp-email',
+          jobId: `reset-otp-email:${email}:${Date.now()}`,
+        });
+        if (jobId) {
+          return { messageId: jobId, queued: true, success: true };
+        }
+      } catch (err) {
+        console.warn('[EMAIL QUEUE FALLBACK] Failed to queue password reset email, sending directly:', err?.message);
+      }
+    }
+
     return this.sendEmail({
       to: email,
-      subject: `${otp} is your Rupakar password reset code`,
+      subject,
       html,
-      text: `Your Rupakar password reset code is: ${otp}. It will expire in 10 minutes. Reset online at: ${resetUrl}`,
+      text,
     });
   }
 
   async sendWelcome({ email, name }) {
     const html = `<p>Welcome ${name}!</p><p>Thank you for registering at Rupakar Marketplace.</p>`;
+    const subject = 'Welcome to Rupakar Marketplace';
+
+    if (env.REDIS_ENABLED && env.WORKER_ENABLED && !this.isCustomProvider) {
+      try {
+        const { scheduleEmail } = await import('../jobs/queues.js');
+        const jobId = await scheduleEmail({
+          to: email,
+          subject,
+          html,
+          text: `Welcome ${name}! Thank you for registering at Rupakar Marketplace.`,
+          jobType: 'send-welcome-email',
+          jobId: `welcome-email:${email}:${Date.now()}`,
+        });
+        if (jobId) {
+          return { messageId: jobId, queued: true, success: true };
+        }
+      } catch (err) {
+        console.warn('[EMAIL QUEUE FALLBACK] Failed to queue welcome email, sending directly:', err?.message);
+      }
+    }
+
     return this.sendEmail({
       to: email,
-      subject: 'Welcome to Rupakar Marketplace',
+      subject,
       html,
     });
   }

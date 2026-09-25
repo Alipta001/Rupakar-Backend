@@ -76,3 +76,23 @@ it('rejects a Live Mode key in development', () => {
 it('rejects a Test Mode key in production', () => {
   expect(() => loadEnv({ RAZORPAY_KEY_ID: 'rzp_test_wrong_environment' })).toThrow();
 });
+
+it('accepts production configuration using Brevo API key when SMTP is not set', () => {
+  expect(() => loadEnv({
+    EMAIL_HOST: '',
+    EMAIL_USER: '',
+    EMAIL_PASSWORD: '',
+    RESEND_API_KEY: '',
+    BREVO_API_KEY: 'xkeysib-production-key',
+  })).not.toThrow();
+});
+
+it('accepts production configuration using Resend API key when SMTP is not set', () => {
+  expect(() => loadEnv({
+    EMAIL_HOST: '',
+    EMAIL_USER: '',
+    EMAIL_PASSWORD: '',
+    RESEND_API_KEY: 're_production_key',
+    BREVO_API_KEY: '',
+  })).not.toThrow();
+});

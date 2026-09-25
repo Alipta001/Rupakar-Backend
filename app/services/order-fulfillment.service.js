@@ -193,14 +193,15 @@ export class OrderFulfillmentService {
       // Check if all sibling vendor orders under parent order are cancelled
       const siblingVendorOrders = await VendorOrder.find({ parentOrderId: parentOrder._id }).lean();
       const allCancelled = siblingVendorOrders.length > 0 && siblingVendorOrders.every((vo) => vo.status === 'CANCELLED');
-      const allRefunded = siblingVendorOrders.every((vo) => ['CANCELLED', 'REFUNDED'].includes(vo.status));
+      const allRefunded = siblingVendorOrders.length > 0 && siblingVendorOrders.every((vo) => vo.status === 'REFUNDED');
+      const hasCapturedPayment = payment && ['CAPTURED', 'PAID', 'REFUND_PENDING'].includes(payment.status);
 
       if (allCancelled) {
         parentOrder.status = 'CANCELLED';
-        parentOrder.paymentStatus = allRefunded ? 'REFUNDED' : 'REFUND_PENDING';
+        parentOrder.paymentStatus = hasCapturedPayment ? (allRefunded ? 'REFUNDED' : 'REFUND_PENDING') : 'CANCELLED';
         parentOrder.cancelledAt = new Date();
         parentOrder.cancelledReason = cancelReason;
-      } else {
+      } else if (hasCapturedPayment) {
         parentOrder.paymentStatus = 'PARTIALLY_REFUNDED';
       }
       await parentOrder.save();

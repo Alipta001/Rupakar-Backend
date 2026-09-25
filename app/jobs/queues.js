@@ -26,6 +26,23 @@ const connection = new IORedis(env.REDIS_URL, {
 });
 
 export const getQueueConnection = () => connection;
+
+export async function closeQueueConnection() {
+  try {
+    if (connection) {
+      if (['ready', 'connecting', 'connect', 'reconnecting'].includes(connection.status)) {
+        await connection.quit().catch(() => {
+          connection.disconnect();
+        });
+      } else if (connection.status !== 'end') {
+        connection.disconnect();
+      }
+    }
+  } catch (_err) {
+    // Ignore cleanup error
+  }
+}
+
 connection.on('error', (err) => {
   // Suppress unhandled redis connection errors when Redis is not running locally
   if (env.NODE_ENV === 'production') {
@@ -71,6 +88,7 @@ export async function scheduleVendorOrderPackReminder({ vendorOrderId, delayMs =
   if (!vendorOrderId) return null;
   try {
     const queue = getFulfillmentQueue();
+    await queue.waitUntilReady().catch(() => null);
 
     if (delayMs !== null) {
       const step = reminderStep || 1;
@@ -127,6 +145,7 @@ export async function scheduleVendorOrderAutoCancel({ vendorOrderId, delayMs = 4
   if (!vendorOrderId) return null;
   try {
     const queue = getFulfillmentQueue();
+    await queue.waitUntilReady().catch(() => null);
     const jobId = `auto-cancel:${vendorOrderId}`;
     const job = await queue.add(
       'vendor-order-auto-cancel',
@@ -153,6 +172,7 @@ export async function scheduleInvoiceGeneration({ orderId, customerId, vendorId 
 
   try {
     const queue = getInvoiceQueue();
+    await queue.waitUntilReady().catch(() => null);
     const jobId = `invoice:${orderId}:${vendorOrderId || vendorId || 'customer'}`;
     const job = await queue.add(
       'generate-invoice',
@@ -177,6 +197,7 @@ export async function schedulePackingSlipGeneration({ orderId, vendorOrderId, ve
   if (!orderId || !vendorOrderId || !vendorId || !customerId) return null;
   const queue = getPackingSlipQueue();
   try {
+    await queue.waitUntilReady().catch(() => null);
     const job = await queue.add('generate-packing-slip', { orderId, vendorOrderId, vendorId, customerId }, {
       jobId: `packing-slip-${vendorOrderId}`, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: { age: 3600 }, removeOnFail: { age: 86400 },
     });
@@ -189,6 +210,7 @@ export async function scheduleNotification({ userId, type, title, message, chann
 
   try {
     const queue = getNotificationQueue();
+    await queue.waitUntilReady().catch(() => null);
     const jobId = `notification:${userId}:${type}:${metadata?.idempotencyKey || metadata?.orderId || Date.now()}:${metadata?.vendorOrderId || ''}`;
     const job = await queue.add(
       'send-notification',
@@ -214,6 +236,7 @@ export async function scheduleEmail({ to, subject, html, text, jobType = 'send-e
 
   try {
     const queue = getEmailQueue();
+    await queue.waitUntilReady().catch(() => null);
     const finalJobId = jobId || `email:${to}:${subject}:${Date.now()}`;
     const job = await queue.add(jobType, { to, subject, html, text }, {
       jobId: finalJobId,

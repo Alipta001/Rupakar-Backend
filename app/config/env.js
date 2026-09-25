@@ -23,6 +23,7 @@ const durationToMs = (value, fallback) => {
 
 if (isProduction) {
   const hasResend = Boolean(process.env.RESEND_API_KEY && !hasPlaceholder(process.env.RESEND_API_KEY));
+  const hasBrevo = Boolean(process.env.BREVO_API_KEY && !hasPlaceholder(process.env.BREVO_API_KEY));
   const hasSmtp = Boolean(!hasPlaceholder(process.env.EMAIL_HOST) && !hasPlaceholder(process.env.EMAIL_USER) && !hasPlaceholder(process.env.EMAIL_PASSWORD));
 
   const missing = [
@@ -42,8 +43,8 @@ if (isProduction) {
     ...productionSecretNames,
   ].filter((name) => hasPlaceholder(process.env[name]));
 
-  if (!hasResend && !hasSmtp) {
-    missing.push('EMAIL_HOST, EMAIL_USER, EMAIL_PASSWORD (or RESEND_API_KEY)');
+  if (!hasResend && !hasBrevo && !hasSmtp) {
+    missing.push('EMAIL_HOST, EMAIL_USER, EMAIL_PASSWORD (or RESEND_API_KEY or BREVO_API_KEY)');
   }
 
   if (missing.length > 0) {
@@ -86,14 +87,14 @@ export const env = {
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET ?? (process.env.JWT_SECRET ? `${process.env.JWT_SECRET}_refresh` : 'dev-refresh-secret'),
   FRONTEND_URL: process.env.FRONTEND_URL ?? (isProduction ? 'https://rupakar.com' : 'http://localhost:3000'),
   BACKEND_URL: process.env.BACKEND_URL ?? defaultBackendUrl,
-  CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS ?? (isProduction ? 'https://rupakar.com,https://seller.rupakar.com' : 'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000'),
+  CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS ?? (isProduction ? 'https://rupakar.com,https://www.rupakar.com,https://seller.rupakar.com,https://admin.rupakar.com' : 'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000'),
   SELLER_FRONTEND_URL: process.env.SELLER_FRONTEND_URL ?? (isProduction ? 'https://seller.rupakar.com' : ''),
-  COOKIE_DOMAIN: process.env.COOKIE_DOMAIN ?? '',
+  COOKIE_DOMAIN: process.env.COOKIE_DOMAIN || (isProduction ? '.rupakar.com' : ''),
   COOKIE_SAMESITE: (process.env.COOKIE_SAMESITE ?? '').toLowerCase(),
   ACCESS_TOKEN_EXPIRATION: process.env.ACCESS_TOKEN_EXPIRATION ?? '15m',
   REFRESH_TOKEN_EXPIRATION: process.env.REFRESH_TOKEN_EXPIRATION ?? '7d',
   REFRESH_TOKEN_MAX_AGE_MS: durationToMs(process.env.REFRESH_TOKEN_EXPIRATION ?? '7d', 7 * 24 * 60 * 60 * 1000),
-  EMAIL_PROVIDER: process.env.EMAIL_PROVIDER ?? (process.env.RESEND_API_KEY ? 'resend' : 'smtp'),
+  EMAIL_PROVIDER: (process.env.EMAIL_PROVIDER ?? 'smtp').toLowerCase().trim(),
   EMAIL_HOST: process.env.EMAIL_HOST ?? 'smtp.gmail.com',
   EMAIL_PORT: Number(process.env.EMAIL_PORT ?? 587),
   EMAIL_USER: process.env.EMAIL_USER ?? 'noreply@example.com',
@@ -101,6 +102,7 @@ export const env = {
   EMAIL_FROM: process.env.EMAIL_FROM ?? process.env.CONTACT_EMAIL ?? (process.env.EMAIL_USER && process.env.EMAIL_USER.includes('@') ? process.env.EMAIL_USER : 'noreply@rupakar.com'),
   CONTACT_EMAIL: process.env.CONTACT_EMAIL ?? process.env.EMAIL_USER ?? 'noreply@example.com',
   RESEND_API_KEY: process.env.RESEND_API_KEY ?? '',
+  BREVO_API_KEY: process.env.BREVO_API_KEY ?? '',
   SMS_PROVIDER: process.env.SMS_PROVIDER ?? 'twilio',
   SMS_API_URL: process.env.SMS_API_URL ?? '',
   SMS_API_KEY: process.env.SMS_API_KEY ?? '',
@@ -109,7 +111,9 @@ export const env = {
   TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER ?? process.env.TWILIO_FROM_NUMBER ?? process.env.SMS_FROM ?? '',
   GOOGLE_CLIENT_ID: (process.env.GOOGLE_CLIENT_ID ?? '').trim(),
   GOOGLE_CLIENT_SECRET: (process.env.GOOGLE_CLIENT_SECRET ?? '').trim(),
-  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI ?? `${defaultBackendUrl}/api/v1/auth/google/callback`,
+  GOOGLE_REDIRECT_URI: (process.env.GOOGLE_REDIRECT_URI && !process.env.GOOGLE_REDIRECT_URI.includes('onrender.com'))
+    ? process.env.GOOGLE_REDIRECT_URI
+    : `${defaultBackendUrl}/api/v1/auth/google/callback`,
   RUPAKAR_LOGO_URL: process.env.RUPAKAR_LOGO_URL ?? `${defaultBackendUrl}/Rupakar-logo.jpeg`,
   STORAGE_BUCKET: process.env.STORAGE_BUCKET ?? 'rupakar-dev',
   STORAGE_PROVIDER: process.env.STORAGE_PROVIDER ?? 'cloudinary', S3_BUCKET_NAME: process.env.S3_BUCKET_NAME ?? '', S3_REGION: process.env.S3_REGION ?? 'us-east-1', S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? '', S3_SECRET_ACCESS_KEY: process.env.S3_SECRET_ACCESS_KEY ?? '', S3_ENDPOINT: process.env.S3_ENDPOINT ?? '',

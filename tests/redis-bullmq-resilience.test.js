@@ -1,8 +1,12 @@
-import { describe, it, expect, jest } from '@jest/globals';
-import { getQueueConnection, ensureQueueConnection, getEmailQueue } from '../app/jobs/queues.js';
+import { describe, it, expect, jest, afterAll } from '@jest/globals';
+import { getQueueConnection, ensureQueueConnection, getEmailQueue, closeQueueConnection } from '../app/jobs/queues.js';
 import { env } from '../app/config/env.js';
 
 describe('Redis & BullMQ Queue Resilience', () => {
+  afterAll(async () => {
+    await closeQueueConnection();
+  });
+
   it('queue connection is initialized with resilient retryStrategy and maxRetriesPerRequest: null', () => {
     const connection = getQueueConnection();
     expect(connection).toBeDefined();
@@ -39,6 +43,7 @@ describe('Redis & BullMQ Queue Resilience', () => {
     const queue = getEmailQueue();
     expect(queue.name).toBe('email');
     expect(queue.opts.connection).toBeDefined();
+    await queue.waitUntilReady().catch(() => null);
     await queue.close();
   });
 });
