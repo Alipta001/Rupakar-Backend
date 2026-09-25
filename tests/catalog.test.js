@@ -83,6 +83,79 @@ describe('catalog services', () => {
     expect(findSpy).toHaveBeenCalledWith({ status: 'PUBLISHED', deletedAt: null });
   });
 
+  it('resolves category slug to categoryId in public catalog filtering', async () => {
+    const findSpy = jest.spyOn(Product, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([{ status: 'PUBLISHED', categoryId: '65f1a2b3c4d5e6f7a8b9c0d1' }]),
+    });
+    jest.spyOn(Product, 'countDocuments').mockResolvedValue(1);
+    jest.spyOn(Category, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ _id: '65f1a2b3c4d5e6f7a8b9c0d1', slug: 'terracotta' }),
+    });
+
+    const service = new ProductService();
+    const result = await service.listPublicCatalog({ category: 'terracotta', limit: 10 });
+
+    expect(findSpy).toHaveBeenCalledWith({
+      status: 'PUBLISHED',
+      deletedAt: null,
+      categoryId: '65f1a2b3c4d5e6f7a8b9c0d1',
+    });
+    expect(result.data).toHaveLength(1);
+  });
+
+  it('queries categoryId directly when a 24-character ObjectId is provided', async () => {
+    const categoryObjectId = '65f1a2b3c4d5e6f7a8b9c0d1';
+    const findSpy = jest.spyOn(Product, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([{ status: 'PUBLISHED', categoryId: categoryObjectId }]),
+    });
+    jest.spyOn(Product, 'countDocuments').mockResolvedValue(1);
+    const categoryFindSpy = jest.spyOn(Category, 'findOne');
+
+    const service = new ProductService();
+    const result = await service.listPublicCatalog({ category: categoryObjectId, limit: 10 });
+
+    expect(categoryFindSpy).not.toHaveBeenCalled();
+    expect(findSpy).toHaveBeenCalledWith({
+      status: 'PUBLISHED',
+      deletedAt: null,
+      categoryId: categoryObjectId,
+    });
+    expect(result.data).toHaveLength(1);
+  });
+
+  it('returns zero products and does not use regex fallback when category does not exist', async () => {
+    const findSpy = jest.spyOn(Product, 'find').mockReturnValue({
+      sort: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    });
+    jest.spyOn(Product, 'countDocuments').mockResolvedValue(0);
+    jest.spyOn(Category, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue(null),
+    });
+
+    const service = new ProductService();
+    const result = await service.listPublicCatalog({ category: 'NonexistentCraft', limit: 10 });
+
+    expect(findSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'PUBLISHED',
+        deletedAt: null,
+        categoryId: expect.any(Object),
+      })
+    );
+    const calledFilter = findSpy.mock.calls[0][0];
+    expect(calledFilter.$or).toBeUndefined();
+    expect(result.data).toHaveLength(0);
+  });
+
   it('returns a paginated public catalog with metadata', async () => {
     const items = [{ _id: 'p1', status: 'PUBLISHED' }, { _id: 'p2', status: 'PUBLISHED' }];
     jest.spyOn(Product, 'find').mockReturnValue({

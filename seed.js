@@ -423,6 +423,9 @@
 
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 import { env } from './app/config/env.js';
 import { User } from './app/models/user.model.js';
@@ -1072,23 +1075,42 @@ async function seed() {
 
       /*
       |--------------------------------------------------------------------------
-      | Idempotency
+      | Idempotency & Orphan Recovery
       |--------------------------------------------------------------------------
       |
-      | If this exact mock SKU already exists, skip it.
+      | Check if product AND variant exist and are properly linked.
+      | If products were deleted externally but variants remained, clean up
+      | the orphaned records before recreating so products are not falsely skipped.
       |
       */
 
-      const existingVariant = await ProductVariant.findOne({
-        sku,
-      });
+      const existingProduct = await Product.findOne({ slug: item.slug });
+      const existingVariant = await ProductVariant.findOne({ sku });
 
-      if (existingVariant) {
-        console.log(`SKIPPED: ${item.name} (${sku} already exists)`);
+      if (existingProduct && existingVariant && existingVariant.productId?.equals(existingProduct._id)) {
+        const existingInventory = await Inventory.findOne({ variantId: existingVariant._id });
+        if (existingInventory && existingProduct.variants?.length > 0) {
+          console.log(`EXISTS: ${item.name} (${sku} already intact)`);
+          skippedCount += 1;
+          continue;
+        }
+      }
 
-        skippedCount += 1;
+      // If variant exists without product or points to another product ID, clean up orphans
+      if (existingVariant && (!existingProduct || !existingVariant.productId?.equals(existingProduct._id))) {
+        console.log(`Reconciling orphaned records for SKU: ${sku}`);
+        await ProductImage.deleteMany({ variantId: existingVariant._id });
+        await Inventory.deleteMany({ variantId: existingVariant._id });
+        await ProductVariant.deleteMany({ sku });
+      }
 
-        continue;
+      // If product exists without variant or broken, clean up product records before recreation
+      if (existingProduct && (!existingVariant || !existingVariant.productId?.equals(existingProduct._id))) {
+        console.log(`Reconciling broken product record for slug: ${item.slug}`);
+        await ProductImage.deleteMany({ productId: existingProduct._id });
+        await Inventory.deleteMany({ productId: existingProduct._id });
+        await ProductVariant.deleteMany({ productId: existingProduct._id });
+        await Product.deleteOne({ _id: existingProduct._id });
       }
 
       const categoryDoc = categoryMap[item.categorySlug];
@@ -1270,30 +1292,53 @@ async function seed() {
     */
 
     console.log('\n==========================================');
-    console.log('SEED COMPLETE');
+    console.log('SEED COMPLETE & VERIFIED');
     console.log('==========================================');
+    console.log(`Host / Cluster           : ${mongoose.connection.host}`);
+    console.log(`Database Name            : ${mongoose.connection.name}`);
+    console.log(`Product Collection       : ${Product.collection.name}`);
+    console.log(`Products Inserted (Run)  : ${createdCount}`);
+    console.log(`Products Skipped (Run)   : ${skippedCount}`);
 
-    console.log(`Created: ${createdCount}`);
-    console.log(`Skipped: ${skippedCount}`);
-    console.log(`Total definitions: ${productsSeed.length}`);
+    const finalProductCount = await Product.countDocuments();
+    const finalVariantCount = await ProductVariant.countDocuments();
+    const finalImageCount = await ProductImage.countDocuments();
+    const finalInventoryCount = await Inventory.countDocuments();
+    const finalCategoryCount = await Category.countDocuments();
+    const finalBrandCount = await Brand.countDocuments();
 
-    console.log('\n₹1 TEST PRODUCT');
+    console.log(`Final Products Count     : ${finalProductCount}`);
+    console.log(`Final Variants Count     : ${finalVariantCount}`);
+    console.log(`Final Images Count       : ${finalImageCount}`);
+    console.log(`Final Inventory Count    : ${finalInventoryCount}`);
+    console.log(`Final Categories Count   : ${finalCategoryCount}`);
+    console.log(`Final Brands Count       : ${finalBrandCount}`);
 
+    const sampleProduct = await Product.findOne().populate('variants');
+    if (sampleProduct) {
+      const sampleVariant = sampleProduct.variants?.[0];
+      console.log('\nSample Product:');
+      console.log(`  Name  : ${sampleProduct.name}`);
+      console.log(`  Slug  : ${sampleProduct.slug}`);
+      console.log(`  SKU   : ${sampleVariant?.sku || 'N/A'}`);
+      console.log(`  Price : ₹${sampleVariant?.price ?? 'N/A'}`);
+    }
+
+    console.log('\n₹1 TEST PRODUCT:');
     const oneRupeeProduct = await ProductVariant.findOne({
       sku: `${MOCK_PREFIX}TEST-PRODUCT-ONE-RUPEE-STD`,
     });
 
     if (oneRupeeProduct) {
-      console.log(`Price: ₹${oneRupeeProduct.price}`);
-      console.log(`SKU: ${oneRupeeProduct.sku}`);
-      console.log('Status: READY FOR TESTING');
+      console.log(`  Price : ₹${oneRupeeProduct.price}`);
+      console.log(`  SKU   : ${oneRupeeProduct.sku}`);
+      console.log('  Status: READY FOR TESTING');
     } else {
-      console.log('WARNING: ₹1 product was not found.');
+      console.log('  WARNING: ₹1 product was not found.');
     }
 
-    console.log('\nNo existing products were deleted.');
-
-    console.log('\n==========================================\n');
+    console.log('\nNo valid existing products were deleted.');
+    console.log('==========================================\n');
   } catch (error) {
     console.error('\n==========================================');
     console.error('SEED FAILED');

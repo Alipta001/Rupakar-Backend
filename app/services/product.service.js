@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { AppError } from '../utils/app-error.js';
 import { Brand } from '../models/brand.model.js';
 import { Category } from '../models/category.model.js';
@@ -571,9 +572,57 @@ export class ProductService {
         { tags: { $in: [new RegExp(escaped, 'i')] } },
       ];
     }
-    if (category) query.categoryId = category;
-    if (brand) query.brandId = brand;
-    if (vendor) query.vendorId = vendor;
+    if (category) {
+      const trimmed = String(category).trim();
+      const isObjectId = /^[0-9a-fA-F]{24}$/.test(trimmed);
+      if (isObjectId) {
+        query.categoryId = trimmed;
+      } else {
+        const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const foundCategory = await Category.findOne({
+          $or: [
+            { slug: trimmed.toLowerCase() },
+            { slug: new RegExp(escaped, 'i') },
+            { name: new RegExp(`^${escaped}$`, 'i') },
+            { name: new RegExp(escaped, 'i') },
+          ],
+          deletedAt: null,
+        }).lean();
+
+        if (foundCategory) {
+          query.categoryId = foundCategory._id;
+        } else {
+          query.categoryId = new mongoose.Types.ObjectId();
+        }
+      }
+    }
+    if (brand) {
+      const trimmed = String(brand).trim();
+      const isObjectId = /^[0-9a-fA-F]{24}$/.test(trimmed);
+      if (isObjectId) {
+        query.brandId = trimmed;
+      } else {
+        const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const foundBrand = await Brand.findOne({
+          $or: [
+            { slug: trimmed.toLowerCase() },
+            { name: new RegExp(`^${escaped}$`, 'i') },
+          ],
+          deletedAt: null,
+        }).lean();
+        if (foundBrand) {
+          query.brandId = foundBrand._id;
+        } else {
+          query.brandId = new mongoose.Types.ObjectId();
+        }
+      }
+    }
+    if (vendor) {
+      const trimmed = String(vendor).trim();
+      if (/^[0-9a-fA-F]{24}$/.test(trimmed)) {
+        query.vendorId = trimmed;
+      }
+    }
     if (minPrice != null || maxPrice != null) {
       query.$and = [
         ...(query.$and ?? []),
