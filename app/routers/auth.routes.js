@@ -223,6 +223,8 @@ router.post('/register-seller', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+const resendOtpSchema = z.object({ email: z.string().email() });
+
 router.post('/verify-otp', async (req, res, next) => {
   try {
     const payload = verifyOtpSchema.parse(req.body);
@@ -230,6 +232,14 @@ router.post('/verify-otp', async (req, res, next) => {
     setRefreshCookie(res, result.refreshToken, req);
     delete result.refreshToken;
     res.status(200).json({ success: true, data: result, message: 'Email verified successfully', requestId: String(req.headers['x-request-id'] ?? '') });
+  } catch (error) { next(error); }
+});
+
+router.post('/resend-otp', async (req, res, next) => {
+  try {
+    const payload = resendOtpSchema.parse(req.body);
+    const result = await authService.resendOtp(payload);
+    res.status(200).json({ success: true, data: result, message: result.message || 'Verification code resent successfully', requestId: String(req.headers['x-request-id'] ?? '') });
   } catch (error) { next(error); }
 });
 

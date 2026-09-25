@@ -62,6 +62,12 @@ const userSchema = new Schema(
       enum: ['customer', 'vendor', 'admin'],
       default: 'customer',
     },
+    verificationStatus: {
+      type: String,
+      enum: ['PENDING_VERIFICATION', 'VERIFIED'],
+      default: 'PENDING_VERIFICATION',
+      index: true,
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -69,12 +75,22 @@ const userSchema = new Schema(
     isEmailVerified: {
       type: Boolean,
       default: false,
+      index: true,
     },
     otp: {
       type: String,
       default: null,
     },
     otpExpiresAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    otpResendAvailableAt: {
+      type: Date,
+      default: null,
+    },
+    pendingExpiresAt: {
       type: Date,
       default: null,
     },
@@ -85,6 +101,17 @@ const userSchema = new Schema(
   },
   {
     timestamps: true,
+  },
+);
+
+userSchema.index(
+  { pendingExpiresAt: 1 },
+  {
+    expireAfterSeconds: 0,
+    partialFilterExpression: {
+      verificationStatus: 'PENDING_VERIFICATION',
+      isEmailVerified: false,
+    },
   },
 );
 

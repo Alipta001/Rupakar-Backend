@@ -251,7 +251,7 @@ export class EmailService {
           <div style="text-align: center; margin: 20px 0;">
             <a href="${verifyUrl}" style="background-color: #6B3E26; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Verify Email Online</a>
           </div>
-          <p style="color: #7A6B5D; font-size: 13px; line-height: 1.5;">This code will expire in <strong>10 minutes</strong>. If you did not create an account on Rupakar, please disregard this email.</p>
+          <p style="color: #7A6B5D; font-size: 13px; line-height: 1.5;">This code will expire in <strong>5 minutes</strong>. If you did not create an account on Rupakar, please disregard this email.</p>
         </div>
         <div style="text-align: center; margin-top: 24px; color: #9C8E82; font-size: 12px;">
           &copy; ${new Date().getFullYear()} Rupakar Marketplace. All rights reserved.
@@ -259,7 +259,7 @@ export class EmailService {
       </div>
     `;
     const subject = `${otp} is your Rupakar verification code`;
-    const text = `Your Rupakar verification code is: ${otp}. It will expire in 10 minutes. Verify online at: ${verifyUrl}`;
+    const text = `Your Rupakar verification code is: ${otp}. It will expire in 5 minutes. Verify online at: ${verifyUrl}`;
 
     if (env.REDIS_ENABLED && env.WORKER_ENABLED && !this.isCustomProvider) {
       try {

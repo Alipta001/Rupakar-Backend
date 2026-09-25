@@ -503,7 +503,8 @@ async function findOrCreateUser() {
       password: passwordHash,
       role: 'vendor',
       isActive: true,
-      emailVerified: true,
+      isEmailVerified: true,
+      verificationStatus: 'VERIFIED',
     });
 
     console.log('Created mock vendor user.');

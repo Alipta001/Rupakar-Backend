@@ -5,30 +5,44 @@ import { AppError } from '../utils/app-error.js';
 import { User } from '../models/user.model.js';
 import { RefreshSession } from '../models/refresh-session.model.js';
 import { Vendor } from '../models/vendor.model.js';
+import { Order } from '../models/order.model.js';
+import { Payment } from '../models/payment.model.js';
+import { Invoice } from '../models/invoice.model.js';
+import { Cart } from '../models/cart.model.js';
+import { Wishlist } from '../models/wishlist.model.js';
 import { emailService } from './email.service.js';
 import crypto from 'node:crypto';
 
 export class AuthService {
+  hashOtp(otp) {
+    return crypto.createHash('sha256').update(String(otp ?? '').trim()).digest('hex');
+  }
+
   async register(data, options = {}) {
     const email = data.email.toLowerCase().trim();
     const forceRole = options.role === 'vendor' ? 'vendor' : 'customer';
     let user = await User.findOne({ email });
 
-    if (user && user.isEmailVerified) {
+    if (user && (user.isEmailVerified || user.verificationStatus === 'VERIFIED')) {
       throw new AppError(409, 'USER_ALREADY_EXISTS', 'A user with this email already exists');
     }
 
     const hashedPassword = await bcrypt.hash(data.password, 12);
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const otpExpiresAt = new Date(Date.now() + env.OTP_EXPIRATION_MS);
+    const otpResendAvailableAt = new Date(Date.now() + env.OTP_RESEND_COOLDOWN_MS);
+    const pendingExpiresAt = new Date(Date.now() + env.PENDING_REGISTRATION_TTL_MS);
 
     if (user) {
       user.name = data.name.trim();
       user.password = hashedPassword;
       user.role = user.role ?? forceRole;
       if (forceRole === 'vendor') user.role = 'vendor';
-      user.otp = otp;
+      user.otp = this.hashOtp(otp);
       user.otpExpiresAt = otpExpiresAt;
+      user.otpResendAvailableAt = otpResendAvailableAt;
+      user.pendingExpiresAt = pendingExpiresAt;
+      user.verificationStatus = 'PENDING_VERIFICATION';
       user.isEmailVerified = false;
       await user.save();
     } else {
@@ -37,8 +51,11 @@ export class AuthService {
         email,
         password: hashedPassword,
         role: forceRole,
-        otp,
+        otp: this.hashOtp(otp),
         otpExpiresAt,
+        otpResendAvailableAt,
+        pendingExpiresAt,
+        verificationStatus: 'PENDING_VERIFICATION',
         isEmailVerified: false,
       });
     }
@@ -46,7 +63,8 @@ export class AuthService {
     try {
       await emailService.sendOtpEmail({ email: user.email, name: user.name, otp });
     } catch (emailError) {
-      console.error('[AUTH REGISTER EMAIL ERROR]', emailError);
+      console.error('[AUTH REGISTER EMAIL ERROR]', emailError.message || emailError);
+      throw new AppError(502, 'EMAIL_SEND_FAILED', 'Failed to deliver verification code. Please try registering again.');
     }
 
     const tokens = await this.issueTokens(user._id.toString(), user.role);
@@ -57,6 +75,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         isEmailVerified: user.isEmailVerified,
+        verificationStatus: user.verificationStatus,
       },
       ...tokens,
       message: 'Verification code sent to your email address',
@@ -82,17 +101,96 @@ export class AuthService {
     return { ...result, user: { ...result.user, role: 'vendor' } };
   }
 
+  async resendOtp({ email }) {
+    if (!email) throw new AppError(400, 'INVALID_INPUT', 'Email is required');
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'No account found with this email');
+
+    if (user.isEmailVerified || user.verificationStatus === 'VERIFIED') {
+      throw new AppError(400, 'ALREADY_VERIFIED', 'Your account is already verified. Please sign in.');
+    }
+
+    if (user.otpResendAvailableAt && user.otpResendAvailableAt > new Date()) {
+      const waitSeconds = Math.ceil((user.otpResendAvailableAt.getTime() - Date.now()) / 1000);
+      throw new AppError(429, 'RESEND_COOLDOWN', `Please wait ${waitSeconds}s before requesting a new code`);
+    }
+
+    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    try {
+      await emailService.sendOtpEmail({ email: user.email, name: user.name, otp: newOtp });
+    } catch (emailError) {
+      console.error('[AUTH RESEND EMAIL ERROR]', emailError.message || emailError);
+      throw new AppError(502, 'EMAIL_SEND_FAILED', 'Failed to deliver verification code. Please try again.');
+    }
+
+    user.otp = this.hashOtp(newOtp);
+    user.otpExpiresAt = new Date(Date.now() + env.OTP_EXPIRATION_MS);
+    user.otpResendAvailableAt = new Date(Date.now() + env.OTP_RESEND_COOLDOWN_MS);
+    await user.save();
+
+    return {
+      message: 'A fresh verification code has been sent to your email',
+      expiresIn: env.OTP_EXPIRATION_MS / 1000,
+      cooldownSeconds: env.OTP_RESEND_COOLDOWN_MS / 1000,
+    };
+  }
+
   async verifyOtp({ email, otp }) {
     if (!email || !otp) throw new AppError(400, 'INVALID_INPUT', 'Email and OTP are required');
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
     if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'No account found with this email');
-    if (!user.otp || user.otp !== String(otp).trim()) throw new AppError(400, 'INVALID_OTP', 'The verification code provided is incorrect');
-    if (!user.otpExpiresAt || user.otpExpiresAt < new Date()) throw new AppError(400, 'OTP_EXPIRED', 'The verification code has expired. Please request a new one');
+
+    if (user.isEmailVerified && user.verificationStatus === 'VERIFIED') {
+      const tokens = await this.issueTokens(user._id.toString(), user.role);
+      return {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          isEmailVerified: true,
+          verificationStatus: 'VERIFIED',
+        },
+        ...tokens,
+        message: 'Email already verified',
+      };
+    }
+
+    if (!user.otpExpiresAt || user.otpExpiresAt < new Date()) {
+      user.otp = null;
+      user.otpExpiresAt = null;
+      await user.save();
+
+      const freshOtp = Math.floor(100000 + Math.random() * 900000).toString();
+      try {
+        await emailService.sendOtpEmail({ email: user.email, name: user.name, otp: freshOtp });
+        user.otp = this.hashOtp(freshOtp);
+        user.otpExpiresAt = new Date(Date.now() + env.OTP_EXPIRATION_MS);
+        user.otpResendAvailableAt = new Date(Date.now() + env.OTP_RESEND_COOLDOWN_MS);
+        await user.save();
+
+        throw new AppError(400, 'OTP_EXPIRED_NEW_SENT', 'Your previous OTP has expired. A new OTP has been sent to your email.');
+      } catch (err) {
+        if (err.code === 'OTP_EXPIRED_NEW_SENT') throw err;
+        throw new AppError(400, 'OTP_EXPIRED', 'Your verification code has expired. Please click Resend OTP to receive a new code.');
+      }
+    }
+
+    const enteredHash = this.hashOtp(otp);
+    const isMatch = user.otp && (user.otp === enteredHash || user.otp === String(otp).trim());
+    if (!isMatch) {
+      throw new AppError(400, 'INVALID_OTP', 'The verification code provided is incorrect');
+    }
 
     user.isEmailVerified = true;
+    user.verificationStatus = 'VERIFIED';
     user.otp = null;
     user.otpExpiresAt = null;
+    user.otpResendAvailableAt = null;
+    user.pendingExpiresAt = null;
     user.lastLogin = new Date();
     await user.save();
 
@@ -108,6 +206,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         isEmailVerified: user.isEmailVerified,
+        verificationStatus: user.verificationStatus,
       },
       ...tokens,
       message: 'Email verified successfully',
@@ -121,14 +220,15 @@ export class AuthService {
     if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'No account found with this email address');
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.otp = otp;
-    user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    user.otp = this.hashOtp(otp);
+    user.otpExpiresAt = new Date(Date.now() + env.OTP_EXPIRATION_MS);
     await user.save();
 
     try {
       await emailService.sendPasswordResetOtp({ email: user.email, otp });
     } catch (emailError) {
       console.error('[AUTH FORGOT_PASSWORD EMAIL ERROR]', emailError?.message || emailError);
+      throw new AppError(502, 'EMAIL_SEND_FAILED', 'Failed to deliver password reset code. Please try again.');
     }
 
     return { message: 'Password reset code sent to your email' };
@@ -139,7 +239,10 @@ export class AuthService {
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
     if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'No account found with this email');
-    if (!user.otp || user.otp !== String(otp).trim()) throw new AppError(400, 'INVALID_OTP', 'The verification code provided is incorrect');
+
+    const enteredHash = this.hashOtp(otp);
+    const isMatch = user.otp && (user.otp === enteredHash || user.otp === String(otp).trim());
+    if (!isMatch) throw new AppError(400, 'INVALID_OTP', 'The verification code provided is incorrect');
     if (!user.otpExpiresAt || user.otpExpiresAt < new Date()) throw new AppError(400, 'OTP_EXPIRED', 'The verification code has expired. Please request a new one');
 
     user.password = await bcrypt.hash(newPassword, 12);
@@ -152,21 +255,79 @@ export class AuthService {
   }
 
   async login(data) {
-    const normalizedEmail = String(data.email || '').toLowerCase();
+    const normalizedEmail = String(data.email || '').toLowerCase().trim();
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
 
     const isValid = await bcrypt.compare(data.password, user.password);
     if (!isValid) throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
 
+    if (user.verificationStatus === 'PENDING_VERIFICATION' && !user.isEmailVerified) {
+      throw new AppError(403, 'EMAIL_NOT_VERIFIED', 'Please verify your email address before logging in');
+    }
+
     const tokens = await this.issueTokens(user._id.toString(), user.role);
     user.lastLogin = new Date();
     await user.save();
 
     return {
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: { id: user._id, name: user.name, email: user.email, role: user.role, isEmailVerified: user.isEmailVerified, verificationStatus: user.verificationStatus },
       ...tokens,
     };
+  }
+
+  async cleanupPendingRegistrations({ now = new Date(), olderThanMs = env.PENDING_REGISTRATION_TTL_MS } = {}) {
+    const cutoff = new Date(now.getTime() - olderThanMs);
+    const pendingCandidates = await User.find({
+      verificationStatus: 'PENDING_VERIFICATION',
+      isEmailVerified: false,
+      $or: [
+        { pendingExpiresAt: { $lte: now } },
+        { pendingExpiresAt: null, createdAt: { $lte: cutoff } },
+      ],
+    });
+
+    let deletedCount = 0;
+    let skippedCount = 0;
+
+    for (const candidate of pendingCandidates) {
+      if (candidate.isEmailVerified || candidate.verificationStatus === 'VERIFIED') {
+        skippedCount += 1;
+        continue;
+      }
+
+      const [hasOrders, hasPayments, hasInvoices] = await Promise.all([
+        Order.exists({ userId: candidate._id }),
+        Payment.exists({ userId: candidate._id }),
+        Invoice.exists({ userId: candidate._id }),
+      ]);
+
+      if (hasOrders || hasPayments || hasInvoices) {
+        skippedCount += 1;
+        continue;
+      }
+
+      const vendor = await Vendor.findOne({ ownerUserId: candidate._id });
+      if (vendor && (vendor.status === 'APPROVED' || vendor.verificationStatus === 'VERIFIED')) {
+        skippedCount += 1;
+        continue;
+      }
+
+      if (vendor) {
+        await Vendor.deleteOne({ _id: vendor._id });
+      }
+
+      await Promise.all([
+        Cart.deleteMany({ userId: candidate._id }),
+        Wishlist.deleteMany({ userId: candidate._id }),
+        RefreshSession.deleteMany({ userId: candidate._id }),
+        User.deleteOne({ _id: candidate._id }),
+      ]);
+
+      deletedCount += 1;
+    }
+
+    return { deletedCount, skippedCount };
   }
 
   async verifyGoogleIdToken(idToken) {
