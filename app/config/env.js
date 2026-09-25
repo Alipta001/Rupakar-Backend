@@ -79,7 +79,7 @@ const defaultBackendUrl = isProduction ? 'https://api.rupakar.com' : `http://loc
 export const env = {
   NODE_ENV: process.env.NODE_ENV ?? 'development',
   PORT: Number(process.env.PORT ?? 4000),
-  MONGODB_URI: (process.env.MONGODB_URI || process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/rupakar').trim(),
+  MONGODB_URI: (process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/rupakar').trim(),
   REDIS_URL: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
   REDIS_ENABLED: isProduction || process.env.REDIS_ENABLED === 'true',
   WORKER_ENABLED: process.env.WORKER_ENABLED !== 'false',

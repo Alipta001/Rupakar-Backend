@@ -13,7 +13,7 @@
 // dotenv.config();
 
 // async function seed() {
-//   const mongoUri = (process.env.MONGODB_URI || process.env.MONGO_URL || env.MONGODB_URI).trim();
+//   const mongoUri = (process.env.MONGODB_URI || env.MONGODB_URI).trim();
 //   console.log('Connecting to database...');
 //   await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 15000 });
 //   console.log('Connected to MongoDB.');
@@ -423,7 +423,6 @@
 
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-import dotenv from 'dotenv';
 
 import { env } from './app/config/env.js';
 import { User } from './app/models/user.model.js';
@@ -433,8 +432,6 @@ import { Brand } from './app/models/brand.model.js';
 import { Product, ProductImage } from './app/models/product.model.js';
 import { ProductVariant } from './app/models/product-variant.model.js';
 import { Inventory } from './app/models/inventory.model.js';
-
-dotenv.config();
 
 /*
 |--------------------------------------------------------------------------
@@ -990,11 +987,7 @@ async function seed() {
     |--------------------------------------------------------------------------
     */
 
-    const mongoUri = (
-      process.env.MONGODB_URI ||
-      process.env.MONGO_URL ||
-      env.MONGODB_URI
-    ).trim();
+    const mongoUri = (env.MONGODB_URI || '').trim();
 
     if (!mongoUri) {
       throw new Error('MongoDB URI is not configured.');
@@ -1004,13 +997,16 @@ async function seed() {
     console.log('RUPAKAR MOCK PRODUCT SEED');
     console.log('==========================================\n');
 
-    console.log('Connecting to MongoDB...');
+    console.log('Connecting to MongoDB using validated configuration...');
 
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 15000,
     });
 
-    console.log('Connected to MongoDB.\n');
+    console.log('Connected to MongoDB:');
+    console.log(`  Host / Cluster    : ${mongoose.connection.host}`);
+    console.log(`  Database Name     : ${mongoose.connection.name}`);
+    console.log(`  Connection State  : ${mongoose.connection.readyState === 1 ? 'Connected (1)' : mongoose.connection.readyState}\n`);
 
     /*
     |--------------------------------------------------------------------------

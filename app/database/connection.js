@@ -8,7 +8,7 @@ export async function connectMongo() {
       maxPoolSize: 50,
       minPoolSize: 5,
     });
-    console.log('MongoDB connected');
+    console.log(`MongoDB connected: host=${mongoose.connection.host}, database=${mongoose.connection.name}`);
     return mongoose.connection;
   } catch (error) {
     console.error('MongoDB connection failed', error);
