@@ -24,9 +24,9 @@ Production-ready marketplace backend for authentic products from West Bengal, In
 3. Start the app:
    npm run dev
 4. Swagger UI:
-   http://localhost:8000/api-docs
+   http://localhost:4000/api/docs (or http://localhost:4000/api-docs)
 5. Health:
-   http://localhost:8000/api/v1/health
+   http://localhost:4000/api/v1/health
 
 ## Docker
 

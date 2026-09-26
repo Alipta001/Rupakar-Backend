@@ -6,7 +6,7 @@ import morgan from 'morgan';
 import mongoose from 'mongoose';
 import Redis from 'ioredis';
 import swaggerUi from 'swagger-ui-express';
-import swaggerJsdoc from 'swagger-jsdoc';
+import { swaggerSpec } from './app/docs/swagger.js';
 import { env } from './app/config/env.js';
 import { securityMiddleware } from './app/middleware/security.js';
 import { requestIdMiddleware } from './app/middleware/request-id.js';
@@ -139,23 +139,18 @@ export function createApp() {
     res.redirect('/api/v1/health');
   });
 
-  if (process.env.NODE_ENV !== 'production') {
-    const swaggerDefinition = {
-      openapi: '3.0.0',
-      info: {
-        title: 'Rupakar Marketplace API',
-        version: '1.0.0',
-        description: 'Production-ready marketplace backend foundation',
-      },
-      servers: [{ url: '/api/v1' }],
+  const isSwaggerEnabled = process.env.NODE_ENV !== 'production' || process.env.ENABLE_SWAGGER === 'true';
+  if (isSwaggerEnabled) {
+    const swaggerUiOptions = {
+      customSiteTitle: 'Rupakar Marketplace API Documentation',
     };
 
-    const swaggerSpec = swaggerJsdoc({
-      definition: swaggerDefinition,
-      apis: ['./app/**/*.js'],
+    app.get(['/api/docs.json', '/api-docs.json'], (_req, res) => {
+      res.status(200).json(swaggerSpec);
     });
 
-    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+    app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
   }
 
   app.use(notFoundHandler);
