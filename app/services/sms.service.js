@@ -99,12 +99,80 @@ export class HttpSmsProvider {
   }
 }
 
+export class Msg91SmsProvider {
+  constructor({ authKey, senderId, templateId, apiUrl } = {}) {
+    this.authKey = authKey || env.MSG91_AUTH_KEY;
+    this.senderId = senderId || env.MSG91_SENDER_ID;
+    this.templateId = templateId || env.MSG91_TEMPLATE_ID;
+    this.apiUrl = apiUrl || env.MSG91_API_URL || 'https://control.msg91.com/api/v5/flow/';
+  }
+
+  async send({ to, message, variables = {}, templateId = null }) {
+    if (!this.authKey) {
+      throw new Error('MSG91 configuration error: MSG91_AUTH_KEY is required');
+    }
+
+    const normalizedTo = normalizePhoneNumber(to);
+    if (!normalizedTo) throw new Error('Invalid recipient phone number');
+
+    const cleanMobile = normalizedTo.replace(/^\+/, '');
+    const resolvedTemplateId = templateId || this.templateId;
+    if (!resolvedTemplateId) {
+      throw new Error('MSG91 configuration error: MSG91_TEMPLATE_ID is required');
+    }
+
+    const recipient = {
+      mobiles: cleanMobile,
+      message,
+      ...(variables && typeof variables === 'object' ? variables : {}),
+    };
+
+    const payload = {
+      template_id: resolvedTemplateId,
+      short_url: '0',
+      recipients: [recipient],
+    };
+
+    if (this.senderId) {
+      payload.sender = this.senderId;
+    }
+
+    const response = await fetch(this.apiUrl, {
+      method: 'POST',
+      headers: {
+        authkey: this.authKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.type === 'error') {
+      const errorMsg = data.message || response.statusText || 'Failed to send SMS via MSG91';
+      console.error(`[SMS ERROR: MSG91] Failed to send SMS to ${maskPhoneNumber(normalizedTo)}: ${errorMsg}`);
+      throw new Error(`MSG91 SMS error (${response.status}): ${errorMsg}`);
+    }
+
+    return {
+      messageId: data.request_id || data.message || `msg91-${Date.now()}`,
+      success: true,
+    };
+  }
+}
+
 export class SmsService {
-  constructor(provider) {
+  constructor(provider, { enabled } = {}) {
+    this.enabled = typeof enabled === 'boolean' ? enabled : (provider ? true : env.SMS_ENABLED);
     if (provider) {
       this.provider = provider;
       return;
     }
+
+    const hasMsg91Credentials = Boolean(
+      env.MSG91_AUTH_KEY &&
+      !env.MSG91_AUTH_KEY.includes('placeholder')
+    );
 
     const hasTwilioCredentials = Boolean(
       env.TWILIO_ACCOUNT_SID &&
@@ -115,23 +183,35 @@ export class SmsService {
 
     const hasHttpSms = Boolean(env.SMS_API_URL && env.SMS_API_KEY);
 
-    if (env.SMS_PROVIDER === 'twilio' && hasTwilioCredentials) {
+    if (env.SMS_PROVIDER === 'msg91') {
+      this.provider = new Msg91SmsProvider();
+    } else if (env.SMS_PROVIDER === 'twilio' && hasTwilioCredentials) {
+      this.provider = new TwilioSmsProvider();
+    } else if (env.SMS_PROVIDER === 'http' && hasHttpSms) {
+      this.provider = new HttpSmsProvider();
+    } else if (hasMsg91Credentials) {
+      this.provider = new Msg91SmsProvider();
+    } else if (hasTwilioCredentials) {
       this.provider = new TwilioSmsProvider();
     } else if (hasHttpSms) {
       this.provider = new HttpSmsProvider();
-    } else if (hasTwilioCredentials) {
-      this.provider = new TwilioSmsProvider();
     } else {
       this.provider = new MockSmsProvider();
     }
   }
 
-  async sendSms({ to, message }) {
+  async sendSms({ to, message, variables = {}, templateId = null }) {
     if (!to || !message) throw new Error('SMS recipient and message are required');
-    if (env.SMS_PROVIDER === 'none') return { success: false, skipped: true };
+    if (!this.enabled || env.SMS_PROVIDER === 'none') {
+      return { success: false, skipped: true, reason: 'SMS_DISABLED' };
+    }
 
     const normalizedTo = normalizePhoneNumber(to);
-    return this.provider.send({ to: normalizedTo, message });
+    const sendPayload = { to: normalizedTo, message };
+    if (templateId) sendPayload.templateId = templateId;
+    if (variables && Object.keys(variables).length > 0) sendPayload.variables = variables;
+
+    return this.provider.send(sendPayload);
   }
 }
 
