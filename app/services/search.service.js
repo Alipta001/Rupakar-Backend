@@ -25,6 +25,7 @@ export class SearchService {
       price_desc: { createdAt: -1 },
       name_asc: { name: 1 },
       name_desc: { name: -1 },
+      relevance: { createdAt: -1 },
     };
 
     const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);

@@ -75,7 +75,7 @@ export const publicProductQuerySchema = z.object({
   minPrice: z.coerce.number().min(0).optional(),
   maxPrice: z.coerce.number().min(0).optional(),
   status: z.enum(['PUBLISHED', 'APPROVED']).optional(),
-  sort: z.enum(['newest', 'oldest', 'price_asc', 'price_desc', 'name_asc', 'name_desc']).optional(),
+  sort: z.enum(['newest', 'oldest', 'price_asc', 'price_desc', 'name_asc', 'name_desc', 'relevance']).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
   cursor: z.string().trim().max(64).optional(),
 }).strict();

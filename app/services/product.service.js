@@ -10,6 +10,41 @@ import { auditService } from './audit.service.js';
 import { inventoryService } from './inventory.service.js';
 import { storageService } from './storage.service.js';
 import crypto from 'node:crypto';
+import {
+  parseSearchQuery,
+  scoreProductRelevance,
+  buildCandidateMongoFilter,
+  escapeRegex,
+} from '../utils/search-relevance.js';
+
+const formatPublicProduct = (p) => {
+  const primaryVariant = Array.isArray(p.variants) ? p.variants[0] : null;
+  const price = primaryVariant?.price ?? 0;
+  const compareAtPrice = primaryVariant?.compareAtPrice ?? null;
+  const primaryImage = Array.isArray(p.images) && p.images.length > 0
+    ? (p.images.find((img) => img.isPrimary)?.url ?? p.images[0]?.url ?? '/images/product-vase.jpg')
+    : '/images/product-vase.jpg';
+  const images = Array.isArray(p.images) && p.images.length > 0 ? p.images.map((img) => img.url || img) : [primaryImage];
+
+  return {
+    ...p,
+    id: p._id,
+    variantId: primaryVariant?._id ?? primaryVariant?.id ?? (typeof primaryVariant === 'string' ? primaryVariant : null),
+    price,
+    compareAtPrice,
+    image: primaryImage,
+    images,
+    category: p.categoryId?.name || p.craft || 'Handcrafted',
+    craft: p.craft || p.tags?.[0] || 'Artisan Craft',
+    artisan: p.artisan || 'Rupakar Artisan',
+    rating: p.rating ?? 4.9,
+    reviews: p.reviews ?? 128,
+    story: p.story || p.description,
+    dimensions: p.dimensions || 'Handcrafted size',
+    material: p.material || 'Natural Terracotta & Pigments',
+    care: p.care || 'Dust with soft dry cloth. Avoid direct moisture.',
+  };
+};
 
 const normalizeSlug = (value) => {
   const slug = String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
@@ -562,16 +597,7 @@ export class ProductService {
 
   async listPublicCatalog({ q, category, brand, vendor, minPrice, maxPrice, status = 'PUBLISHED', sort = 'newest', limit = 20, cursor = null } = {}) {
     const query = { status: 'PUBLISHED', deletedAt: null };
-    if (q && String(q).trim()) {
-      const safe = String(q).trim();
-      const escaped = safe.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      query.$or = [
-        { name: { $regex: escaped, $options: 'i' } },
-        { shortDescription: { $regex: escaped, $options: 'i' } },
-        { description: { $regex: escaped, $options: 'i' } },
-        { tags: { $in: [new RegExp(escaped, 'i')] } },
-      ];
-    }
+
     if (category) {
       const trimmed = String(category).trim();
       const isObjectId = /^[0-9a-fA-F]{24}$/.test(trimmed);
@@ -630,6 +656,134 @@ export class ProductService {
       ];
     }
 
+    const pageLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
+
+    // If search query is provided, use relevance-based candidate retrieval and scoring
+    if (q && String(q).trim()) {
+      const queryInfo = parseSearchQuery(q);
+      if (!queryInfo.normQuery || queryInfo.queryTokens.length === 0) {
+        return { data: [], total: 0, pagination: { hasNextPage: false, nextCursor: null } };
+      }
+
+      // Resolve matching categories for query terms/synonyms
+      let matchingCategoryIds = [];
+      try {
+        const catRegexes = [
+          { slug: new RegExp(escapeRegex(queryInfo.normQuery), 'i') },
+          { name: new RegExp(escapeRegex(queryInfo.normQuery), 'i') },
+          ...queryInfo.queryTokens.map((t) => ({ name: new RegExp(escapeRegex(t), 'i') })),
+          ...queryInfo.synonyms.slice(0, 8).map((s) => ({ name: new RegExp(escapeRegex(s), 'i') })),
+        ];
+        let catQuery = Category.find({ $or: catRegexes, deletedAt: null });
+        if (typeof catQuery.select === 'function') catQuery = catQuery.select('_id name slug');
+        if (typeof catQuery.lean === 'function') catQuery = await catQuery.lean();
+        else catQuery = await catQuery;
+        if (Array.isArray(catQuery)) {
+          matchingCategoryIds = catQuery.map((c) => c._id);
+        }
+      } catch {
+        matchingCategoryIds = [];
+      }
+
+      // Resolve matching brands for query terms
+      let matchingBrandIds = [];
+      try {
+        const brandRegexes = [
+          { slug: new RegExp(escapeRegex(queryInfo.normQuery), 'i') },
+          { name: new RegExp(escapeRegex(queryInfo.normQuery), 'i') },
+          ...queryInfo.queryTokens.map((t) => ({ name: new RegExp(escapeRegex(t), 'i') })),
+        ];
+        let brandQuery = Brand.find({ $or: brandRegexes, deletedAt: null });
+        if (typeof brandQuery.select === 'function') brandQuery = brandQuery.select('_id name slug');
+        if (typeof brandQuery.lean === 'function') brandQuery = await brandQuery.lean();
+        else brandQuery = await brandQuery;
+        if (Array.isArray(brandQuery)) {
+          matchingBrandIds = brandQuery.map((b) => b._id);
+        }
+      } catch {
+        matchingBrandIds = [];
+      }
+
+      // Candidate filter for Mongo retrieval
+      const searchCandidateFilter = buildCandidateMongoFilter(queryInfo, matchingCategoryIds, matchingBrandIds);
+      if (searchCandidateFilter.$or && searchCandidateFilter.$or.length > 0) {
+        query.$and = [...(query.$and ?? []), searchCandidateFilter];
+      }
+
+      let candidateBuilder = Product.find(query);
+      if (typeof candidateBuilder.populate === 'function') {
+        candidateBuilder = candidateBuilder
+          .populate({ path: 'variants', match: { status: 'ACTIVE' } })
+          .populate({ path: 'images', match: { status: 'ACTIVE' } })
+          .populate({ path: 'categoryId', select: 'name slug' })
+          .populate({ path: 'brandId', select: 'name slug logo' })
+          .populate({ path: 'vendorId', select: 'businessName legalName description website originState originDistrict' });
+      }
+      if (typeof candidateBuilder.limit === 'function') {
+        candidateBuilder = candidateBuilder.limit(250);
+      }
+      const rawCandidates = typeof candidateBuilder.lean === 'function' ? await candidateBuilder.lean() : await candidateBuilder;
+      const candidates = Array.isArray(rawCandidates) ? rawCandidates : [];
+
+      // Score and rank candidates
+      const scored = [];
+      for (const item of candidates) {
+        const score = scoreProductRelevance(item, queryInfo);
+        if (score > 0) {
+          scored.push({ item, score });
+        }
+      }
+
+      // Sort
+      if (sort === 'price_asc') {
+        scored.sort((a, b) => {
+          const pa = a.item.variants?.[0]?.price ?? 0;
+          const pb = b.item.variants?.[0]?.price ?? 0;
+          return pa - pb || b.score - a.score;
+        });
+      } else if (sort === 'price_desc') {
+        scored.sort((a, b) => {
+          const pa = a.item.variants?.[0]?.price ?? 0;
+          const pb = b.item.variants?.[0]?.price ?? 0;
+          return pb - pa || b.score - a.score;
+        });
+      } else if (sort === 'name_asc') {
+        scored.sort((a, b) => String(a.item.name ?? '').localeCompare(String(b.item.name ?? '')));
+      } else if (sort === 'name_desc') {
+        scored.sort((a, b) => String(b.item.name ?? '').localeCompare(String(a.item.name ?? '')));
+      } else if (sort === 'oldest') {
+        scored.sort((a, b) => new Date(a.item.createdAt ?? 0) - new Date(b.item.createdAt ?? 0));
+      } else {
+        // default: relevance / newest
+        scored.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return new Date(b.item.createdAt ?? 0) - new Date(a.item.createdAt ?? 0);
+        });
+      }
+
+      const total = scored.length;
+      let startIndex = 0;
+      if (cursor && String(cursor).trim()) {
+        const targetId = String(cursor).trim();
+        const foundIdx = scored.findIndex((s) => String(s.item._id ?? s.item.id) === targetId);
+        if (foundIdx >= 0) {
+          startIndex = foundIdx + 1;
+        }
+      }
+
+      const paged = scored.slice(startIndex, startIndex + pageLimit);
+      const data = paged.map((s) => formatPublicProduct(s.item));
+      const hasNextPage = total > startIndex + pageLimit;
+      const nextCursor = data.length > 0 ? String(data[data.length - 1]._id) : null;
+
+      return {
+        data,
+        total,
+        pagination: { hasNextPage, nextCursor },
+      };
+    }
+
+    // Default flow when no search query is provided
     const sortMap = {
       newest: { createdAt: -1, _id: -1 },
       oldest: { createdAt: 1, _id: 1 },
@@ -639,7 +793,6 @@ export class ProductService {
       name_desc: { name: -1, _id: -1 },
     };
 
-    const pageLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
     const filter = cursor && String(cursor).trim() ? { ...query, _id: { $lt: cursor } } : query;
 
     let queryBuilder = Product.find(filter);
@@ -658,35 +811,7 @@ export class ProductService {
       queryBuilder = queryBuilder.limit(pageLimit);
     }
     const rawData = typeof queryBuilder.lean === 'function' ? await queryBuilder.lean() : await queryBuilder;
-
-    const data = (Array.isArray(rawData) ? rawData : []).map((p) => {
-      const primaryVariant = Array.isArray(p.variants) ? p.variants[0] : null;
-      const price = primaryVariant?.price ?? 0;
-      const compareAtPrice = primaryVariant?.compareAtPrice ?? null;
-      const primaryImage = Array.isArray(p.images) && p.images.length > 0
-        ? (p.images.find((img) => img.isPrimary)?.url ?? p.images[0]?.url ?? '/images/product-vase.jpg')
-        : '/images/product-vase.jpg';
-      const images = Array.isArray(p.images) && p.images.length > 0 ? p.images.map((img) => img.url || img) : [primaryImage];
-
-      return {
-        ...p,
-        id: p._id,
-        variantId: primaryVariant?._id ?? primaryVariant?.id ?? (typeof primaryVariant === 'string' ? primaryVariant : null),
-        price,
-        compareAtPrice,
-        image: primaryImage,
-        images,
-        category: p.categoryId?.name || p.craft || 'Handcrafted',
-        craft: p.craft || p.tags?.[0] || 'Artisan Craft',
-        artisan: p.artisan || 'Rupakar Artisan',
-        rating: p.rating ?? 4.9,
-        reviews: p.reviews ?? 128,
-        story: p.story || p.description,
-        dimensions: p.dimensions || 'Handcrafted size',
-        material: p.material || 'Natural Terracotta & Pigments',
-        care: p.care || 'Dust with soft dry cloth. Avoid direct moisture.',
-      };
-    });
+    const data = (Array.isArray(rawData) ? rawData : []).map(formatPublicProduct);
 
     const total = await Product.countDocuments(query);
     const hasNextPage = total > pageLimit || (data.length > 0 && data.length >= pageLimit && total > data.length);
