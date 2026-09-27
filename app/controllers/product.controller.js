@@ -1,4 +1,4 @@
-import { productService } from '../services/product.service.js';
+import { productService, PRODUCT_ALLOWED_TRANSITIONS } from '../services/product.service.js';
 import { createProductSchema, updateProductSchema, submitProductSchema, publicProductQuerySchema, adminReviewSchema } from '../validators/product.validators.js';
 import { AppError } from '../utils/app-error.js';
 
@@ -147,6 +147,8 @@ const sanitizeProduct = (product) => {
     material: product.material ?? null,
     care: product.care ?? null,
     status: product.status,
+    moderationStatus: product.status,
+    allowedTransitions: PRODUCT_ALLOWED_TRANSITIONS[product.status] ?? [],
     featured: Boolean(product.featured),
     stock: typeof product.stock === 'number' ? product.stock : typeof product.availableStock === 'number' ? product.availableStock : (formattedVariants.reduce((sum, v) => sum + (v.stock || 0), 0)),
     availableStock: typeof product.availableStock === 'number' ? product.availableStock : typeof product.stock === 'number' ? product.stock : 0,

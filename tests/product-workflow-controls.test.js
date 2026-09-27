@@ -7,7 +7,7 @@ import { InventoryMovement } from '../app/models/inventory-movement.model.js';
 import { Order } from '../app/models/order.model.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
 import { Vendor } from '../app/models/vendor.model.js';
-import { productService } from '../app/services/product.service.js';
+import { productService, PRODUCT_ALLOWED_TRANSITIONS } from '../app/services/product.service.js';
 import { notificationService } from '../app/services/notification.service.js';
 
 describe('Product Workflow Controls, Admin Moderation & Seller Operations', () => {
@@ -56,6 +56,114 @@ describe('Product Workflow Controls, Admin Moderation & Seller Operations', () =
       ).rejects.toMatchObject({
         statusCode: 400,
         code: 'INVALID_PRODUCT_STATUS',
+      });
+    });
+
+    it('blocks rejection from ARCHIVED status with 400 INVALID_PRODUCT_STATUS', async () => {
+      const mockProduct = {
+        _id: productId,
+        name: 'Sambalpuri Silk Saree',
+        status: 'ARCHIVED',
+        deletedAt: null,
+        save: jest.fn().mockResolvedValue(true),
+      };
+      jest.spyOn(Product, 'findById').mockResolvedValue(mockProduct);
+
+      await expect(
+        productService.setProductStatus(productId, 'REJECTED', adminId, 'Quality standards issue')
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        code: 'INVALID_PRODUCT_STATUS',
+      });
+    });
+
+    it('blocks rejection from DRAFT status with 400 INVALID_PRODUCT_STATUS', async () => {
+      const mockProduct = {
+        _id: productId,
+        name: 'Sambalpuri Silk Saree',
+        status: 'DRAFT',
+        deletedAt: null,
+        save: jest.fn().mockResolvedValue(true),
+      };
+      jest.spyOn(Product, 'findById').mockResolvedValue(mockProduct);
+
+      await expect(
+        productService.setProductStatus(productId, 'REJECTED', adminId, 'Quality standards issue')
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        code: 'INVALID_PRODUCT_STATUS',
+      });
+    });
+
+    it('allows transition from ARCHIVED to PUBLISHED (Restore/Publish)', async () => {
+      const mockProduct = {
+        _id: productId,
+        vendorId,
+        name: 'Sambalpuri Silk Saree',
+        status: 'ARCHIVED',
+        publishedAt: null,
+        deletedAt: null,
+        save: jest.fn().mockResolvedValue(true),
+      };
+      jest.spyOn(Product, 'findById').mockResolvedValue(mockProduct);
+      jest.spyOn(Vendor, 'findById').mockReturnValue({
+        select: () => ({ lean: async () => ({ ownerUserId: vendorUserId }) }),
+      });
+      jest.spyOn(productService, 'getByIdForAdmin').mockResolvedValue({
+        ...mockProduct,
+        status: 'PUBLISHED',
+      });
+
+      const updated = await productService.setProductStatus(productId, 'PUBLISHED', adminId);
+      expect(mockProduct.status).toBe('PUBLISHED');
+      expect(mockProduct.publishedAt).toBeInstanceOf(Date);
+    });
+
+    it('blocks admin deletion of an ARCHIVED product with 400 INVALID_DELETE_STATUS', async () => {
+      const mockProduct = {
+        _id: productId,
+        name: 'Sambalpuri Silk Saree',
+        status: 'ARCHIVED',
+        deletedAt: null,
+        save: jest.fn().mockResolvedValue(true),
+      };
+      jest.spyOn(Product, 'findOne').mockResolvedValue(mockProduct);
+
+      await expect(
+        productService.adminDeleteProduct(productId, adminId)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        code: 'INVALID_DELETE_STATUS',
+      });
+    });
+
+    it('enforces that ARCHIVED, REJECTED, PUBLISHED, UNPUBLISHED, and DRAFT do NOT allow REJECTED transition', () => {
+      const nonRejectableStatuses = ['ARCHIVED', 'REJECTED', 'PUBLISHED', 'UNPUBLISHED', 'DRAFT'];
+      for (const st of nonRejectableStatuses) {
+        const allowed = PRODUCT_ALLOWED_TRANSITIONS[st] ?? [];
+        expect(allowed).not.toContain('REJECTED');
+      }
+    });
+
+    it('enforces that only SUBMITTED, UNDER_REVIEW, APPROVED, and EDITED allow REJECTED transition', () => {
+      const allStatuses = Object.keys(PRODUCT_ALLOWED_TRANSITIONS);
+      const rejectableStatuses = allStatuses.filter((st) =>
+        (PRODUCT_ALLOWED_TRANSITIONS[st] ?? []).includes('REJECTED')
+      );
+      expect(rejectableStatuses.sort()).toEqual(['APPROVED', 'EDITED', 'SUBMITTED', 'UNDER_REVIEW'].sort());
+    });
+
+    it('matches the canonical 9-status transition matrix', () => {
+      expect(PRODUCT_ALLOWED_TRANSITIONS).toEqual({
+        DRAFT: ['SUBMITTED'],
+        SUBMITTED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
+        UNDER_REVIEW: ['APPROVED', 'REJECTED'],
+        APPROVED: ['PUBLISHED', 'REJECTED', 'UNPUBLISHED', 'UNDER_REVIEW', 'EDITED'],
+        REJECTED: ['DRAFT', 'UNDER_REVIEW', 'APPROVED'],
+        PUBLISHED: ['UNPUBLISHED', 'ARCHIVED', 'APPROVED', 'EDITED'],
+        UNPUBLISHED: ['PUBLISHED', 'APPROVED', 'ARCHIVED'],
+        ARCHIVED: ['PUBLISHED', 'DRAFT'],
+        EDITED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
       });
     });
 

@@ -21,6 +21,18 @@ import {
   escapeRegex,
 } from '../utils/search-relevance.js';
 
+export const PRODUCT_ALLOWED_TRANSITIONS = {
+  DRAFT: ['SUBMITTED'],
+  SUBMITTED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
+  UNDER_REVIEW: ['APPROVED', 'REJECTED'],
+  APPROVED: ['PUBLISHED', 'REJECTED', 'UNPUBLISHED', 'UNDER_REVIEW', 'EDITED'],
+  REJECTED: ['DRAFT', 'UNDER_REVIEW', 'APPROVED'],
+  PUBLISHED: ['UNPUBLISHED', 'ARCHIVED', 'APPROVED', 'EDITED'],
+  UNPUBLISHED: ['PUBLISHED', 'APPROVED', 'ARCHIVED'],
+  ARCHIVED: ['PUBLISHED', 'DRAFT'],
+  EDITED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
+};
+
 const formatPublicProduct = (p) => {
   const primaryVariant = Array.isArray(p.variants) ? p.variants[0] : null;
   const price = primaryVariant?.price ?? 0;
@@ -966,17 +978,7 @@ export class ProductService {
   async setProductStatus(productId, nextStatus, actorId, reason = '') {
     const product = await Product.findById(productId);
     if (!product || product.deletedAt) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
-    const allowedTransitions = {
-      DRAFT: ['SUBMITTED'],
-      SUBMITTED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
-      UNDER_REVIEW: ['APPROVED', 'REJECTED'],
-      APPROVED: ['PUBLISHED', 'REJECTED', 'UNPUBLISHED', 'UNDER_REVIEW', 'EDITED'],
-      REJECTED: ['DRAFT', 'UNDER_REVIEW', 'APPROVED'],
-      PUBLISHED: ['UNPUBLISHED', 'ARCHIVED', 'APPROVED', 'EDITED'],
-      UNPUBLISHED: ['PUBLISHED', 'APPROVED', 'ARCHIVED'],
-      ARCHIVED: ['PUBLISHED', 'DRAFT'],
-      EDITED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
-    };
+    const allowedTransitions = PRODUCT_ALLOWED_TRANSITIONS;
     const current = product.status;
     if (current === nextStatus) {
       return this.getByIdForAdmin(product._id);
