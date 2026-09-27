@@ -616,7 +616,7 @@ export class ProductService {
   }
 
   async listPublicCatalog({ q, category, brand, vendor, minPrice, maxPrice, status = 'PUBLISHED', sort = 'newest', limit = 20, cursor = null } = {}) {
-    const query = { status: 'PUBLISHED', deletedAt: null };
+    const query = { status: status || 'PUBLISHED', deletedAt: null };
 
     if (category) {
       const trimmed = String(category).trim();
