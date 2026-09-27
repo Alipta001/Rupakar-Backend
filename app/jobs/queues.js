@@ -84,6 +84,54 @@ export function getFulfillmentQueue() {
   return new Queue('order-fulfillment', { connection });
 }
 
+export function getSettlementQueue() {
+  return new Queue('settlement', { connection });
+}
+
+export async function scheduleSettlementEligibilityEvaluation() {
+  try {
+    const queue = getSettlementQueue();
+    await queue.waitUntilReady().catch(() => null);
+    const job = await queue.add(
+      'evaluate-settlement-eligibility',
+      { timestamp: new Date() },
+      {
+        jobId: `settlement-eligibility:${new Date().toISOString().slice(0, 13)}`,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 1000 },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      }
+    );
+    return job;
+  } catch (err) {
+    console.error('Failed to schedule settlement eligibility evaluation:', err?.message);
+    return null;
+  }
+}
+
+export async function scheduleSettlementBatchProcessing({ vendorIds = null, minThresholdPaise = null, triggeredBy = 'SYSTEM' } = {}) {
+  try {
+    const queue = getSettlementQueue();
+    await queue.waitUntilReady().catch(() => null);
+    const job = await queue.add(
+      'process-settlement-batch',
+      { vendorIds, minThresholdPaise, triggeredBy },
+      {
+        jobId: `settlement-batch:${Date.now()}`,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      }
+    );
+    return job;
+  } catch (err) {
+    console.error('Failed to schedule settlement batch processing:', err?.message);
+    return null;
+  }
+}
+
 export async function scheduleVendorOrderPackReminder({ vendorOrderId, delayMs = null, reminderStep = null }) {
   if (!vendorOrderId) return null;
   try {
@@ -463,6 +511,30 @@ export async function startOrderFulfillmentWorker() {
 
   worker.on('failed', (job, error) => {
     console.error(`Fulfillment job ${job?.id} failed:`, error);
+  });
+
+  return worker;
+}
+
+export async function startSettlementWorker() {
+  const { settlementService } = await import('../services/settlement.service.js');
+  const worker = new Worker(
+    'settlement',
+    async (job) => {
+      console.log(`Processing settlement job ${job.name} (${job.id})`);
+      if (job.name === 'evaluate-settlement-eligibility') {
+        return await settlementService.evaluateSettlementEligibility();
+      }
+      if (job.name === 'process-settlement-batch') {
+        return await settlementService.createSettlementBatch(job.data || {});
+      }
+      throw new Error(`Unknown settlement job name: ${job.name}`);
+    },
+    { connection },
+  );
+
+  worker.on('failed', (job, error) => {
+    console.error(`Settlement job ${job?.id} failed:`, error?.message || error);
   });
 
   return worker;

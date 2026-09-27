@@ -38,6 +38,7 @@ const orderSchema = new Schema(
     shippingAddressSnapshot: { type: Object, default: {} },
     billingAddressSnapshot: { type: Object, default: {} },
     paymentMethod: { type: String, default: 'razorpay' },
+    financialSnapshot: { type: Object, default: null },
     idempotencyKey: { type: String, default: null, index: true },
     cancelledAt: { type: Date, default: null },
     cancelledReason: { type: String, default: null },

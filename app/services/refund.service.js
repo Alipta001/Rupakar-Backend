@@ -4,6 +4,7 @@ import { Refund } from '../models/refund.model.js';
 import { Inventory } from '../models/inventory.model.js';
 import { Payment } from '../models/payment.model.js';
 import { paymentService } from './payment.service.js';
+import { vendorLedgerService } from './vendor-ledger.service.js';
 import { Order } from '../models/order.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
 
@@ -155,6 +156,21 @@ export class RefundService {
       status,
       providerRefundId,
     });
+
+    if (refundData.vendorOrderId) {
+      await vendorLedgerService.recordRefundAdjustment({
+        refundId: refund._id,
+        parentOrderId: refundData.orderId,
+        vendorOrderId: refundData.vendorOrderId,
+        vendorId: refundData.vendorId,
+        paymentId: refundData.paymentId,
+        amount: refundData.amount,
+        currency: refundData.currency || 'INR',
+        reason: refundData.reason,
+      }).catch((err) => {
+        console.error('Failed to record refund adjustment in vendor ledger:', err?.message);
+      });
+    }
 
     this.markRefundSeen({ orderId: refundData.orderId, returnId: refundData.returnId, refundKey: key });
     return refund.toObject ? refund.toObject() : refund;

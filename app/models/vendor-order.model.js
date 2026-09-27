@@ -31,6 +31,13 @@ const vendorOrderSchema = new Schema(
     currency: { type: String, default: 'INR' },
     commissionPlaceholder: { type: Number, default: 0 },
     vendorPayablePlaceholder: { type: Number, default: 0 },
+    financialSnapshot: { type: Object, default: null },
+    settlementStatus: {
+      type: String,
+      enum: ['PENDING', 'ON_HOLD', 'ELIGIBLE', 'PROCESSING', 'SETTLED', 'FAILED', 'REVERSED'],
+      default: 'PENDING',
+      index: true,
+    },
     inventoryDecremented: { type: Boolean, default: false },
     inventoryDecrementedAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },

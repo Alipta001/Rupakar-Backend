@@ -17,6 +17,7 @@ import { scheduleNotification } from '../jobs/queues.js';
 import { InventoryReservation } from '../models/inventory-reservation.model.js';
 import { inventoryReservationService } from '../services/inventory-reservation.service.js';
 import { inventoryService } from '../services/inventory.service.js';
+import { settlementService } from '../services/settlement.service.js';
 
 const getPagination = (query = {}) => {
   const { page, limit } = paginationSchema.parse(query ?? {});
@@ -357,7 +358,13 @@ export const updateAdminShipmentStatus = async (req, res, next) => {
     await shipmentStateService.transitionShipmentStatus(shipment.status, nextStatus, { shipmentId: shipment._id, actorType: 'ADMIN', actorId: req.user.sub, reason: payload.reason || 'Admin override' });
 
     shipment.status = nextStatus;
-    if (nextStatus === 'DELIVERED') shipment.deliveredAt = shipment.deliveredAt || new Date();
+    if (nextStatus === 'DELIVERED') {
+      shipment.deliveredAt = shipment.deliveredAt || new Date();
+      if (shipment.vendorOrderId) {
+        await VendorOrder.updateOne({ _id: shipment.vendorOrderId }, { $set: { status: 'DELIVERED' } });
+        await settlementService.handleVendorOrderDelivered(shipment.vendorOrderId).catch(() => null);
+      }
+    }
     await shipment.save();
 
     await ShipmentTrackingEvent.updateOne(
@@ -407,7 +414,12 @@ export const deliveryWebhook = async (req, res, next) => {
     const previousStatus = shipment.status;
     await shipmentStateService.transitionShipmentStatus(previousStatus, nextStatus, { shipmentId: shipment._id, actorType: 'DELIVERY_PROVIDER', reason: 'Provider webhook' });
     shipment.status = nextStatus;
-    if (nextStatus === 'DELIVERED') shipment.deliveredAt = shipment.deliveredAt || new Date();
+    if (nextStatus === 'DELIVERED') {
+      shipment.deliveredAt = shipment.deliveredAt || new Date();
+      if (shipment.vendorOrderId) {
+        await settlementService.handleVendorOrderDelivered(shipment.vendorOrderId).catch(() => null);
+      }
+    }
     await shipment.save();
     await VendorOrder.updateOne({ _id: shipment.vendorOrderId }, { $set: { status: nextStatus } });
     const siblingShipments = await Shipment.find({ orderId: shipment.orderId }).select('status').lean();

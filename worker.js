@@ -1,4 +1,4 @@
-import { ensureQueueConnection, getQueueConnection, startInvoiceWorker, startPackingSlipWorker, startNotificationWorker, startEmailWorker, startOrderFulfillmentWorker } from './app/jobs/queues.js';
+import { ensureQueueConnection, getQueueConnection, startInvoiceWorker, startPackingSlipWorker, startNotificationWorker, startEmailWorker, startOrderFulfillmentWorker, startSettlementWorker } from './app/jobs/queues.js';
 import { connectMongo, disconnectMongo } from './app/database/connection.js';
 
 async function startWorkers() {
@@ -32,6 +32,9 @@ async function startWorkers() {
     const fulfillmentWorker = await startOrderFulfillmentWorker();
     console.log('✓ Order fulfillment worker started');
 
+    const settlementWorker = await startSettlementWorker();
+    console.log('✓ Settlement worker started');
+
     console.log('\nWorkers are running. Press Ctrl+C to stop.');
 
     const shutdown = async () => {
@@ -43,6 +46,7 @@ async function startWorkers() {
       await notificationWorker.close();
       await emailWorker.close();
       await fulfillmentWorker.close();
+      await settlementWorker.close();
       if (heartbeat.status === 'ready' || heartbeat.status === 'connecting') {
         heartbeat.disconnect();
       }

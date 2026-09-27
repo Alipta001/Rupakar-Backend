@@ -22,6 +22,7 @@ import { Vendor } from '../models/vendor.model.js';
 import { User } from '../models/user.model.js';
 import { Notification } from '../models/notification.model.js';
 import { notificationService } from './notification.service.js';
+import { toPaise, toRupees, allocateProportionallyPaise } from '../utils/money.js';
 
 const PAYMENT_STATUS_TRANSITIONS = {
   CREATED: ['PENDING', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'CANCELLED'],
@@ -121,12 +122,28 @@ export class PaymentService {
     }
 
     const vendorOrderIds = [];
-    const orderSubtotal = (order.items || []).reduce((sum, item) => sum + Number(item.lineTotal || 0), 0) || 1;
+    const vendorGroupWeights = Array.from(groups.entries()).map(([vId, vItems]) => ({
+      key: vId,
+      weight: vItems.reduce((sum, item) => sum + toPaise(item.lineTotal), 0) || 1,
+    }));
+
+    const parentDiscountPaise = toPaise(order.discount);
+    const parentTaxPaise = toPaise(order.tax);
+    const parentShippingPaise = toPaise(order.shipping);
+
+    const allocatedDiscounts = allocateProportionallyPaise(parentDiscountPaise, vendorGroupWeights);
+    const allocatedTaxes = allocateProportionallyPaise(parentTaxPaise, vendorGroupWeights);
+    const allocatedShippings = allocateProportionallyPaise(parentShippingPaise, vendorGroupWeights);
+
     for (const [vendorId, items] of groups) {
       let vendorOrder = await VendorOrder.findOne({ parentOrderId: order._id, vendorId, deletedAt: null });
       if (!vendorOrder) {
-        const subtotal = items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
-        const ratio = subtotal / orderSubtotal;
+        const subtotalPaise = items.reduce((sum, item) => sum + toPaise(item.lineTotal), 0);
+        const discPaise = allocatedDiscounts.get(vendorId) || 0;
+        const taxPaise = allocatedTaxes.get(vendorId) || 0;
+        const shipPaise = allocatedShippings.get(vendorId) || 0;
+        const totalPaise = subtotalPaise - discPaise + taxPaise + shipPaise;
+
         try {
           vendorOrder = await VendorOrder.create({
             parentOrderId: order._id,
@@ -134,11 +151,11 @@ export class PaymentService {
             customerId: order.customerId,
             status: 'CONFIRMED',
             items: items.map((item) => ({ ...item, productSnapshot: { ...(item.productSnapshot || {}), productName: item.productName, sku: item.sku, categoryId: item.categoryId } })),
-            subtotal,
-            discount: Number((Number(order.discount || 0) * ratio).toFixed(2)),
-            tax: Number((Number(order.tax || 0) * ratio).toFixed(2)),
-            shipping: Number((Number(order.shipping || 0) * ratio).toFixed(2)),
-            total: Number((subtotal - Number(order.discount || 0) * ratio + Number(order.tax || 0) * ratio + Number(order.shipping || 0) * ratio).toFixed(2)),
+            subtotal: toRupees(subtotalPaise),
+            discount: toRupees(discPaise),
+            tax: toRupees(taxPaise),
+            shipping: toRupees(shipPaise),
+            total: toRupees(totalPaise),
             currency: order.currency,
           });
         } catch (error) {
