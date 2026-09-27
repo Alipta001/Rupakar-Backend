@@ -318,7 +318,38 @@ export const listAdminVendors = async (req, res, next) => {
       status: req.query.status,
       search: req.query.search,
     });
-    const sanitizedItems = (result.data || []).map(sanitizeVendor);
+
+    const vendors = result.data || [];
+    const vendorIds = vendors.map(v => v._id);
+
+    // Batch-fetch bank accounts for all listed vendors in a single query
+    const bankAccounts = vendorIds.length
+      ? await VendorBankAccount.find({ vendorId: { $in: vendorIds }, isDeleted: false })
+          .select('vendorId accountHolderName bankName maskedAccountNumber ifscCode accountType verificationStatus verifiedAt rejectedAt rejectionReason createdAt updatedAt')
+          .lean()
+      : [];
+
+    const bankByVendorId = new Map(bankAccounts.map(b => [String(b.vendorId), b]));
+
+    const sanitizedItems = vendors.map(v => {
+      const sanitized = sanitizeVendor(v);
+      const bank = bankByVendorId.get(String(v._id));
+      sanitized.bankAccount = bank ? {
+        id: bank._id?.toString(),
+        accountHolderName: bank.accountHolderName,
+        bankName: bank.bankName,
+        maskedAccountNumber: bank.maskedAccountNumber,
+        ifscCode: bank.ifscCode,
+        accountType: bank.accountType,
+        verificationStatus: bank.verificationStatus,
+        verifiedAt: bank.verifiedAt || null,
+        rejectedAt: bank.rejectedAt || null,
+        rejectionReason: bank.rejectionReason || null,
+        submittedAt: bank.createdAt,
+        updatedAt: bank.updatedAt,
+      } : null;
+      return sanitized;
+    });
 
     res.status(200).json({
       success: true,
@@ -338,10 +369,135 @@ export const listAdminVendors = async (req, res, next) => {
 export const getAdminVendor = async (req, res, next) => {
   try {
     const vendor = await vendorService.getById(req.params.id);
+    const bankAccount = await VendorBankAccount.findOne({ vendorId: vendor._id, isDeleted: false })
+      .select('accountHolderName bankName branchName ifscCode accountType maskedAccountNumber verificationStatus verifiedAt rejectedAt rejectionReason createdAt updatedAt')
+      .lean();
+
+    const sanitized = sanitizeVendor(vendor);
+    if (bankAccount) {
+      sanitized.bankAccount = {
+        id: bankAccount._id?.toString(),
+        accountHolderName: bankAccount.accountHolderName,
+        bankName: bankAccount.bankName,
+        branchName: bankAccount.branchName || null,
+        ifscCode: bankAccount.ifscCode,
+        accountType: bankAccount.accountType,
+        maskedAccountNumber: bankAccount.maskedAccountNumber,
+        verificationStatus: bankAccount.verificationStatus,
+        verifiedAt: bankAccount.verifiedAt || null,
+        rejectedAt: bankAccount.rejectedAt || null,
+        rejectionReason: bankAccount.rejectionReason || null,
+        submittedAt: bankAccount.createdAt,
+        updatedAt: bankAccount.updatedAt,
+      };
+    } else {
+      sanitized.bankAccount = null;
+    }
+
     res.status(200).json({
       success: true,
-      data: sanitizeVendor(vendor),
+      data: sanitized,
       message: 'Vendor detail loaded',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAdminVendorBankAccount = async (req, res, next) => {
+  try {
+    const vendor = await vendorService.getById(req.params.id);
+    const bankAccount = await VendorBankAccount.findOne({ vendorId: vendor._id, isDeleted: false })
+      .select('accountHolderName bankName branchName ifscCode accountType maskedAccountNumber verificationStatus verifiedAt rejectedAt rejectionReason createdAt updatedAt')
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      data: bankAccount ? {
+        id: bankAccount._id?.toString(),
+        accountHolderName: bankAccount.accountHolderName,
+        bankName: bankAccount.bankName,
+        branchName: bankAccount.branchName || null,
+        ifscCode: bankAccount.ifscCode,
+        accountType: bankAccount.accountType,
+        maskedAccountNumber: bankAccount.maskedAccountNumber,
+        verificationStatus: bankAccount.verificationStatus,
+        verifiedAt: bankAccount.verifiedAt || null,
+        rejectedAt: bankAccount.rejectedAt || null,
+        rejectionReason: bankAccount.rejectionReason || null,
+        submittedAt: bankAccount.createdAt,
+        updatedAt: bankAccount.updatedAt,
+      } : null,
+      message: bankAccount ? 'Bank account details loaded' : 'No bank account on file',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const verifyBankAccount = async (req, res, next) => {
+  try {
+    const vendor = await vendorService.getById(req.params.id);
+    const bankAccount = await VendorBankAccount.findOne({ vendorId: vendor._id, isDeleted: false });
+    if (!bankAccount) {
+      throw new AppError(404, 'BANK_ACCOUNT_NOT_FOUND', 'No bank account on file for this vendor');
+    }
+    bankAccount.verificationStatus = 'VERIFIED';
+    bankAccount.verifiedAt = new Date();
+    bankAccount.verifiedBy = req.user.sub;
+    bankAccount.rejectedAt = null;
+    bankAccount.rejectedBy = null;
+    bankAccount.rejectionReason = null;
+    await bankAccount.save();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: bankAccount._id?.toString(),
+        verificationStatus: bankAccount.verificationStatus,
+        verifiedAt: bankAccount.verifiedAt,
+        maskedAccountNumber: bankAccount.maskedAccountNumber,
+        accountHolderName: bankAccount.accountHolderName,
+        bankName: bankAccount.bankName,
+      },
+      message: 'Bank account verified',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const rejectBankAccount = async (req, res, next) => {
+  try {
+    const vendor = await vendorService.getById(req.params.id);
+    const bankAccount = await VendorBankAccount.findOne({ vendorId: vendor._id, isDeleted: false });
+    if (!bankAccount) {
+      throw new AppError(404, 'BANK_ACCOUNT_NOT_FOUND', 'No bank account on file for this vendor');
+    }
+    const reason = (req.body?.reason || '').trim() || 'Bank details did not pass verification';
+    bankAccount.verificationStatus = 'REJECTED';
+    bankAccount.rejectedAt = new Date();
+    bankAccount.rejectedBy = req.user.sub;
+    bankAccount.rejectionReason = reason;
+    bankAccount.verifiedAt = null;
+    bankAccount.verifiedBy = null;
+    await bankAccount.save();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: bankAccount._id?.toString(),
+        verificationStatus: bankAccount.verificationStatus,
+        rejectedAt: bankAccount.rejectedAt,
+        rejectionReason: bankAccount.rejectionReason,
+        maskedAccountNumber: bankAccount.maskedAccountNumber,
+        accountHolderName: bankAccount.accountHolderName,
+        bankName: bankAccount.bankName,
+      },
+      message: 'Bank account rejected',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
   } catch (error) {

@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { vendorService, VENDOR_VALID_TRANSITIONS } from '../app/services/vendor.service.js';
 import { Vendor } from '../app/models/vendor.model.js';
 import { User } from '../app/models/user.model.js';
+import { VendorBankAccount } from '../app/models/vendor-bank.model.js';
 import { approveVendor, listAdminVendors } from '../app/controllers/vendor.controller.js';
 
 const id = () => new mongoose.Types.ObjectId();
@@ -195,6 +196,11 @@ describe('Admin Vendor Approval and Seller Details', () => {
       };
 
       jest.spyOn(vendorService, 'listForAdmin').mockResolvedValue(mockResult);
+      // Mock the bank batch-fetch used by the updated listAdminVendors
+      jest.spyOn(VendorBankAccount, 'find').mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([]),
+      });
 
       const req = {
         query: { page: '1', limit: '20' },

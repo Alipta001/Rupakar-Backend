@@ -20,6 +20,9 @@ import {
   listVendorDocuments,
   approveDocument,
   rejectDocument,
+  getAdminVendorBankAccount,
+  verifyBankAccount,
+  rejectBankAccount,
 } from '../controllers/vendor.controller.js';
 import { listVendorOrders, getVendorOrder } from '../controllers/order.controller.js';
 import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
@@ -70,5 +73,8 @@ router.patch('/admin/:id/block', blockVendor);
 router.patch('/admin/:id/restore', restoreVendor);
 router.patch('/admin/:id/documents/:documentId/approve', approveDocument);
 router.patch('/admin/:id/documents/:documentId/reject', rejectDocument);
+router.get('/admin/:id/bank-account', getAdminVendorBankAccount);
+router.patch('/admin/:id/bank-account/verify', verifyBankAccount);
+router.patch('/admin/:id/bank-account/reject', rejectBankAccount);
 
 export default router;
