@@ -1,5 +1,6 @@
 import { AppError } from '../utils/app-error.js';
 import { Notification } from '../models/notification.model.js';
+import { User } from '../models/user.model.js';
 
 export class NotificationService {
   async createNotification({
@@ -35,6 +36,41 @@ export class NotificationService {
     return notification.toObject ? notification.toObject() : notification;
   }
 
+  async notifyAdmins({ type, title, message, channel = 'IN_APP', metadata = {} }) {
+    const adminMetadata = { ...metadata, forAdmin: true };
+    const admins = await User.find({ role: 'admin', isActive: true }).select('_id').lean();
+
+    if (!admins || admins.length === 0) {
+      // In case no admin exists in active collection, find any user or fallback
+      const anyUser = await User.findOne({}).select('_id').lean();
+      if (anyUser) {
+        return [await this.createNotification({
+          userId: anyUser._id,
+          type,
+          title,
+          message,
+          channel,
+          metadata: adminMetadata,
+        }).catch(() => null)].filter(Boolean);
+      }
+      return [];
+    }
+
+    const created = await Promise.all(
+      admins.map((admin) =>
+        this.createNotification({
+          userId: admin._id,
+          type,
+          title,
+          message,
+          channel,
+          metadata: adminMetadata,
+        }).catch(() => null)
+      )
+    );
+    return created.filter(Boolean);
+  }
+
   async sendNotification(notificationId) {
     const notification = await Notification.findByIdAndUpdate(
       notificationId,
@@ -44,8 +80,19 @@ export class NotificationService {
     return notification ? (notification.toObject ? notification.toObject() : notification) : null;
   }
 
-  async markAsRead(notificationId, userId) {
-    const notification = await Notification.findOne({ _id: notificationId, userId });
+  async markAsRead(notificationId, userId, role = null) {
+    let query = { _id: notificationId, userId };
+    if (role === 'admin') {
+      query = {
+        _id: notificationId,
+        $or: [
+          { userId },
+          { 'metadata.forAdmin': true },
+          { type: { $regex: /^ADMIN_/i } },
+        ],
+      };
+    }
+    const notification = await Notification.findOne(query);
     if (!notification) {
       throw new AppError(404, 'NOTIFICATION_NOT_FOUND', 'Notification not found');
     }
@@ -54,9 +101,21 @@ export class NotificationService {
     return true;
   }
 
-  async markAllAsRead(userId) {
+  async markAllAsRead(userId, role = null) {
     const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-    const result = await Notification.updateMany({ userId, readAt: null, createdAt: { $gte: cutoff } }, { readAt: new Date() });
+    let filter = { userId, readAt: null, createdAt: { $gte: cutoff } };
+    if (role === 'admin') {
+      filter = {
+        readAt: null,
+        createdAt: { $gte: cutoff },
+        $or: [
+          { userId },
+          { 'metadata.forAdmin': true },
+          { type: { $regex: /^ADMIN_/i } },
+        ],
+      };
+    }
+    const result = await Notification.updateMany(filter, { readAt: new Date() });
     return result.modifiedCount;
   }
 
@@ -74,6 +133,34 @@ export class NotificationService {
 
     const total = await Notification.countDocuments(filter);
     const unreadCount = await Notification.countDocuments({ userId, readAt: null, createdAt: { $gte: cutoff } });
+
+    return { notifications, page, limit, total, unreadCount };
+  }
+
+  async getAdminNotifications(adminUserId, { page = 1, limit = 20, unreadOnly = false }) {
+    const skip = (page - 1) * limit;
+    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const filter = {
+      createdAt: { $gte: cutoff },
+      $or: [
+        { userId: adminUserId },
+        { 'metadata.forAdmin': true },
+        { type: { $regex: /^ADMIN_/i } },
+      ],
+    };
+    if (unreadOnly) filter.readAt = null;
+
+    const notifications = await Notification.find(filter)
+      .sort({ createdAt: -1, _id: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const total = await Notification.countDocuments(filter);
+    const unreadCount = await Notification.countDocuments({
+      ...filter,
+      readAt: null,
+    });
 
     return { notifications, page, limit, total, unreadCount };
   }

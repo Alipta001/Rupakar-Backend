@@ -9,6 +9,7 @@ import { Vendor } from '../models/vendor.model.js';
 import { auditService } from './audit.service.js';
 import { inventoryService } from './inventory.service.js';
 import { storageService } from './storage.service.js';
+import { notificationService } from './notification.service.js';
 import crypto from 'node:crypto';
 import {
   parseSearchQuery,
@@ -592,6 +593,25 @@ export class ProductService {
     if (!['DRAFT', 'REJECTED', 'UNPUBLISHED'].includes(product.status)) throw new AppError(400, 'INVALID_STATUS_TRANSITION', 'Product cannot be submitted in its current status');
     product.status = 'SUBMITTED';
     await product.save();
+
+    // Dynamically notify admins that a real product was submitted for review
+    try {
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_PRODUCT_SUBMITTED',
+        title: 'New Product Submitted for Review',
+        message: `Product "${product.name}" has been submitted for review.`,
+        channel: 'IN_APP',
+        metadata: {
+          productId: product._id.toString(),
+          productName: product.name,
+          vendorId: vendorId.toString(),
+          forAdmin: true,
+        },
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
     return product.toObject();
   }
 
@@ -873,14 +893,38 @@ export class ProductService {
 
   async adminList({ status, page = 1, limit = 20 } = {}) {
     const query = { deletedAt: null };
-    if (status) query.status = status;
-    const data = await Product.find(query).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean();
+    if (status && status !== 'ALL') {
+      const upper = String(status).toUpperCase().replace(/\s+/g, '_');
+      if (upper === 'UNDER_REVIEW') {
+        query.status = { $in: ['UNDER_REVIEW', 'SUBMITTED'] };
+      } else {
+        query.status = upper;
+      }
+    }
+    const data = await Product.find(query)
+      .populate('variants')
+      .populate('images')
+      .populate({ path: 'categoryId', select: 'name slug' })
+      .populate({ path: 'brandId', select: 'name slug logo' })
+      .populate({ path: 'vendorId', select: 'businessName legalName description website originState originDistrict' })
+      .sort({ createdAt: -1, _id: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
     const total = await Product.countDocuments(query);
     return { data, page, limit, total };
   }
 
   async getByIdForAdmin(productId) {
-    const product = await Product.findOne({ _id: productId, deletedAt: null }).lean();
+    const product = await Product.findOne({ _id: productId, deletedAt: null })
+      .populate('variants')
+      .populate('images')
+      .populate({ path: 'categoryId', select: 'name slug' })
+      .populate({ path: 'subcategoryId', select: 'name slug' })
+      .populate({ path: 'brandId', select: 'name slug logo' })
+      .populate({ path: 'vendorId', select: 'businessName legalName description website originState originDistrict' })
+      .populate({ path: 'reviewedBy', select: 'name email role' })
+      .lean();
     if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
     return product;
   }
@@ -890,15 +934,18 @@ export class ProductService {
     if (!product || product.deletedAt) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
     const allowedTransitions = {
       DRAFT: ['SUBMITTED'],
-      SUBMITTED: ['UNDER_REVIEW', 'REJECTED'],
+      SUBMITTED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
       UNDER_REVIEW: ['APPROVED', 'REJECTED'],
-      APPROVED: ['PUBLISHED'],
-      REJECTED: ['DRAFT'],
-      PUBLISHED: ['UNPUBLISHED', 'ARCHIVED'],
-      UNPUBLISHED: ['PUBLISHED'],
-      ARCHIVED: ['PUBLISHED'],
+      APPROVED: ['PUBLISHED', 'REJECTED', 'UNPUBLISHED', 'UNDER_REVIEW'],
+      REJECTED: ['DRAFT', 'UNDER_REVIEW', 'APPROVED'],
+      PUBLISHED: ['UNPUBLISHED', 'ARCHIVED', 'APPROVED'],
+      UNPUBLISHED: ['PUBLISHED', 'APPROVED', 'ARCHIVED'],
+      ARCHIVED: ['PUBLISHED', 'DRAFT'],
     };
     const current = product.status;
+    if (current === nextStatus) {
+      return this.getByIdForAdmin(product._id);
+    }
     const allowed = allowedTransitions[current] ?? [];
     if (!allowed.includes(nextStatus)) throw new AppError(400, 'INVALID_PRODUCT_STATUS', `Cannot transition from ${current} to ${nextStatus}`);
     if (nextStatus === 'REJECTED' && !reason.trim()) throw new AppError(400, 'PRODUCT_REJECTION_REASON_REQUIRED', 'A rejection reason is required');
@@ -919,7 +966,31 @@ export class ProductService {
       reason: reason || null,
     });
 
-    return product.toObject();
+    // Notify vendor about moderation status update
+    try {
+      const vendor = await Vendor.findById(product.vendorId).select('ownerUserId').lean();
+      const targetUserId = vendor?.ownerUserId;
+      if (targetUserId && (nextStatus === 'APPROVED' || nextStatus === 'REJECTED')) {
+        await notificationService.createNotification({
+          userId: targetUserId,
+          type: nextStatus === 'APPROVED' ? 'PRODUCT_APPROVED' : 'PRODUCT_REJECTED',
+          title: nextStatus === 'APPROVED' ? 'Product Approved' : 'Product Rejected',
+          message: nextStatus === 'APPROVED'
+            ? `Your product "${product.name}" has been approved.`
+            : `Your product "${product.name}" was rejected. Reason: ${reason || 'Does not meet artisan standards'}`,
+          channel: 'IN_APP',
+          metadata: {
+            productId: product._id.toString(),
+            status: nextStatus,
+            reason: reason || null,
+          },
+        });
+      }
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
+    return this.getByIdForAdmin(product._id);
   }
 }
 

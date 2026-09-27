@@ -66,7 +66,7 @@ export const updateProductSchema = createProductSchema.partial();
 export const submitProductSchema = z.object({}).strict();
 export const adminReviewSchema = z.object({
   reason: z.string().trim().max(500).optional(),
-}).strict();
+});
 export const publicProductQuerySchema = z.object({
   q: z.string().trim().max(120).optional(),
   category: z.string().trim().max(120).optional(),

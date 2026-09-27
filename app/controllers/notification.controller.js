@@ -41,7 +41,7 @@ export const getUnreadCount = async (req, res, next) => {
 export const markNotificationAsRead = async (req, res, next) => {
   try {
     const { id } = notificationIdSchema.parse({ id: req.params.id });
-    await notificationService.markAsRead(id, req.user.sub);
+    await notificationService.markAsRead(id, req.user.sub, req.user?.role);
     sendSuccess(res, { success: true }, 'Notification marked as read', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
@@ -50,7 +50,7 @@ export const markNotificationAsRead = async (req, res, next) => {
 
 export const markAllNotificationsAsRead = async (req, res, next) => {
   try {
-    const count = await notificationService.markAllAsRead(req.user.sub);
+    const count = await notificationService.markAllAsRead(req.user.sub, req.user?.role);
     sendSuccess(res, { markedCount: count }, 'All notifications marked as read', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
@@ -59,18 +59,25 @@ export const markAllNotificationsAsRead = async (req, res, next) => {
 
 export const listAdminNotifications = async (req, res, next) => {
   try {
-    const { page, limit } = getMeta(req.query);
-    const skip = (page - 1) * limit;
+    const { page, limit, unreadOnly } = getMeta(req.query);
+    const result = await notificationService.getAdminNotifications(req.user?.sub, {
+      page,
+      limit,
+      unreadOnly,
+    });
 
-    const notifications = await Notification.find({})
-      .sort({ createdAt: -1, _id: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    const total = await Notification.countDocuments({});
-
-    sendSuccess(res, { items: notifications, page, limit, total }, 'Admin notifications loaded', String(req.headers['x-request-id'] ?? ''));
+    sendSuccess(
+      res,
+      {
+        items: result.notifications,
+        page: result.page,
+        limit: result.limit,
+        total: result.total,
+        unreadCount: result.unreadCount,
+      },
+      'Admin notifications loaded',
+      String(req.headers['x-request-id'] ?? '')
+    );
   } catch (error) {
     next(error);
   }
