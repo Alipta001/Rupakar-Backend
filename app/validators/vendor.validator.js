@@ -21,7 +21,8 @@ export const vendorUpdateSchema = vendorApplySchema.partial();
 
 export const adminVendorDecisionSchema = z.object({
   reason: z.string().trim().max(500).optional(),
-}).strict();
+  commissionRate: z.number().min(0).max(100).optional(),
+}).passthrough();
 
 export const bankAccountSchema = z
   .object({

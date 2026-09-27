@@ -3,14 +3,16 @@ import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { VendorDocument } from '../models/vendor-document.model.js';
 
-const VALID_TRANSITIONS = {
-  PENDING: ['UNDER_REVIEW', 'REJECTED'],
+export const VENDOR_VALID_TRANSITIONS = {
+  PENDING: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
   UNDER_REVIEW: ['APPROVED', 'REJECTED', 'PENDING'],
   APPROVED: ['SUSPENDED', 'BLOCKED'],
-  REJECTED: ['PENDING'],
+  REJECTED: ['PENDING', 'UNDER_REVIEW'],
   SUSPENDED: ['APPROVED', 'BLOCKED'],
   BLOCKED: ['APPROVED'],
 };
+
+const VALID_TRANSITIONS = VENDOR_VALID_TRANSITIONS;
 
 export class VendorService {
   async getByOwnerUserId(ownerUserId) {
@@ -67,7 +69,11 @@ export class VendorService {
     return vendor;
   }
 
-  async transitionStatus(vendorId, nextStatus, actorUserId, reason = '') {
+  async transitionStatus(vendorId, nextStatus, actorUserId, reason = '', options = {}) {
+    const opts = typeof reason === 'object' && reason !== null ? reason : options;
+    const reasonText = typeof reason === 'string' ? reason : (opts.reason || '');
+    const commissionRate = opts.commissionRate;
+
     const vendor = await Vendor.findById(vendorId);
     if (!vendor || vendor.deletedAt) {
       throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
@@ -78,10 +84,16 @@ export class VendorService {
       throw new AppError(400, 'INVALID_VENDOR_STATUS_TRANSITION', `Cannot transition from ${currentStatus} to ${nextStatus}`);
     }
     vendor.status = nextStatus;
+    if (typeof commissionRate === 'number') {
+      vendor.commissionRate = commissionRate;
+    }
     if (nextStatus === 'APPROVED') {
       vendor.approvedAt = new Date();
       vendor.approvedBy = actorUserId;
       vendor.verificationStatus = 'VERIFIED';
+      if (vendor.ownerUserId) {
+        await User.updateOne({ _id: vendor.ownerUserId }, { $set: { role: 'vendor' } });
+      }
     }
     if (nextStatus === 'REJECTED') {
       vendor.rejectedAt = new Date();
@@ -92,12 +104,14 @@ export class VendorService {
       vendor.rejectionReason = reason || '';
     }
     await vendor.save();
-    return vendor.toObject();
+    return this.getById(vendor._id);
   }
 
   async listForAdmin({ page = 1, limit = 20, status, search } = {}) {
     const query = { deletedAt: null };
-    if (status) query.status = status;
+    if (status && status !== 'ALL') {
+      query.status = String(status).toUpperCase();
+    }
     if (search) {
       query.$or = [
         { businessName: { $regex: search, $options: 'i' } },
@@ -105,13 +119,20 @@ export class VendorService {
         { email: { $regex: search, $options: 'i' } },
       ];
     }
-    const data = await Vendor.find(query).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean();
+    const data = await Vendor.find(query)
+      .populate('ownerUserId', 'name email phone firstName lastName role')
+      .sort({ createdAt: -1, _id: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
     const total = await Vendor.countDocuments(query);
     return { data, page, limit, total };
   }
 
   async getById(vendorId) {
-    const vendor = await Vendor.findOne({ _id: vendorId, deletedAt: null }).lean();
+    const vendor = await Vendor.findOne({ _id: vendorId, deletedAt: null })
+      .populate('ownerUserId', 'name email phone firstName lastName role')
+      .lean();
     if (!vendor) {
       throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
     }

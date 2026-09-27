@@ -12,29 +12,51 @@ import { notificationService } from '../services/notification.service.js';
 import { vendorLedgerService } from '../services/vendor-ledger.service.js';
 import { settlementService } from '../services/settlement.service.js';
 
-const sanitizeVendor = (vendor) => ({
-  id: vendor._id,
-  ownerUserId: vendor.ownerUserId,
-  businessName: vendor.businessName,
-  legalName: vendor.legalName,
-  businessType: vendor.businessType,
-  description: vendor.description,
-  email: vendor.email,
-  phone: vendor.phone,
-  website: vendor.website,
-  address: vendor.address,
-  originState: vendor.originState,
-  originDistrict: vendor.originDistrict,
-  gstNumber: vendor.gstNumber,
-  panNumber: vendor.panNumber,
-  status: vendor.status,
-  verificationStatus: vendor.verificationStatus,
-  approvedAt: vendor.approvedAt,
-  rejectedAt: vendor.rejectedAt,
-  rejectionReason: vendor.rejectionReason,
-  createdAt: vendor.createdAt,
-  updatedAt: vendor.updatedAt,
-});
+const sanitizeVendor = (vendor) => {
+  if (!vendor) return vendor;
+  const user = vendor.ownerUserId && typeof vendor.ownerUserId === 'object' ? vendor.ownerUserId : null;
+  const ownerUserId = user ? (user._id?.toString() ?? user.id) : (vendor.ownerUserId?.toString() ?? vendor.ownerUserId);
+  const sellerName = user?.name || vendor.legalName || vendor.businessName;
+  const sellerEmail = user?.email || vendor.email || '';
+  const sellerPhone = user?.phone || vendor.phone || '';
+
+  return {
+    id: (vendor._id ?? vendor.id)?.toString(),
+    _id: (vendor._id ?? vendor.id)?.toString(),
+    ownerUserId,
+    user: user ? {
+      id: (user._id ?? user.id)?.toString(),
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+    } : null,
+    sellerName,
+    sellerEmail,
+    sellerPhone,
+    ownerName: sellerName,
+    name: vendor.businessName,
+    businessName: vendor.businessName,
+    legalName: vendor.legalName,
+    businessType: vendor.businessType,
+    description: vendor.description,
+    email: sellerEmail,
+    phone: sellerPhone,
+    website: vendor.website,
+    address: vendor.address,
+    originState: vendor.originState,
+    originDistrict: vendor.originDistrict,
+    gstNumber: vendor.gstNumber,
+    panNumber: vendor.panNumber,
+    status: vendor.status,
+    verificationStatus: vendor.verificationStatus,
+    approvedAt: vendor.approvedAt,
+    rejectedAt: vendor.rejectedAt,
+    rejectionReason: vendor.rejectionReason,
+    createdAt: vendor.createdAt,
+    updatedAt: vendor.updatedAt,
+  };
+};
 
 export const applyVendor = async (req, res, next) => {
   try {
@@ -296,10 +318,15 @@ export const listAdminVendors = async (req, res, next) => {
       status: req.query.status,
       search: req.query.search,
     });
+    const sanitizedItems = (result.data || []).map(sanitizeVendor);
 
     res.status(200).json({
       success: true,
-      data: result,
+      data: {
+        ...result,
+        items: sanitizedItems,
+        data: sanitizedItems,
+      },
       message: 'Vendor list loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
@@ -324,8 +351,14 @@ export const getAdminVendor = async (req, res, next) => {
 
 export const approveVendor = async (req, res, next) => {
   try {
-    const payload = adminVendorDecisionSchema.parse(req.body);
-    const vendor = await vendorService.transitionStatus(req.params.id, 'APPROVED', req.user.sub, payload.reason);
+    const payload = adminVendorDecisionSchema.parse(req.body ?? {});
+    const vendor = await vendorService.transitionStatus(
+      req.params.id,
+      'APPROVED',
+      req.user.sub,
+      payload.reason,
+      { commissionRate: payload.commissionRate }
+    );
 
     res.status(200).json({
       success: true,
@@ -340,7 +373,7 @@ export const approveVendor = async (req, res, next) => {
 
 export const rejectVendor = async (req, res, next) => {
   try {
-    const payload = adminVendorDecisionSchema.parse(req.body);
+    const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const vendor = await vendorService.transitionStatus(req.params.id, 'REJECTED', req.user.sub, payload.reason);
 
     res.status(200).json({
@@ -356,7 +389,7 @@ export const rejectVendor = async (req, res, next) => {
 
 export const suspendVendor = async (req, res, next) => {
   try {
-    const payload = adminVendorDecisionSchema.parse(req.body);
+    const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const vendor = await vendorService.transitionStatus(req.params.id, 'SUSPENDED', req.user.sub, payload.reason);
 
     res.status(200).json({
@@ -372,7 +405,7 @@ export const suspendVendor = async (req, res, next) => {
 
 export const blockVendor = async (req, res, next) => {
   try {
-    const payload = adminVendorDecisionSchema.parse(req.body);
+    const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const vendor = await vendorService.transitionStatus(req.params.id, 'BLOCKED', req.user.sub, payload.reason);
 
     res.status(200).json({
@@ -388,7 +421,7 @@ export const blockVendor = async (req, res, next) => {
 
 export const restoreVendor = async (req, res, next) => {
   try {
-    const payload = adminVendorDecisionSchema.parse(req.body);
+    const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const vendor = await vendorService.transitionStatus(req.params.id, 'APPROVED', req.user.sub, payload.reason);
     res.status(200).json({
       success: true,
@@ -417,7 +450,7 @@ export const listVendorDocuments = async (req, res, next) => {
 
 export const approveDocument = async (req, res, next) => {
   try {
-    const payload = adminVendorDecisionSchema.parse(req.body);
+    const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const document = await vendorService.updateDocumentStatus(req.params.id, req.params.documentId, { status: 'APPROVED', reason: payload.reason }, req.user.sub);
     res.status(200).json({
       success: true,
@@ -432,7 +465,7 @@ export const approveDocument = async (req, res, next) => {
 
 export const rejectDocument = async (req, res, next) => {
   try {
-    const payload = adminVendorDecisionSchema.parse(req.body);
+    const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const document = await vendorService.updateDocumentStatus(req.params.id, req.params.documentId, { status: 'REJECTED', reason: payload.reason }, req.user.sub);
     res.status(200).json({
       success: true,
