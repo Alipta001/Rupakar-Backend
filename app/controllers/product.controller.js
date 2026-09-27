@@ -442,3 +442,43 @@ export const archiveProduct = async (req, res, next) => {
     next(error);
   }
 };
+
+export const adminDeleteProduct = async (req, res, next) => {
+  try {
+    const result = await productService.adminDeleteProduct(req.params.id, req.user.sub);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteVendorProduct = async (req, res, next) => {
+  try {
+    const result = await productService.vendorDeleteProduct(req.user.sub, req.params.id);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const vendorSetOutOfStock = async (req, res, next) => {
+  try {
+    const result = await productService.setProductOutOfStock(req.user.sub, req.params.id);
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

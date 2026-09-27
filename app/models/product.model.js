@@ -3,7 +3,7 @@ import { ProductVariant } from './product-variant.model.js';
 
 const { Schema, model } = mongoose;
 
-const productStatus = ['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'PUBLISHED', 'UNPUBLISHED', 'ARCHIVED'];
+const productStatus = ['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'PUBLISHED', 'UNPUBLISHED', 'ARCHIVED', 'EDITED'];
 
 const productImageSchema = new Schema(
   {
@@ -63,6 +63,8 @@ const productSchema = new Schema(
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     reviewedAt: { type: Date, default: null },
     rejectionReason: { type: String, trim: true },
+    lastEditedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    lastEditedAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },

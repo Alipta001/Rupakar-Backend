@@ -5,6 +5,9 @@ import { Category } from '../models/category.model.js';
 import { Product, ProductImage } from '../models/product.model.js';
 import { ProductVariant } from '../models/product-variant.model.js';
 import { Inventory } from '../models/inventory.model.js';
+import { InventoryMovement } from '../models/inventory-movement.model.js';
+import { Order } from '../models/order.model.js';
+import { VendorOrder } from '../models/vendor-order.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { auditService } from './audit.service.js';
 import { inventoryService } from './inventory.service.js';
@@ -503,7 +506,13 @@ export class ProductService {
     const vendorId = await this.resolveVendorIdForUser(userId);
     const product = await Product.findOne({ _id: productId, vendorId, deletedAt: null });
     if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
-    if (product.status === 'APPROVED' || product.status === 'PUBLISHED') throw new AppError(403, 'PRODUCT_LOCKED', 'Approved or published products cannot be edited by vendors');
+    const wasApprovedOrPublished = product.status === 'APPROVED' || product.status === 'PUBLISHED';
+    if (wasApprovedOrPublished) {
+      product.status = 'EDITED';
+      product.publishedAt = null;
+      product.lastEditedBy = userId;
+      product.lastEditedAt = new Date();
+    }
     if (input.name) {
       const nextSlug = normalizeSlug(input.name);
       if (nextSlug !== product.slug) { product.slug = await buildUniqueProductSlug(input.name, productId); }
@@ -528,6 +537,7 @@ export class ProductService {
         DRAFT: ['SUBMITTED'],
         REJECTED: ['DRAFT', 'SUBMITTED'],
         UNPUBLISHED: ['DRAFT', 'SUBMITTED'],
+        EDITED: ['SUBMITTED'],
       };
       if (!(allowedTransitions[product.status] ?? []).includes(input.status)) {
         throw new AppError(400, 'INVALID_PRODUCT_STATUS', `Cannot transition from ${product.status} to ${input.status}`);
@@ -583,6 +593,30 @@ export class ProductService {
       product.images = savedImages.map((image) => image._id);
     }
     await product.save();
+
+    if (wasApprovedOrPublished) {
+      auditService.log('PRODUCT_EDITED_AFTER_APPROVAL', {
+        productId: product._id.toString(),
+        actorId: userId,
+      });
+      try {
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_PRODUCT_EDITED',
+          title: 'Product Edited by Vendor',
+          message: `Product "${product.name}" was modified after approval and requires re-review.`,
+          channel: 'IN_APP',
+          metadata: {
+            productId: product._id.toString(),
+            productName: product.name,
+            vendorId: vendorId.toString(),
+            forAdmin: true,
+          },
+        });
+      } catch {
+        // Non-blocking notification dispatch
+      }
+    }
+
     return findProductWithVariants(product._id);
   }
 
@@ -590,7 +624,7 @@ export class ProductService {
     const vendorId = await this.resolveVendorIdForUser(userId);
     const product = await Product.findOne({ _id: productId, vendorId, deletedAt: null });
     if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
-    if (!['DRAFT', 'REJECTED', 'UNPUBLISHED'].includes(product.status)) throw new AppError(400, 'INVALID_STATUS_TRANSITION', 'Product cannot be submitted in its current status');
+    if (!['DRAFT', 'REJECTED', 'UNPUBLISHED', 'EDITED'].includes(product.status)) throw new AppError(400, 'INVALID_STATUS_TRANSITION', 'Product cannot be submitted in its current status');
     product.status = 'SUBMITTED';
     await product.save();
 
@@ -896,7 +930,7 @@ export class ProductService {
     if (status && status !== 'ALL') {
       const upper = String(status).toUpperCase().replace(/\s+/g, '_');
       if (upper === 'UNDER_REVIEW') {
-        query.status = { $in: ['UNDER_REVIEW', 'SUBMITTED'] };
+        query.status = { $in: ['UNDER_REVIEW', 'SUBMITTED', 'EDITED'] };
       } else {
         query.status = upper;
       }
@@ -936,11 +970,12 @@ export class ProductService {
       DRAFT: ['SUBMITTED'],
       SUBMITTED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
       UNDER_REVIEW: ['APPROVED', 'REJECTED'],
-      APPROVED: ['PUBLISHED', 'REJECTED', 'UNPUBLISHED', 'UNDER_REVIEW'],
+      APPROVED: ['PUBLISHED', 'REJECTED', 'UNPUBLISHED', 'UNDER_REVIEW', 'EDITED'],
       REJECTED: ['DRAFT', 'UNDER_REVIEW', 'APPROVED'],
-      PUBLISHED: ['UNPUBLISHED', 'ARCHIVED', 'APPROVED'],
+      PUBLISHED: ['UNPUBLISHED', 'ARCHIVED', 'APPROVED', 'EDITED'],
       UNPUBLISHED: ['PUBLISHED', 'APPROVED', 'ARCHIVED'],
       ARCHIVED: ['PUBLISHED', 'DRAFT'],
+      EDITED: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
     };
     const current = product.status;
     if (current === nextStatus) {
@@ -991,6 +1026,96 @@ export class ProductService {
     }
 
     return this.getByIdForAdmin(product._id);
+  }
+
+  async adminDeleteProduct(productId, adminId) {
+    const product = await Product.findOne({ _id: productId, deletedAt: null });
+    if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
+    if (product.status !== 'REJECTED') {
+      throw new AppError(400, 'INVALID_DELETE_STATUS', 'Only rejected products can be deleted by admin');
+    }
+
+    product.deletedAt = new Date();
+    product.deletedBy = adminId;
+    await product.save();
+
+    await ProductVariant.updateMany({ productId: product._id }, { $set: { status: 'INACTIVE' } });
+
+    auditService.log('PRODUCT_DELETED_BY_ADMIN', {
+      productId: product._id.toString(),
+      actorId: adminId,
+      status: product.status,
+    });
+
+    return { success: true, message: 'Product deleted successfully' };
+  }
+
+  async vendorDeleteProduct(userId, productId) {
+    const { vendorId, product } = await this.assertVendorOwnsProduct(userId, productId);
+    if (!['DRAFT', 'REJECTED', 'UNPUBLISHED'].includes(product.status)) {
+      throw new AppError(400, 'CANNOT_DELETE_ACTIVE_PRODUCT', 'Only products in DRAFT, REJECTED, or UNPUBLISHED status can be deleted');
+    }
+
+    // Check if product has any existing orders
+    const hasVendorOrders = await VendorOrder.exists({ 'items.productId': product._id });
+    if (hasVendorOrders) {
+      throw new AppError(400, 'PRODUCT_HAS_ORDERS', 'Cannot delete a product that has existing orders. Please unpublish or mark as out of stock instead.');
+    }
+    const hasOrders = await Order.exists({ 'items.productId': product._id });
+    if (hasOrders) {
+      throw new AppError(400, 'PRODUCT_HAS_ORDERS', 'Cannot delete a product that has existing orders. Please unpublish or mark as out of stock instead.');
+    }
+
+    product.deletedAt = new Date();
+    product.deletedBy = userId;
+    await product.save();
+
+    await ProductVariant.updateMany({ productId: product._id }, { $set: { status: 'INACTIVE' } });
+
+    auditService.log('PRODUCT_DELETED_BY_VENDOR', {
+      productId: product._id.toString(),
+      actorId: userId,
+      vendorId: vendorId.toString(),
+      status: product.status,
+    });
+
+    return { success: true, message: 'Product deleted successfully' };
+  }
+
+  async setProductOutOfStock(userId, productId) {
+    const { product } = await this.assertVendorOwnsProduct(userId, productId);
+    const variants = await ProductVariant.find({ productId: product._id, status: 'ACTIVE' });
+
+    for (const variant of variants) {
+      const inventory = await Inventory.findOne({ variantId: variant._id, deletedAt: null });
+      if (inventory && inventory.availableQuantity > 0) {
+        const prevQuantity = inventory.availableQuantity;
+        inventory.availableQuantity = 0;
+        inventory.status = 'OUT_OF_STOCK';
+        await inventory.save();
+
+        await InventoryMovement.create({
+          productId: product._id,
+          variantId: variant._id,
+          inventoryId: inventory._id,
+          type: 'STOCK_OUT',
+          quantity: prevQuantity,
+          previousAvailableQuantity: prevQuantity,
+          newAvailableQuantity: 0,
+          referenceType: 'ADJUSTMENT',
+          referenceId: 'SELLER_ZERO_STOCK',
+          reason: 'SELLER_MARKED_OUT_OF_STOCK',
+          actorId: String(userId),
+        });
+      }
+    }
+
+    auditService.log('PRODUCT_MARKED_OUT_OF_STOCK', {
+      productId: product._id.toString(),
+      actorId: userId,
+    });
+
+    return { success: true, message: 'Product variants marked as out of stock' };
   }
 }
 

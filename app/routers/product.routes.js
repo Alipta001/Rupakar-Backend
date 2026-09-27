@@ -8,6 +8,8 @@ import {
   getVendorProduct,
   updateVendorProduct,
   submitVendorProduct,
+  deleteVendorProduct,
+  vendorSetOutOfStock,
   publicProductList,
   publicProductDetail,
   adminProductList,
@@ -17,6 +19,7 @@ import {
   publishProduct,
   unpublishProduct,
   archiveProduct,
+  adminDeleteProduct,
   uploadVendorProductImage,
   deleteVendorProductImage,
   updateVendorProductImage,
@@ -44,7 +47,9 @@ router.get('/vendor/products', listVendorProducts);
 router.post('/vendor/products', createVendorProduct);
 router.get('/vendor/products/:id', getVendorProduct);
 router.patch('/vendor/products/:id', updateVendorProduct);
+router.delete('/vendor/products/:id', deleteVendorProduct);
 router.post('/vendor/products/:id/submit', submitVendorProduct);
+router.post('/vendor/products/:id/out-of-stock', vendorSetOutOfStock);
 router.post('/vendor/products/:id/images', requireAuth, requireRole('vendor'), upload.single('image'), uploadVendorProductImage);
 router.delete('/vendor/products/:id/images/:imageId', requireAuth, requireRole('vendor'), deleteVendorProductImage);
 router.patch('/vendor/products/:id/images/:imageId', requireAuth, requireRole('vendor'), updateVendorProductImage);
@@ -57,5 +62,6 @@ router.post('/admin/products/:id/reject', rejectProduct);
 router.post('/admin/products/:id/publish', publishProduct);
 router.post('/admin/products/:id/unpublish', unpublishProduct);
 router.post('/admin/products/:id/archive', archiveProduct);
+router.delete('/admin/products/:id', adminDeleteProduct);
 
 export default router;
