@@ -31,7 +31,22 @@ export class StorageService {
   async get(key) { this.assertS3(); return this.s3.send(new GetObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key })); }
   async exists(key) { try { this.assertS3(); await this.s3.send(new HeadObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key })); return true; } catch { return false; } }
   async delete(key) { this.assertS3(); await this.s3.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key })); return true; }
-  async getSignedUrl(key, expiresIn = 300) { this.assertS3(); return getSignedUrl(this.s3, new GetObjectCommand({ Bucket: env.S3_BUCKET_NAME, Key: key, ResponseContentType: 'application/pdf' }), { expiresIn }); }
+  async getSignedUrl(key, expiresIn = 300, responseContentType = null) {
+    this.assertS3();
+    const cmdParams = { Bucket: env.S3_BUCKET_NAME, Key: key };
+    if (responseContentType) {
+      cmdParams.ResponseContentType = responseContentType;
+    } else if (key.endsWith('.pdf')) {
+      cmdParams.ResponseContentType = 'application/pdf';
+    } else if (key.endsWith('.png')) {
+      cmdParams.ResponseContentType = 'image/png';
+    } else if (key.endsWith('.jpg') || key.endsWith('.jpeg')) {
+      cmdParams.ResponseContentType = 'image/jpeg';
+    } else if (key.endsWith('.webp')) {
+      cmdParams.ResponseContentType = 'image/webp';
+    }
+    return getSignedUrl(this.s3, new GetObjectCommand(cmdParams), { expiresIn });
+  }
 
   isAllowedMimeType(mimeType) {
     return Boolean(mimeType) && ALLOWED_MIME_TYPES.has(String(mimeType).toLowerCase());

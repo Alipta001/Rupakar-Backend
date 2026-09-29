@@ -18,12 +18,36 @@ import {
   blockVendor,
   restoreVendor,
   listVendorDocuments,
+  getAdminVendorDocumentDownload,
   approveDocument,
   rejectDocument,
   getAdminVendorBankAccount,
   verifyBankAccount,
   rejectBankAccount,
 } from '../controllers/vendor.controller.js';
+import multer from 'multer';
+import { AppError } from '../utils/app-error.js';
+
+const documentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(file.mimetype)) {
+      cb(new AppError(400, 'INVALID_FILE_TYPE', 'Only PDF, JPEG, PNG, and WEBP documents up to 5MB are allowed'));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+const handleDocumentUpload = (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('multipart/form-data')) {
+    return documentUpload.single('file')(req, res, next);
+  }
+  return next();
+};
 import { listVendorOrders, getVendorOrder } from '../controllers/order.controller.js';
 import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
 import { packVendorOrder, processVendorOrder, readyVendorOrder, shipVendorOrder } from '../controllers/shipping.controller.js';
@@ -44,7 +68,7 @@ router.get('/me/status', getMyVendorStatus);
 router.get('/me/verification', getMyVendorVerification);
 router.get('/dashboard', getVendorDashboard);
 router.get('/analytics', getVendorAnalytics);
-router.post('/documents', addDocument);
+router.post('/documents', handleDocumentUpload, addDocument);
 router.post('/bank-account', addBankAccount);
 
 router.get('/orders', listVendorOrders);
@@ -66,6 +90,7 @@ router.use(requireRole('admin'));
 router.get('/admin', listAdminVendors);
 router.get('/admin/:id', getAdminVendor);
 router.get('/admin/:id/documents', listVendorDocuments);
+router.get('/admin/:id/documents/:documentId/download', getAdminVendorDocumentDownload);
 router.patch('/admin/:id/approve', approveVendor);
 router.patch('/admin/:id/reject', rejectVendor);
 router.patch('/admin/:id/suspend', suspendVendor);

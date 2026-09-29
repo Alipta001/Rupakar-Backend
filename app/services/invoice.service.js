@@ -1,6 +1,8 @@
 import { AppError } from '../utils/app-error.js';
 import { Invoice } from '../models/invoice.model.js';
 
+const inFlightVendorInvoices = new Map();
+
 export class InvoiceService {
   generateInvoiceNumber() {
     const stamp = Date.now().toString(36).toUpperCase();
@@ -162,6 +164,104 @@ export class InvoiceService {
     }
 
     return invoice;
+  }
+
+  async ensureVendorInvoice(vendorOrder) {
+    if (!vendorOrder) return null;
+    const lockKey = String(vendorOrder._id || vendorOrder.parentOrderId);
+    if (inFlightVendorInvoices.has(lockKey)) {
+      return inFlightVendorInvoices.get(lockKey);
+    }
+
+    const task = (async () => {
+      const vendorId = vendorOrder.vendorId;
+      let invoice = await Invoice.findOne({
+        $or: [
+          { vendorOrderId: vendorOrder._id, vendorId },
+          { orderId: vendorOrder.parentOrderId, vendorId, vendorOrderId: null },
+        ],
+        status: { $ne: 'CANCELLED' },
+      });
+
+      if (!invoice) {
+        const { Order } = await import('../models/order.model.js');
+        const { Vendor } = await import('../models/vendor.model.js');
+        const { User } = await import('../models/user.model.js');
+        const { VendorLedgerEntry } = await import('../models/vendor-ledger-entry.model.js');
+
+        const [order, vendor, customer, ledger] = await Promise.all([
+          Order.findById(vendorOrder.parentOrderId).lean(),
+          Vendor.findById(vendorId).select('businessName legalName email address gstNumber').lean(),
+          User.findById(vendorOrder.customerId).select('name email').lean(),
+          VendorLedgerEntry.findOne({ vendorOrderId: vendorOrder._id, transactionType: 'SALE_CAPTURE' }).lean(),
+        ]);
+
+        if (!order) return null;
+
+        const items = (vendorOrder.items || []).map((item) => ({
+          productId: item.productId,
+          variantId: item.variantId,
+          productName: item.productName,
+          sku: item.sku,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          lineTotal: item.lineTotal,
+        }));
+
+        const total = Number(vendorOrder.total || 0);
+
+        invoice = await this.createInvoice({
+          orderId: vendorOrder.parentOrderId,
+          customerId: vendorOrder.customerId,
+          vendorId,
+          vendorOrderId: vendorOrder._id,
+          items,
+          subtotal: Number(vendorOrder.subtotal || 0),
+          discount: Number(vendorOrder.discount || 0),
+          tax: Number(vendorOrder.tax || 0),
+          shipping: Number(vendorOrder.shipping || 0),
+          total,
+          currency: vendorOrder.currency || order.currency || 'INR',
+          paymentMethod: order.paymentMethod,
+          paymentStatus: order.paymentStatus,
+          commissionRate: ledger?.commissionRate || 0,
+          commissionAmount: ledger?.commissionAmount || 0,
+          netVendorPayable: ledger?.netAmount || total,
+          commissionSource: ledger?.commissionSource || null,
+          customerSnapshot: customer || {},
+          vendorSnapshot: vendor || {},
+          shippingAddressSnapshot: order.shippingAddressSnapshot || {},
+          billingAddressSnapshot: order.billingAddressSnapshot || {},
+        });
+      }
+
+      if (invoice && (invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey)) {
+        const { pdfService } = await import('./pdf.service.js');
+        const { storageService } = await import('./storage.service.js');
+        await this.setGenerationStatus(invoice._id, 'GENERATING', { errorReason: null });
+        const pdf = await pdfService.generateInvoicePdf(invoice);
+        await this.setGenerationStatus(invoice._id, 'UPLOADING', { generatedAt: new Date() });
+        const storageKey = `invoices/${String(vendorOrder.parentOrderId)}/${invoice.invoiceNumber}.pdf`;
+        await storageService.upload({ key: storageKey, body: pdf.content, contentType: pdf.contentType });
+        invoice = await this.setGenerationStatus(invoice._id, 'AVAILABLE', {
+          storageProvider: 's3',
+          storageKey,
+          storageUrl: null,
+          fileType: pdf.contentType,
+          uploadedAt: new Date(),
+          errorReason: null,
+        });
+      }
+
+      return invoice;
+    })();
+
+    inFlightVendorInvoices.set(lockKey, task);
+    try {
+      return await task;
+    } finally {
+      inFlightVendorInvoices.delete(lockKey);
+    }
   }
 
   async listInvoices({ customerId = null, vendorId = null, page = 1, limit = 20 }) {

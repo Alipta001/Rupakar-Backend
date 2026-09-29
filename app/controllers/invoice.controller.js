@@ -9,6 +9,7 @@ import { VendorOrder } from '../models/vendor-order.model.js';
 import { PackingSlip } from '../models/packing-slip.model.js';
 import { listInvoicesQuerySchema, invoiceIdSchema } from '../validators/invoice.validators.js';
 import { scheduleInvoiceGeneration, schedulePackingSlipGeneration } from '../jobs/queues.js';
+import { packingSlipService } from '../services/packing-slip.service.js';
 
 const getMeta = (query = {}) => {
   const { page, limit } = listInvoicesQuerySchema.parse(query ?? {});
@@ -30,8 +31,8 @@ export const getOrderInvoice = async (req, res, next) => {
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
 
     let invoice = await invoiceService.getInvoiceByOrderId(orderId, req.user.sub, null);
-    if (!invoice && (['PAID', 'CAPTURED'].includes(order.paymentStatus) || order.status === 'CONFIRMED')) {
-      invoice = await invoiceService.ensureCustomerInvoice(order).catch(() => null);
+    if ((!invoice || invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey) && (['PAID', 'CAPTURED'].includes(order.paymentStatus) || ['CONFIRMED', 'PROCESSING', 'PACKED', 'READY_TO_SHIP', 'SHIPPED', 'DELIVERED'].includes(order.status))) {
+      invoice = await invoiceService.ensureCustomerInvoice(order).catch(() => invoice);
     }
     if (!invoice) {
       await queueCustomerInvoiceGeneration(order);
@@ -154,16 +155,26 @@ const sendDocumentUrl = async (res, document, label, requestId, queueGeneration)
 export const downloadVendorOrderInvoice = async (req, res, next) => {
   try {
     const vendor = await getVendorForDocument(req.user.sub);
-    const vendorOrder = await VendorOrder.findOne({ _id: req.params.orderId, vendorId: vendor._id, deletedAt: null }).lean();
+    const vendorOrder = await VendorOrder.findOne({
+      $or: [
+        { _id: req.params.orderId, vendorId: vendor._id },
+        { parentOrderId: req.params.orderId, vendorId: vendor._id },
+      ],
+      deletedAt: null,
+    }).lean();
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
 
-    const invoice = await Invoice.findOne({
+    let invoice = await Invoice.findOne({
       $or: [
         { vendorOrderId: vendorOrder._id, vendorId: vendor._id },
         { orderId: vendorOrder.parentOrderId, vendorId: vendor._id, vendorOrderId: null },
       ],
       status: { $ne: 'CANCELLED' },
     }).lean();
+
+    if (!invoice || invoice.generationStatus !== 'AVAILABLE' || !invoice.storageKey) {
+      invoice = await invoiceService.ensureVendorInvoice(vendorOrder).catch(() => invoice);
+    }
 
     await sendDocumentUrl(
       res,
@@ -178,9 +189,25 @@ export const downloadVendorOrderInvoice = async (req, res, next) => {
 export const downloadVendorPackingSlip = async (req, res, next) => {
   try {
     const vendor = await getVendorForDocument(req.user.sub);
-    const vendorOrder = await VendorOrder.findOne({ _id: req.params.orderId, vendorId: vendor._id, deletedAt: null }).lean();
+    const vendorOrder = await VendorOrder.findOne({
+      $or: [
+        { _id: req.params.orderId, vendorId: vendor._id },
+        { parentOrderId: req.params.orderId, vendorId: vendor._id },
+      ],
+      deletedAt: null,
+    }).lean();
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
-    const packingSlip = await PackingSlip.findOne({ vendorOrderId: vendorOrder._id, vendorId: vendor._id }).lean();
+
+    let packingSlip = await PackingSlip.findOne({ vendorOrderId: vendorOrder._id, vendorId: vendor._id }).lean();
+    if (!packingSlip || packingSlip.generationStatus !== 'AVAILABLE' || !packingSlip.storageKey) {
+      packingSlip = await packingSlipService.ensurePackingSlip({
+        orderId: vendorOrder.parentOrderId,
+        vendorOrderId: vendorOrder._id,
+        vendorId: vendor._id,
+        customerId: vendorOrder.customerId,
+      }).catch(() => packingSlip);
+    }
+
     await sendDocumentUrl(
       res,
       packingSlip,

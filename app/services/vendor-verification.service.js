@@ -3,7 +3,8 @@ import { VendorDocument } from '../models/vendor-document.model.js';
 import { VendorBankAccount } from '../models/vendor-bank.model.js';
 import { AppError } from '../utils/app-error.js';
 
-const requiredDocumentTypes = ['IDENTITY', 'BUSINESS_REGISTRATION', 'PAN', 'GST', 'ADDRESS_PROOF', 'BANK_PROOF'];
+export const REQUIRED_DOCUMENT_TYPES = ['IDENTITY', 'BUSINESS_REGISTRATION', 'PAN', 'GST', 'ADDRESS_PROOF', 'BANK_PROOF'];
+const requiredDocumentTypes = REQUIRED_DOCUMENT_TYPES;
 
 const sanitizeDocument = (document) => ({
   id: document._id,

@@ -89,6 +89,7 @@ export const getAdminFinanceOverview = async (req, res, next) => {
       payoutsFailedAgg,
       pendingSettlementAgg,
       eligibleSettlementAgg,
+      onHoldSettlementAgg,
     ] = await Promise.all([
       // Gross sales from captured/paid orders
       Order.aggregate([
@@ -128,17 +129,17 @@ export const getAdminFinanceOverview = async (req, res, next) => {
       // Pending settlement
       VendorLedgerEntry.aggregate([
         { $match: { status: 'POSTED', eligibilityStatus: 'PENDING' } },
-        { $group: { _id: null, amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
+        { $group: { _id: '$vendorId', amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
       ]),
       // Eligible settlement
       VendorLedgerEntry.aggregate([
         { $match: { status: 'POSTED', eligibilityStatus: 'ELIGIBLE' } },
-        { $group: { _id: null, amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
+        { $group: { _id: '$vendorId', amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
       ]),
       // On hold settlement
       VendorLedgerEntry.aggregate([
         { $match: { status: 'POSTED', eligibilityStatus: 'ON_HOLD' } },
-        { $group: { _id: null, amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
+        { $group: { _id: '$vendorId', amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
       ]),
     ]);
 
@@ -148,9 +149,13 @@ export const getAdminFinanceOverview = async (req, res, next) => {
     const vendorPayable = commissionAgg?.[0]?.vendorPayable ?? 0;
     const refundsTotal = refundsAgg?.[0]?.totalAmount ?? 0;
     const payoutsPaid = payoutsPaidAgg?.[0]?.totalAmount ?? 0;
-    const eligibleAmount = eligibleSettlementAgg?.[0]?.amount ?? 0;
-    const pendingAmount = pendingSettlementAgg?.[0]?.amount ?? 0;
-    const onHoldAmount = onHoldSettlementAgg?.[0]?.amount ?? 0;
+
+    const pendingTotal = (pendingSettlementAgg || []).reduce((acc, curr) => acc + (curr.amount || 0), 0);
+    const pendingTotalPaise = (pendingSettlementAgg || []).reduce((acc, curr) => acc + (curr.amountPaise || 0), 0);
+    const eligibleTotal = (eligibleSettlementAgg || []).reduce((acc, curr) => acc + (curr.amount || 0), 0);
+    const eligibleTotalPaise = (eligibleSettlementAgg || []).reduce((acc, curr) => acc + (curr.amountPaise || 0), 0);
+    const onHoldTotal = (onHoldSettlementAgg || []).reduce((acc, curr) => acc + (curr.amount || 0), 0);
+    const onHoldTotalPaise = (onHoldSettlementAgg || []).reduce((acc, curr) => acc + (curr.amountPaise || 0), 0);
 
     const data = {
       grossSales,
@@ -162,15 +167,14 @@ export const getAdminFinanceOverview = async (req, res, next) => {
       refundCount: refundsAgg?.[0]?.count ?? 0,
       commissionEarned,
       deliveryRevenue,
-      vendorPayable,
-      eligibleSettlements: eligibleAmount,
-      pendingSettlements: pendingAmount,
-      onHoldSettlements: onHoldAmount,
-      completedPayouts: payoutsPaid,
-      completedPayoutCount: payoutsPaidAgg?.[0]?.count ?? 0,
+      vendorPayable: { amount: vendorPayable, paise: Math.round(vendorPayable * 100) },
+      eligibleSettlements: { amount: eligibleTotal, paise: eligibleTotalPaise, vendorCount: (eligibleSettlementAgg || []).length },
+      pendingSettlements: { amount: pendingTotal, paise: pendingTotalPaise, vendorCount: (pendingSettlementAgg || []).length },
+      onHoldSettlements: { amount: onHoldTotal, paise: onHoldTotalPaise, vendorCount: (onHoldSettlementAgg || []).length },
+      completedPayouts: { amount: payoutsPaid, paise: payoutsPaidAgg?.[0]?.totalPaise ?? Math.round(payoutsPaid * 100), count: payoutsPaidAgg?.[0]?.count ?? 0 },
       failedPayouts: payoutsFailedAgg?.[0]?.totalAmount ?? 0,
       failedPayoutCount: payoutsFailedAgg?.[0]?.count ?? 0,
-      outstandingVendorBalance: Math.max(0, pendingAmount + eligibleAmount + onHoldAmount),
+      outstandingVendorBalance: Math.max(0, pendingTotal + eligibleTotal + onHoldTotal),
       currency: 'INR',
     };
 

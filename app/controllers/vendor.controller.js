@@ -1,9 +1,11 @@
+import path from 'path';
 import { AppError } from '../utils/app-error.js';
 import { vendorApplySchema, vendorUpdateSchema, adminVendorDecisionSchema, bankAccountSchema } from '../validators/vendor.validator.js';
 import { vendorService } from '../services/vendor.service.js';
 import { VendorBankAccount } from '../models/vendor-bank.model.js';
-import { vendorVerificationService } from '../services/vendor-verification.service.js';
+import { vendorVerificationService, REQUIRED_DOCUMENT_TYPES } from '../services/vendor-verification.service.js';
 import { Vendor } from '../models/vendor.model.js';
+import { VendorDocument } from '../models/vendor-document.model.js';
 import { Product } from '../models/product.model.js';
 import { Inventory } from '../models/inventory.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
@@ -11,6 +13,8 @@ import { Order } from '../models/order.model.js';
 import { notificationService } from '../services/notification.service.js';
 import { vendorLedgerService } from '../services/vendor-ledger.service.js';
 import { settlementService } from '../services/settlement.service.js';
+import { storageService } from '../services/storage.service.js';
+import { auditService } from '../services/audit.service.js';
 
 const sanitizeVendor = (vendor) => {
   if (!vendor) return vendor;
@@ -248,23 +252,55 @@ export const getMyVendorVerification = async (req, res, next) => {
 export const addDocument = async (req, res, next) => {
   try {
     const vendor = await vendorService.getVendorForOwner(req.user.sub);
+    let storageKey = req.body.storageKey;
+    const documentType = req.body.documentType;
+    const documentNumber = req.body.documentNumber?.trim() || undefined;
+
+    const validTypes = ['GST', 'PAN', 'BUSINESS_REGISTRATION', 'IDENTITY', 'ADDRESS_PROOF', 'BANK_PROOF', 'AUTHENTICITY_PROOF'];
+    if (!documentType || !validTypes.includes(documentType)) {
+      throw new AppError(400, 'INVALID_DOCUMENT_TYPE', `Document type must be one of: ${validTypes.join(', ')}`);
+    }
+
+    if (req.file) {
+      const ext = path.extname(req.file.originalname) || (req.file.mimetype === 'application/pdf' ? '.pdf' : '.jpg');
+      const safeFilename = `${documentType.toLowerCase()}-${Date.now()}${ext}`;
+      storageKey = `vendors/${vendor._id}/documents/${safeFilename}`;
+      await storageService.upload({
+        key: storageKey,
+        body: req.file.buffer,
+        contentType: req.file.mimetype,
+      });
+    }
+
+    if (!storageKey) {
+      throw new AppError(400, 'DOCUMENT_FILE_REQUIRED', 'Please select a document file to upload (PDF, PNG, JPG up to 5MB)');
+    }
+
     const document = await vendorService.createDocument(vendor._id, {
-      documentType: req.body.documentType,
-      documentNumber: req.body.documentNumber,
-      storageKey: req.body.storageKey,
+      documentType,
+      documentNumber,
+      storageKey,
     });
+
+    if (vendor.verificationStatus === 'UNVERIFIED') {
+      await Vendor.updateOne(
+        { _id: vendor._id, verificationStatus: 'UNVERIFIED' },
+        { $set: { verificationStatus: 'PENDING' } }
+      );
+    }
 
     res.status(201).json({
       success: true,
       data: {
         id: document._id,
         documentType: document.documentType,
+        documentNumber: document.documentNumber,
         status: document.status,
         submittedAt: document.submittedAt,
         verifiedAt: document.verifiedAt,
         rejectionReason: document.rejectionReason || null,
       },
-      message: 'Document submitted',
+      message: 'Document submitted for verification',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
   } catch (error) {
@@ -593,10 +629,52 @@ export const restoreVendor = async (req, res, next) => {
 export const listVendorDocuments = async (req, res, next) => {
   try {
     const documents = await vendorService.listDocuments(req.params.id);
+    const enriched = await Promise.all(
+      documents.map(async (doc) => {
+        let viewUrl = null;
+        if (doc.storageKey) {
+          try {
+            viewUrl = await storageService.getSignedUrl(doc.storageKey, 900);
+          } catch {}
+        }
+        return {
+          ...doc,
+          id: doc._id,
+          viewUrl,
+          downloadUrl: viewUrl,
+        };
+      })
+    );
     res.status(200).json({
       success: true,
-      data: documents,
+      data: enriched,
       message: 'Vendor documents loaded',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAdminVendorDocumentDownload = async (req, res, next) => {
+  try {
+    const document = await VendorDocument.findOne({
+      _id: req.params.documentId,
+      vendorId: req.params.id,
+      isDeleted: false,
+    }).lean();
+    if (!document) throw new AppError(404, 'DOCUMENT_NOT_FOUND', 'Vendor document not found');
+    if (!document.storageKey) throw new AppError(404, 'STORAGE_KEY_MISSING', 'Document has no stored file');
+
+    const downloadUrl = await storageService.getSignedUrl(document.storageKey, 900);
+    res.status(200).json({
+      success: true,
+      data: {
+        documentId: document._id,
+        documentType: document.documentType,
+        downloadUrl,
+      },
+      message: 'Presigned download URL generated',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
   } catch (error) {
@@ -608,6 +686,28 @@ export const approveDocument = async (req, res, next) => {
   try {
     const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const document = await vendorService.updateDocumentStatus(req.params.id, req.params.documentId, { status: 'APPROVED', reason: payload.reason }, req.user.sub);
+    await auditService.log({
+      event: 'VENDOR_DOCUMENT_APPROVED',
+      actorId: req.user.sub,
+      vendorId: req.params.id,
+      documentId: req.params.documentId,
+      reason: payload.reason ?? null,
+    }).catch(() => null);
+
+    // Sync vendor verification status if all required documents are approved
+    const allDocs = await VendorDocument.find({ vendorId: req.params.id, isDeleted: false }).lean();
+    const latestByType = new Map();
+    allDocs.forEach((d) => {
+      if (!latestByType.has(d.documentType)) latestByType.set(d.documentType, d);
+    });
+    const allApproved = REQUIRED_DOCUMENT_TYPES.every((type) => latestByType.get(type)?.status === 'APPROVED');
+    if (allApproved) {
+      await Vendor.updateOne(
+        { _id: req.params.id, verificationStatus: { $ne: 'VERIFIED' } },
+        { $set: { verificationStatus: 'VERIFIED' } }
+      );
+    }
+
     res.status(200).json({
       success: true,
       data: document,
@@ -623,6 +723,20 @@ export const rejectDocument = async (req, res, next) => {
   try {
     const payload = adminVendorDecisionSchema.parse(req.body ?? {});
     const document = await vendorService.updateDocumentStatus(req.params.id, req.params.documentId, { status: 'REJECTED', reason: payload.reason }, req.user.sub);
+    await auditService.log({
+      event: 'VENDOR_DOCUMENT_REJECTED',
+      actorId: req.user.sub,
+      vendorId: req.params.id,
+      documentId: req.params.documentId,
+      reason: payload.reason ?? 'Document rejected',
+    }).catch(() => null);
+
+    // If documents are rejected, ensure verificationStatus is not incorrectly marked VERIFIED
+    await Vendor.updateOne(
+      { _id: req.params.id, verificationStatus: 'VERIFIED' },
+      { $set: { verificationStatus: 'PENDING' } }
+    );
+
     res.status(200).json({
       success: true,
       data: document,
