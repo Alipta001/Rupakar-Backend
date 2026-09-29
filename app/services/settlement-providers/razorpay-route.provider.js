@@ -17,8 +17,8 @@ export class RazorpayRouteProvider {
    * @returns {boolean}
    */
   isConfigured() {
-    const routeEnabled = env.RAZORPAY_ROUTE_ENABLED === 'true' || process.env.RAZORPAY_ROUTE_ENABLED === 'true';
-    return Boolean(this.client && this.keyId && this.keySecret && (routeEnabled || Boolean(this.merchantAccountId)));
+    const routeEnabled = env.RAZORPAY_ROUTE_ENABLED === true || env.RAZORPAY_ROUTE_ENABLED === 'true' || process.env.RAZORPAY_ROUTE_ENABLED === 'true';
+    return Boolean(routeEnabled && this.client && this.keyId && this.keySecret);
   }
 
   /**

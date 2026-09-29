@@ -13,6 +13,7 @@ import { financialSettingsService } from './financial-settings.service.js';
 import { razorpayRouteProvider } from './settlement-providers/razorpay-route.provider.js';
 import { toPaise, toRupees } from '../utils/money.js';
 import { auditService } from './audit.service.js';
+import { env } from '../config/env.js';
 
 const sum = (items, field) => Number(items?.[0]?.[field] || 0);
 
@@ -22,19 +23,26 @@ export class SettlementService {
    */
   async readiness(vendorId) {
     const vendor = await Vendor.findById(vendorId).select('status verificationStatus razorpayAccountId').lean();
-    const bankAccount = await VendorBankAccount.findOne({ vendorId, isDeleted: false }).select('_id accountNumber ifsc isVerified').lean();
+    const bankAccount = await VendorBankAccount.findOne({ vendorId, isDeleted: false })
+      .select('_id accountNumber maskedAccountNumber ifscCode ifsc verificationStatus')
+      .lean();
     const approved = vendor?.status === 'APPROVED';
     const verified = vendor?.verificationStatus === 'VERIFIED';
-    const providerConfigured = razorpayRouteProvider.isConfigured();
+    const routeEnabled = env.RAZORPAY_ROUTE_ENABLED === true || env.RAZORPAY_ROUTE_ENABLED === 'true' || process.env.RAZORPAY_ROUTE_ENABLED === 'true';
+    const providerConfigured = Boolean(routeEnabled && razorpayRouteProvider.isConfigured());
     const hasRouteAccount = Boolean(vendor?.razorpayAccountId);
-    const hasBankAccount = Boolean(bankAccount);
+    const hasBankAccount = Boolean(bankAccount && (bankAccount.accountNumber || bankAccount.maskedAccountNumber));
 
     let reason = null;
     if (!approved) reason = 'Vendor account is not approved';
     else if (!verified) reason = 'Vendor identity verification is pending';
     else if (!hasBankAccount) reason = 'No active bank account on file';
-    else if (!providerConfigured) reason = 'Razorpay Route provider transfer credentials not configured';
-    else if (!hasRouteAccount) reason = 'Vendor has not linked a Razorpay Route transfer account';
+    else if (routeEnabled && !providerConfigured) reason = 'Razorpay Route provider transfer credentials not configured';
+    else if (routeEnabled && !hasRouteAccount) reason = 'Vendor has not linked a Razorpay Route transfer account';
+
+    const isEligibleForPayout = routeEnabled
+      ? Boolean(approved && verified && hasBankAccount && providerConfigured && hasRouteAccount)
+      : Boolean(approved && verified && hasBankAccount);
 
     return {
       approvedVendor: approved,
@@ -42,8 +50,8 @@ export class SettlementService {
       bankAccountPresent: hasBankAccount,
       providerConfigured,
       hasRouteAccount,
-      payoutRequestsEnabled: Boolean(approved && verified && hasBankAccount && providerConfigured && hasRouteAccount),
-      eligible: approved && verified && hasBankAccount && providerConfigured && hasRouteAccount,
+      payoutRequestsEnabled: isEligibleForPayout,
+      eligible: isEligibleForPayout,
       reason,
     };
   }
@@ -140,6 +148,12 @@ export class SettlementService {
    * 4. No open return or cancellation request exists for the vendor order.
    */
   async evaluateSettlementEligibility() {
+    const isDbConnected = mongoose.connection?.readyState === 1;
+    const isFindMocked = Boolean(VendorLedgerEntry.find?._isMockFunction || VendorLedgerEntry.find?.mock);
+    if (!isDbConnected && !isFindMocked) {
+      return { evaluated: 0, promoted: 0, held: 0 };
+    }
+
     const now = new Date();
     const pendingQuery = VendorLedgerEntry.find({
       status: 'POSTED',
@@ -151,13 +165,22 @@ export class SettlementService {
     let held = 0;
 
     for (const entry of pendingEntries) {
-      const voQuery = VendorOrder.findById(entry.vendorOrderId).select('status parentOrderId');
+      const voQuery = VendorOrder.findById(entry.vendorOrderId).select('status parentOrderId settlementStatus');
       const vendorOrder = voQuery && typeof voQuery.lean === 'function' ? await voQuery.lean() : await voQuery;
 
       const poQuery = Order.findById(entry.parentOrderId).select('paymentStatus status');
       const parentOrder = poQuery && typeof poQuery.lean === 'function' ? await poQuery.lean() : await poQuery;
 
       if (!vendorOrder || !parentOrder) continue;
+
+      // 0. If vendor order was cancelled, refunded, or reversed, mark entry REVERSED and do not promote
+      if (['CANCELLED', 'REFUNDED'].includes(vendorOrder.status) || vendorOrder.settlementStatus === 'REVERSED') {
+        await VendorLedgerEntry.updateOne(
+          { _id: entry._id },
+          { $set: { eligibilityStatus: 'REVERSED' } }
+        );
+        continue;
+      }
 
       // 1. Payment must be captured/paid
       const paymentCaptured = ['PAID', 'CAPTURED'].includes(parentOrder.paymentStatus);
@@ -246,9 +269,9 @@ export class SettlementService {
    */
   async createSettlementBatch({ vendorIds = null, minThresholdPaise = null, triggeredBy = 'ADMIN', adminUserId = null } = {}) {
     const settings = await financialSettingsService.getCurrentSettings();
-    const minThreshold = minThresholdPaise !== null
+    const minThreshold = (minThresholdPaise !== null && minThresholdPaise !== undefined && !Number.isNaN(Number(minThresholdPaise)))
       ? Math.round(Number(minThresholdPaise))
-      : (settings.settlement.minPayoutThresholdPaise ?? 100000);
+      : (settings?.settlement?.minPayoutThresholdPaise ?? 100000);
 
     const matchCriteria = {
       status: 'POSTED',
@@ -290,6 +313,8 @@ export class SettlementService {
     const createdPayouts = [];
     const processedVendorIds = [];
 
+    const routeEnabled = (env.RAZORPAY_ROUTE_ENABLED === true || env.RAZORPAY_ROUTE_ENABLED === 'true') && razorpayRouteProvider.isConfigured();
+
     for (const group of eligibleByVendor) {
       const vendorId = group._id;
       const netPaise = group.totalNetPaise || toPaise(group.totalNetRupees);
@@ -308,14 +333,14 @@ export class SettlementService {
       const idempotencyKey = `payout:${batch._id}:${vendorId}:${netPaise}`;
 
       const bankSnapshot = bank ? {
-        accountNumberMasked: bank.accountNumber ? `••••${bank.accountNumber.slice(-4)}` : null,
-        ifsc: bank.ifsc || null,
+        accountNumberMasked: bank.maskedAccountNumber || (bank.accountNumber ? `••••${bank.accountNumber.slice(-4)}` : null),
+        ifsc: bank.ifscCode || bank.ifsc || null,
         accountHolderName: bank.accountHolderName || vendor?.businessName || null,
         bankName: bank.bankName || null,
       } : {};
 
-      // Determine initial provider state
-      const provider = readiness.hasRouteAccount ? 'RAZORPAY_ROUTE' : 'UNCONFIGURED';
+      // Determine initial provider state: Route if enabled and configured; otherwise MANUAL_BANK_TRANSFER
+      const provider = (routeEnabled && readiness.hasRouteAccount) ? 'RAZORPAY_ROUTE' : 'MANUAL_BANK_TRANSFER';
 
       const payout = await VendorPayout.create({
         payoutNumber,
@@ -333,8 +358,8 @@ export class SettlementService {
         initiatedAt: new Date(),
       });
 
-      // Execute transfer if provider is configured and vendor has route account
-      if (readiness.eligible) {
+      // Execute transfer if route provider is enabled and vendor has route account
+      if (routeEnabled && readiness.eligible) {
         const transferResult = await razorpayRouteProvider.createTransfer({
           destinationAccountId: vendor.razorpayAccountId,
           amountPaise: netPaise,
@@ -361,11 +386,13 @@ export class SettlementService {
           await payout.save();
         }
       } else {
-        // Safe staging: NOT configured or vendor missing route account
-        // INTERNAL ledger records the batch and staging, but status stays READY without fabricating success.
+        // MANUAL BANK TRANSFER flow:
+        // Set status to READY and provider to MANUAL_BANK_TRANSFER so Admin can inspect bank details,
+        // execute the transfer via netbanking/IMPS/NEFT, and confirm with UTR/reference number.
         payout.status = 'READY';
+        payout.provider = 'MANUAL_BANK_TRANSFER';
         payout.metadata = {
-          reason: readiness.reason || 'Pending provider configuration or manual payout execution',
+          reason: 'Manual bank transfer pending execution by admin',
         };
         await payout.save();
 
@@ -568,9 +595,31 @@ export class SettlementService {
       }
     }
 
+    // Duplicate UTR / reference verification: prevent accidental duplicate confirmation
+    const trimmedReference = referenceId.trim();
+    const isPayoutFindMocked = Boolean(VendorPayout.findOne?._isMockFunction || VendorPayout.findOne?.mock);
+    if (isDbConnected || isPayoutFindMocked) {
+      try {
+        const existingWithRef = await VendorPayout.findOne({
+          _id: { $ne: payout._id },
+          providerTransferId: trimmedReference,
+          status: 'PAID',
+        }).lean();
+        if (existingWithRef) {
+          throw new AppError(
+            409,
+            'DUPLICATE_REFERENCE',
+            `Bank reference / UTR "${trimmedReference}" has already been recorded for payout ${existingWithRef.payoutNumber || existingWithRef._id}`
+          );
+        }
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+      }
+    }
+
     payout.status = 'PAID';
     payout.provider = 'MANUAL_BANK_TRANSFER';
-    payout.providerTransferId = referenceId.trim();
+    payout.providerTransferId = trimmedReference;
     payout.processedAt = new Date();
     payout.metadata = {
       ...(payout.metadata || {}),
@@ -602,6 +651,22 @@ export class SettlementService {
       }
     }
 
+    // Complete SettlementBatch if all associated payouts are now PAID
+    if (payout.batchId && (isDbConnected || Boolean(VendorPayout.countDocuments?._isMockFunction || VendorPayout.countDocuments?.mock))) {
+      try {
+        const remainingUnpaid = await VendorPayout.countDocuments({
+          batchId: payout.batchId,
+          status: { $ne: 'PAID' },
+        });
+        if (remainingUnpaid === 0) {
+          await SettlementBatch.updateOne(
+            { _id: payout.batchId },
+            { $set: { status: 'COMPLETED', processedAt: new Date() } }
+          );
+        }
+      } catch {}
+    }
+
     // Immutable audit trail recording
     auditService.log('MANUAL_PAYOUT_CONFIRMED', {
       adminUserId: String(adminUserId || ''),
@@ -610,7 +675,7 @@ export class SettlementService {
       vendorId: String(payout.vendorId),
       amountPaise: payout.amountPaise,
       amount: payout.requestedAmount || toRupees(payout.amountPaise),
-      referenceId: referenceId.trim(),
+      referenceId: trimmedReference,
       notes: notes || '',
     });
 

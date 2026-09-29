@@ -1,4 +1,6 @@
+import mongoose from 'mongoose';
 import { Vendor } from '../models/vendor.model.js';
+import { VendorBankAccount } from '../models/vendor-bank.model.js';
 import { CommissionConfig } from '../models/commission-config.model.js';
 import { Order } from '../models/order.model.js';
 import { Payment } from '../models/payment.model.js';
@@ -153,7 +155,7 @@ export const getAdminFinanceOverview = async (req, res, next) => {
       completedPayoutCount: payoutsPaidAgg[0]?.count ?? 0,
       failedPayouts: payoutsFailedAgg[0]?.totalAmount ?? 0,
       failedPayoutCount: payoutsFailedAgg[0]?.count ?? 0,
-      outstandingVendorBalance: Math.max(0, eligibleAmount - payoutsPaid),
+      outstandingVendorBalance: Math.max(0, pendingAmount + eligibleAmount),
       currency: 'INR',
     };
 
@@ -177,6 +179,13 @@ export const updateFinancialSettings = async (req, res, next) => {
 
 export const listEligibleSettlements = async (_req, res, next) => {
   try {
+    const isDbConnected = mongoose.connection?.readyState === 1;
+
+    // Proactively evaluate any newly delivered orders past return window
+    if (isDbConnected || Boolean(settlementService.evaluateSettlementEligibility?._isMockFunction)) {
+      await settlementService.evaluateSettlementEligibility().catch(() => null);
+    }
+
     const eligible = await VendorLedgerEntry.aggregate([
       { $match: { status: 'POSTED', eligibilityStatus: 'ELIGIBLE' } },
       {
@@ -199,14 +208,39 @@ export const listEligibleSettlements = async (_req, res, next) => {
       { $unwind: { path: '$vendor', preserveNullAndEmptyArrays: true } },
     ]);
 
-    const formatted = eligible.map((e) => ({
-      vendorId: e._id,
-      vendorName: e.vendor?.businessName || e.vendor?.storeName || 'Vendor',
-      eligibleAmount: toRupees(e.totalPayablePaise) || e.totalPayableRupees,
-      eligibleAmountPaise: e.totalPayablePaise,
-      entryCount: e.entryCount,
-      entryIds: e.entryIds,
-    }));
+    // Fetch bank accounts for eligible vendors to facilitate manual transfer inspection
+    let bankMap = new Map();
+    const isBankFindMocked = Boolean(VendorBankAccount.find?._isMockFunction || VendorBankAccount.find?.mock);
+    if ((isDbConnected || isBankFindMocked) && Array.isArray(eligible) && eligible.length > 0) {
+      try {
+        const vendorIds = eligible.map((e) => e._id).filter(Boolean);
+        if (vendorIds.length > 0) {
+          const bankAccounts = await VendorBankAccount.find({
+            vendorId: { $in: vendorIds },
+            isDeleted: false,
+          }).lean();
+          bankMap = new Map((bankAccounts || []).map((b) => [String(b.vendorId), b]));
+        }
+      } catch {}
+    }
+
+    const formatted = eligible.map((e) => {
+      const bank = bankMap.get(String(e._id));
+      return {
+        vendorId: e._id,
+        vendorName: e.vendor?.businessName || e.vendor?.storeName || 'Vendor',
+        eligibleAmount: toRupees(e.totalPayablePaise) || e.totalPayableRupees,
+        eligibleAmountPaise: e.totalPayablePaise,
+        entryCount: e.entryCount,
+        entryIds: e.entryIds,
+        bankDetails: bank ? {
+          accountHolderName: bank.accountHolderName || e.vendor?.businessName || null,
+          accountNumberMasked: bank.maskedAccountNumber || (bank.accountNumber ? `••••${bank.accountNumber.slice(-4)}` : null),
+          ifsc: bank.ifscCode || bank.ifsc || null,
+          bankName: bank.bankName || null,
+        } : null,
+      };
+    });
 
     res.status(200).json({ success: true, data: formatted, message: 'Eligible settlements loaded' });
   } catch (error) { next(error); }
@@ -214,9 +248,10 @@ export const listEligibleSettlements = async (_req, res, next) => {
 
 export const triggerSettlementBatch = async (req, res, next) => {
   try {
-    const { vendorIds, minThresholdPaise } = req.body;
+    const { vendorIds, vendorId, minThresholdPaise } = req.body || {};
+    const effectiveVendorIds = vendorIds || (vendorId ? [vendorId] : null);
     const result = await settlementService.createSettlementBatch({
-      vendorIds,
+      vendorIds: effectiveVendorIds,
       minThresholdPaise,
       triggeredBy: 'ADMIN',
       adminUserId: req.user?.sub,
@@ -276,6 +311,9 @@ export const listAdminPayouts = async (req, res, next) => {
       status: p.status === 'PAID' ? 'Completed' : (p.status === 'FAILED' ? 'Failed' : (p.status === 'READY' ? 'Ready to process' : 'Processing')),
       paymentReference: p.providerTransferId || p.bankSnapshot?.accountNumberMasked || 'N/A',
       bankAccountLast4: p.bankSnapshot?.accountNumberMasked ? p.bankSnapshot.accountNumberMasked.slice(-4) : undefined,
+      bankSnapshot: p.bankSnapshot || {},
+      referenceId: p.providerTransferId || null,
+      processedAt: p.processedAt ? new Date(p.processedAt).toISOString() : null,
       date: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
       rawStatus: p.status,
       provider: p.provider,

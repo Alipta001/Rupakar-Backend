@@ -365,6 +365,14 @@ export class VendorLedgerService {
         }
       );
 
+      // If refunded prior to settlement, mark the original SALE_CAPTURE entry REVERSED
+      if (!isAlreadySettled) {
+        await VendorLedgerEntry.updateOne(
+          { vendorOrderId, transactionType: 'SALE_CAPTURE' },
+          { $set: { eligibilityStatus: 'REVERSED' } }
+        ).catch(() => null);
+      }
+
       return { created: true, skipped: false, refundAfterSettlement: isAlreadySettled };
     } catch (error) {
       if (error?.code === 11000) return { created: false, skipped: true };
