@@ -62,7 +62,7 @@ export class SettlementService {
   async balanceForVendor(vendorId) {
     const vId = new mongoose.Types.ObjectId(String(vendorId));
 
-    const [ledgerTotal, pending, eligible, paid, reserved] = await Promise.all([
+    const [ledgerTotal, pending, eligible, paid, reserved, onHold] = await Promise.all([
       VendorLedgerEntry.aggregate([
         { $match: { vendorId: vId, status: 'POSTED' } },
         { $group: { _id: null, amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
@@ -83,12 +83,19 @@ export class SettlementService {
         { $match: { vendorId: vId, status: { $in: ['CREATED', 'READY', 'REQUESTED', 'PROCESSING'] } } },
         { $group: { _id: null, amount: { $sum: '$requestedAmount' }, amountPaise: { $sum: '$amountPaise' } } },
       ]),
+      (mongoose.connection?.readyState === 1)
+        ? VendorLedgerEntry.aggregate([
+            { $match: { vendorId: vId, status: 'POSTED', eligibilityStatus: 'ON_HOLD' } },
+            { $group: { _id: null, amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
+          ])
+        : Promise.resolve([]),
     ]);
 
     const readiness = await this.readiness(vendorId);
     const eligibleAmountPaise = sum(eligible, 'amountPaise') || toPaise(sum(eligible, 'amount'));
     const settledAmountPaise = sum(paid, 'amountPaise') || toPaise(sum(paid, 'amount'));
     const reservedAmountPaise = sum(reserved, 'amountPaise') || toPaise(sum(reserved, 'amount'));
+    const onHoldAmountPaise = sum(onHold, 'amountPaise') || toPaise(sum(onHold, 'amount'));
     const availableAmountPaise = Math.max(0, eligibleAmountPaise - settledAmountPaise - reservedAmountPaise);
 
     return {
@@ -96,6 +103,8 @@ export class SettlementService {
       ledgerNetPaise: sum(ledgerTotal, 'amountPaise'),
       pendingAmount: toRupees(sum(pending, 'amountPaise')) || sum(pending, 'amount'),
       pendingAmountPaise: sum(pending, 'amountPaise'),
+      onHoldAmount: toRupees(onHoldAmountPaise),
+      onHoldAmountPaise,
       eligibleAmount: toRupees(eligibleAmountPaise),
       eligibleAmountPaise,
       settledAmount: toRupees(settledAmountPaise),

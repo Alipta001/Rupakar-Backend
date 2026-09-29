@@ -16,7 +16,15 @@ import { reconciliationService } from '../services/reconciliation.service.js';
 import { toRupees, toPaise } from '../utils/money.js';
 
 const approvedVendor = async (userId) => {
-  const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null, status: 'APPROVED' }).lean();
+  const filter = {
+    deletedAt: null,
+    status: 'APPROVED',
+    $or: [
+      { ownerUserId: userId },
+      ...(mongoose.isValidObjectId(userId) ? [{ ownerUserId: new mongoose.Types.ObjectId(String(userId)) }] : []),
+    ],
+  };
+  const vendor = await Vendor.findOne(filter).lean();
   if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can view financial records');
   return vendor;
 };
@@ -127,35 +135,42 @@ export const getAdminFinanceOverview = async (req, res, next) => {
         { $match: { status: 'POSTED', eligibilityStatus: 'ELIGIBLE' } },
         { $group: { _id: null, amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
       ]),
+      // On hold settlement
+      VendorLedgerEntry.aggregate([
+        { $match: { status: 'POSTED', eligibilityStatus: 'ON_HOLD' } },
+        { $group: { _id: null, amount: { $sum: '$netAmount' }, amountPaise: { $sum: '$netAmountPaise' } } },
+      ]),
     ]);
 
-    const grossSales = ordersAgg[0]?.grossSales ?? 0;
-    const deliveryRevenue = ordersAgg[0]?.deliveryRevenue ?? 0;
-    const commissionEarned = commissionAgg[0]?.commissionEarned ?? 0;
-    const vendorPayable = commissionAgg[0]?.vendorPayable ?? 0;
-    const refundsTotal = refundsAgg[0]?.totalAmount ?? 0;
-    const payoutsPaid = payoutsPaidAgg[0]?.totalAmount ?? 0;
-    const eligibleAmount = eligibleSettlementAgg[0]?.amount ?? 0;
-    const pendingAmount = pendingSettlementAgg[0]?.amount ?? 0;
+    const grossSales = ordersAgg?.[0]?.grossSales ?? 0;
+    const deliveryRevenue = ordersAgg?.[0]?.deliveryRevenue ?? 0;
+    const commissionEarned = commissionAgg?.[0]?.commissionEarned ?? 0;
+    const vendorPayable = commissionAgg?.[0]?.vendorPayable ?? 0;
+    const refundsTotal = refundsAgg?.[0]?.totalAmount ?? 0;
+    const payoutsPaid = payoutsPaidAgg?.[0]?.totalAmount ?? 0;
+    const eligibleAmount = eligibleSettlementAgg?.[0]?.amount ?? 0;
+    const pendingAmount = pendingSettlementAgg?.[0]?.amount ?? 0;
+    const onHoldAmount = onHoldSettlementAgg?.[0]?.amount ?? 0;
 
     const data = {
       grossSales,
-      customerPayments: paymentsCapturedAgg[0]?.totalAmount ?? 0,
-      customerPaymentCount: paymentsCapturedAgg[0]?.count ?? 0,
-      failedPayments: paymentsFailedAgg[0]?.totalAmount ?? 0,
-      failedPaymentCount: paymentsFailedAgg[0]?.count ?? 0,
+      customerPayments: paymentsCapturedAgg?.[0]?.totalAmount ?? 0,
+      customerPaymentCount: paymentsCapturedAgg?.[0]?.count ?? 0,
+      failedPayments: paymentsFailedAgg?.[0]?.totalAmount ?? 0,
+      failedPaymentCount: paymentsFailedAgg?.[0]?.count ?? 0,
       refundsTotal,
-      refundCount: refundsAgg[0]?.count ?? 0,
+      refundCount: refundsAgg?.[0]?.count ?? 0,
       commissionEarned,
       deliveryRevenue,
       vendorPayable,
       eligibleSettlements: eligibleAmount,
       pendingSettlements: pendingAmount,
+      onHoldSettlements: onHoldAmount,
       completedPayouts: payoutsPaid,
-      completedPayoutCount: payoutsPaidAgg[0]?.count ?? 0,
-      failedPayouts: payoutsFailedAgg[0]?.totalAmount ?? 0,
-      failedPayoutCount: payoutsFailedAgg[0]?.count ?? 0,
-      outstandingVendorBalance: Math.max(0, pendingAmount + eligibleAmount),
+      completedPayoutCount: payoutsPaidAgg?.[0]?.count ?? 0,
+      failedPayouts: payoutsFailedAgg?.[0]?.totalAmount ?? 0,
+      failedPayoutCount: payoutsFailedAgg?.[0]?.count ?? 0,
+      outstandingVendorBalance: Math.max(0, pendingAmount + eligibleAmount + onHoldAmount),
       currency: 'INR',
     };
 
@@ -195,6 +210,7 @@ export const listEligibleSettlements = async (_req, res, next) => {
           totalPayableRupees: { $sum: '$netAmount' },
           entryCount: { $sum: 1 },
           entryIds: { $push: '$_id' },
+          earliestEligibleAt: { $min: '$eligibleAt' },
         },
       },
       {
@@ -210,29 +226,37 @@ export const listEligibleSettlements = async (_req, res, next) => {
 
     // Fetch bank accounts for eligible vendors to facilitate manual transfer inspection
     let bankMap = new Map();
+    let readyPayoutMap = new Map();
     const isBankFindMocked = Boolean(VendorBankAccount.find?._isMockFunction || VendorBankAccount.find?.mock);
     if ((isDbConnected || isBankFindMocked) && Array.isArray(eligible) && eligible.length > 0) {
       try {
         const vendorIds = eligible.map((e) => e._id).filter(Boolean);
         if (vendorIds.length > 0) {
-          const bankAccounts = await VendorBankAccount.find({
-            vendorId: { $in: vendorIds },
-            isDeleted: false,
-          }).lean();
+          const [bankAccounts, readyPayouts] = await Promise.all([
+            VendorBankAccount.find({ vendorId: { $in: vendorIds }, isDeleted: false }).lean(),
+            VendorPayout.find({ vendorId: { $in: vendorIds }, status: { $in: ['READY', 'PROCESSING'] } }).sort({ createdAt: -1 }).lean(),
+          ]);
           bankMap = new Map((bankAccounts || []).map((b) => [String(b.vendorId), b]));
+          readyPayoutMap = new Map((readyPayouts || []).map((p) => [String(p.vendorId), p]));
         }
       } catch {}
     }
 
     const formatted = eligible.map((e) => {
       const bank = bankMap.get(String(e._id));
+      const readyPayout = readyPayoutMap.get(String(e._id));
       return {
         vendorId: e._id,
         vendorName: e.vendor?.businessName || e.vendor?.storeName || 'Vendor',
         eligibleAmount: toRupees(e.totalPayablePaise) || e.totalPayableRupees,
         eligibleAmountPaise: e.totalPayablePaise,
+        ordersCount: e.entryCount,
         entryCount: e.entryCount,
         entryIds: e.entryIds,
+        eligibleSince: e.earliestEligibleAt ? new Date(e.earliestEligibleAt).toISOString() : new Date().toISOString(),
+        status: readyPayout ? readyPayout.status : 'READY',
+        existingPayoutId: readyPayout ? String(readyPayout._id) : null,
+        existingPayoutNumber: readyPayout ? readyPayout.payoutNumber : null,
         bankDetails: bank ? {
           accountHolderName: bank.accountHolderName || e.vendor?.businessName || null,
           accountNumberMasked: bank.maskedAccountNumber || (bank.accountNumber ? `••••${bank.accountNumber.slice(-4)}` : null),
@@ -243,6 +267,119 @@ export const listEligibleSettlements = async (_req, res, next) => {
     });
 
     res.status(200).json({ success: true, data: formatted, message: 'Eligible settlements loaded' });
+  } catch (error) { next(error); }
+};
+
+export const listSettlementReadinessOverview = async (_req, res, next) => {
+  try {
+    const isDbConnected = mongoose.connection?.readyState === 1;
+
+    // Aggregate all active unsettled entries by vendor and status
+    const unSettled = await VendorLedgerEntry.aggregate([
+      { $match: { status: 'POSTED', eligibilityStatus: { $in: ['PENDING', 'ON_HOLD', 'ELIGIBLE'] } } },
+      {
+        $group: {
+          _id: { vendorId: '$vendorId', status: '$eligibilityStatus' },
+          totalPaise: { $sum: '$netAmountPaise' },
+          totalRupees: { $sum: '$netAmount' },
+          count: { $sum: 1 },
+          holdReasons: { $addToSet: '$holdReason' },
+          earliestEligibleAt: { $min: '$eligibleAt' },
+        },
+      },
+    ]);
+
+    // Group by vendorId
+    const vendorMap = new Map();
+    for (const row of unSettled) {
+      const vId = String(row._id.vendorId);
+      if (!vendorMap.has(vId)) {
+        vendorMap.set(vId, {
+          vendorId: row._id.vendorId,
+          eligibleAmount: 0,
+          pendingAmount: 0,
+          onHoldAmount: 0,
+          totalPayable: 0,
+          ordersCount: 0,
+          holdReasons: [],
+          earliestEligibleAt: null,
+        });
+      }
+      const item = vendorMap.get(vId);
+      item.ordersCount += row.count;
+      item.totalPayable += toRupees(row.totalPaise) || row.totalRupees;
+      if (row._id.status === 'ELIGIBLE') {
+        item.eligibleAmount += toRupees(row.totalPaise) || row.totalRupees;
+        if (row.earliestEligibleAt) item.earliestEligibleAt = row.earliestEligibleAt;
+      } else if (row._id.status === 'PENDING') {
+        item.pendingAmount += toRupees(row.totalPaise) || row.totalRupees;
+      } else if (row._id.status === 'ON_HOLD') {
+        item.onHoldAmount += toRupees(row.totalPaise) || row.totalRupees;
+        item.holdReasons.push(...(row.holdReasons || []).filter(Boolean));
+      }
+    }
+
+    const vendorIds = Array.from(vendorMap.keys()).map((id) => new mongoose.Types.ObjectId(id));
+    const [vendors, bankAccounts] = await Promise.all([
+      Vendor.find({ _id: { $in: vendorIds } }).select('businessName storeName status verificationStatus').lean(),
+      VendorBankAccount.find({ vendorId: { $in: vendorIds }, isDeleted: false }).lean(),
+    ]);
+
+    const vDocMap = new Map(vendors.map((v) => [String(v._id), v]));
+    const bDocMap = new Map(bankAccounts.map((b) => [String(b.vendorId), b]));
+
+    const result = Array.from(vendorMap.values()).map((item) => {
+      const v = vDocMap.get(String(item.vendorId));
+      const b = bDocMap.get(String(item.vendorId));
+      const hasBank = Boolean(b && (b.accountNumber || b.maskedAccountNumber));
+      const isApproved = v?.status === 'APPROVED';
+      const isVerified = v?.verificationStatus === 'VERIFIED';
+
+      let status = 'READY';
+      let ineligibilityReason = null;
+
+      if (!isApproved) {
+        status = 'NOT_APPROVED';
+        ineligibilityReason = 'Vendor account not yet approved';
+      } else if (!isVerified) {
+        status = 'UNVERIFIED_VENDOR';
+        ineligibilityReason = 'Vendor identity verification pending';
+      } else if (!hasBank) {
+        status = 'NO_BANK_ACCOUNT';
+        ineligibilityReason = 'No registered bank account on file';
+      } else if (item.onHoldAmount > 0 && item.eligibleAmount === 0) {
+        status = 'ON_HOLD';
+        ineligibilityReason = item.holdReasons.length > 0
+          ? `Dispute or return hold: ${item.holdReasons.join(', ')}`
+          : 'Settlement placed on administrative hold';
+      } else if (item.eligibleAmount === 0 && item.pendingAmount > 0) {
+        status = 'PENDING';
+        ineligibilityReason = 'Delivered orders within 7-day return protection period';
+      } else if (item.eligibleAmount > 0) {
+        status = 'READY';
+      }
+
+      return {
+        vendorId: item.vendorId,
+        vendorName: v?.businessName || v?.storeName || 'Vendor Partner',
+        eligibleAmount: item.eligibleAmount,
+        pendingAmount: item.pendingAmount,
+        onHoldAmount: item.onHoldAmount,
+        totalPayable: item.totalPayable,
+        ordersCount: item.ordersCount,
+        status,
+        ineligibilityReason,
+        eligibleSince: item.earliestEligibleAt ? new Date(item.earliestEligibleAt).toISOString() : null,
+        bankDetails: b ? {
+          accountHolderName: b.accountHolderName || v?.businessName || null,
+          accountNumberMasked: b.maskedAccountNumber || (b.accountNumber ? `••••${b.accountNumber.slice(-4)}` : null),
+          ifsc: b.ifscCode || b.ifsc || null,
+          bankName: b.bankName || null,
+        } : null,
+      };
+    });
+
+    res.status(200).json({ success: true, data: result, message: 'Settlement readiness overview loaded' });
   } catch (error) { next(error); }
 };
 

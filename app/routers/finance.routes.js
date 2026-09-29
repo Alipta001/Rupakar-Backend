@@ -10,6 +10,7 @@ import {
   getFinancialSettings,
   updateFinancialSettings,
   listEligibleSettlements,
+  listSettlementReadinessOverview,
   triggerSettlementBatch,
   listSettlementBatches,
   getSettlementBatchDetail,
@@ -43,6 +44,7 @@ router.get('/admin/finance/settings', getFinancialSettings);
 router.put('/admin/finance/settings', updateFinancialSettings);
 
 router.get('/admin/finance/settlements/eligible', listEligibleSettlements);
+router.get('/admin/finance/settlements/readiness-overview', listSettlementReadinessOverview);
 router.post('/admin/finance/settlements/batch', triggerSettlementBatch);
 router.get('/admin/finance/settlements/batches', listSettlementBatches);
 router.get('/admin/finance/settlements/batches/:id', getSettlementBatchDetail);
