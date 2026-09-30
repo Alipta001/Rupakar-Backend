@@ -6,7 +6,11 @@ import { auditService } from '../app/services/audit.service.js';
 import { VendorPayout } from '../app/models/vendor-payout.model.js';
 import { VendorLedgerEntry } from '../app/models/vendor-ledger-entry.model.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
+import { Order } from '../app/models/order.model.js';
+import { Payment } from '../app/models/payment.model.js';
+import { Refund } from '../app/models/refund.model.js';
 import { AppError } from '../app/utils/app-error.js';
+import { getAdminFinanceOverview } from '../app/controllers/finance.controller.js';
 
 const id = () => new mongoose.Types.ObjectId();
 const chain = (value) => ({
@@ -313,5 +317,153 @@ describe('MANUAL PAYOUT CONFIRMATION & SETTLEMENT FLOW AUDIT (15-POINT VERIFICAT
   it('15: Confirms RAZORPAY_ROUTE_ENABLED is false and provider is unconfigured', () => {
     expect(process.env.RAZORPAY_ROUTE_ENABLED).toBe('false');
     expect(razorpayRouteProvider.isConfigured()).toBe(false);
+  });
+
+  describe('Pending & Settlement Aggregation Audit', () => {
+    it('aggregates multiple vendors correctly while excluding PAID and SETTLED records', async () => {
+      const vendorA = id();
+      const vendorB = id();
+
+      jest.spyOn(Order, 'aggregate').mockResolvedValue([{ grossSales: 6, deliveryRevenue: 0, orderCount: 2 }]);
+      jest.spyOn(Payment, 'aggregate').mockResolvedValue([{ totalAmount: 6, count: 2 }]);
+      jest.spyOn(Refund, 'aggregate').mockResolvedValue([]);
+
+      // Mock VendorLedgerEntry aggregate calls
+      jest.spyOn(VendorLedgerEntry, 'aggregate').mockImplementation(async (pipeline) => {
+        const match = pipeline[0]?.$match || {};
+        if (match.eligibilityStatus === 'PENDING') {
+          // Multiple vendors: Vendor A has 200 paise, Vendor B has 200 paise
+          return [
+            { _id: vendorA, amount: 2, amountPaise: 200 },
+            { _id: vendorB, amount: 2, amountPaise: 200 },
+          ];
+        }
+        if (match.eligibilityStatus === 'ELIGIBLE') {
+          return [];
+        }
+        if (match.eligibilityStatus === 'ON_HOLD') {
+          return [];
+        }
+        if (match.transactionType === 'SALE_CAPTURE') {
+          return [{ _id: null, commissionEarned: 0, vendorPayable: 6 }];
+        }
+        return [];
+      });
+
+      // Mock VendorPayout aggregate for PAID status
+      jest.spyOn(VendorPayout, 'aggregate').mockImplementation(async (pipeline) => {
+        const match = pipeline[0]?.$match || {};
+        if (match.status === 'PAID') {
+          return [{ _id: null, totalAmount: 2, totalPaise: 200, count: 2 }];
+        }
+        return [];
+      });
+
+      const resJson = jest.fn();
+      const res = { status: jest.fn().mockReturnThis(), json: resJson };
+      const next = jest.fn();
+
+      await getAdminFinanceOverview({}, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      const data = resJson.mock.calls[0][0].data;
+
+      // Multiple vendors aggregate correctly: 2 + 2 = 4 across 2 vendors
+      expect(data.pendingSettlements.amount).toBe(4);
+      expect(data.pendingSettlements.vendorCount).toBe(2);
+
+      // PAID payouts never count as unpaid/pending
+      expect(data.completedPayouts.amount).toBe(2);
+      expect(data.completedPayouts.count).toBe(2);
+
+      // Outstanding balance is exactly sum of pending + eligible + onHold
+      expect(data.outstandingVendorBalance).toBe(4);
+    });
+
+    it('ensures individual vendor with ₹4 total / ₹2 paid reflects ₹2 pending', async () => {
+      const vendorId = id();
+
+      jest.spyOn(Order, 'aggregate').mockResolvedValue([{ grossSales: 4, deliveryRevenue: 0, orderCount: 2 }]);
+      jest.spyOn(Payment, 'aggregate').mockResolvedValue([{ totalAmount: 4, count: 2 }]);
+      jest.spyOn(Refund, 'aggregate').mockResolvedValue([]);
+
+      // Vendor has:
+      // Entry 1: 200 paise (PENDING)
+      // Entry 2: 200 paise (SETTLED)
+      // Payouts: 200 paise (PAID)
+      jest.spyOn(VendorLedgerEntry, 'aggregate').mockImplementation(async (pipeline) => {
+        const match = pipeline[0]?.$match || {};
+        if (match.eligibilityStatus === 'PENDING') {
+          return [{ _id: vendorId, amount: 2, amountPaise: 200 }];
+        }
+        if (match.transactionType === 'SALE_CAPTURE') {
+          return [{ _id: null, commissionEarned: 0, vendorPayable: 4 }];
+        }
+        return [];
+      });
+
+      jest.spyOn(VendorPayout, 'aggregate').mockImplementation(async (pipeline) => {
+        const match = pipeline[0]?.$match || {};
+        if (match.status === 'PAID') {
+          return [{ _id: null, totalAmount: 2, totalPaise: 200, count: 2 }];
+        }
+        return [];
+      });
+
+      const resJson = jest.fn();
+      const res = { status: jest.fn().mockReturnThis(), json: resJson };
+      const next = jest.fn();
+
+      await getAdminFinanceOverview({}, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      const data = resJson.mock.calls[0][0].data;
+      expect(data.pendingSettlements.amount).toBe(2);
+      expect(data.pendingSettlements.vendorCount).toBe(1);
+      expect(data.completedPayouts.amount).toBe(2);
+    });
+
+    it('fully paid vendor has ₹0 remaining and partial payout counts only remaining amount', async () => {
+      const payoutId = id();
+      const vendorId = id();
+      const entryId = id();
+
+      const mockEntry = {
+        _id: entryId,
+        netAmountPaise: 200,
+        netAmount: 2,
+        eligibilityStatus: 'ELIGIBLE',
+      };
+
+      const mockPayout = {
+        _id: payoutId,
+        vendorId,
+        amountPaise: 200,
+        status: 'READY',
+        ledgerEntryIds: [entryId],
+        save: jest.fn().mockResolvedValue(true),
+      };
+
+      jest.spyOn(VendorPayout, 'findById').mockResolvedValue(mockPayout);
+      jest.spyOn(VendorLedgerEntry, 'find').mockReturnValue({
+        sort: jest.fn().mockResolvedValue([mockEntry]),
+      });
+      jest.spyOn(VendorLedgerEntry, 'updateMany').mockResolvedValue({ modifiedCount: 1 });
+      jest.spyOn(VendorPayout, 'create').mockResolvedValue({
+        _id: id(),
+        amountPaise: 100,
+        save: jest.fn().mockResolvedValue(true),
+      });
+
+      // Partial payout of 100 paise out of 200 paise
+      const partialResult = await settlementService.confirmManualPayout(payoutId, {
+        referenceId: 'UTR-PARTIAL-VERIFY',
+        amount: 1,
+        adminUserId: id(),
+      });
+
+      expect(partialResult.isPartial).toBe(true);
+      expect(partialResult.metadata.remainingAmount).toBe(1);
+    });
   });
 });

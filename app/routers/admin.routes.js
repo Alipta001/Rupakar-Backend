@@ -5,7 +5,7 @@ import { listAdminShipments, getAdminShipment, updateAdminShipmentStatus } from 
 import { listAdminReturns, getAdminReturn, approveReturn, rejectReturn } from '../controllers/return.controller.js';
 import { listAdminInvoices, getAdminInvoiceDetail } from '../controllers/invoice.controller.js';
 import { listAdminNotifications } from '../controllers/notification.controller.js';
-import { listAdminSupportTickets, updateAdminSupportTicket } from '../controllers/support.controller.js';
+import { listAdminSupportTickets, getAdminSupportTicket, updateAdminSupportTicket } from '../controllers/support.controller.js';
 import {
   getAdminDashboardMetrics,
   listAdminUsers,
@@ -88,6 +88,7 @@ router.get('/invoices', listAdminInvoices);
 router.get('/invoices/:id', getAdminInvoiceDetail);
 router.get('/notifications', listAdminNotifications);
 router.get('/support/tickets', listAdminSupportTickets);
+router.get('/support/tickets/:ticketId', getAdminSupportTicket);
 router.patch('/support/tickets/:ticketId', updateAdminSupportTicket);
 
 export default router;

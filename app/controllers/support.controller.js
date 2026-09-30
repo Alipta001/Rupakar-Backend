@@ -1,5 +1,5 @@
 import { supportTicketService } from '../services/support-ticket.service.js';
-import { createSupportTicketSchema, supportMessageSchema, supportStatusSchema, supportTicketQuerySchema } from '../validators/support.validator.js';
+import { createSupportTicketSchema, supportMessageSchema, supportPrioritySchema, supportStatusSchema, supportTicketQuerySchema } from '../validators/support.validator.js';
 import { AppError } from '../utils/app-error.js';
 
 export const createSupportTicket = async (req, res, next) => {
@@ -40,12 +40,23 @@ export const listAdminSupportTickets = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+export const getAdminSupportTicket = async (req, res, next) => {
+  try {
+    const ticket = await supportTicketService.adminGet(req.params.ticketId);
+    res.status(200).json({ success: true, data: ticket, message: 'Support ticket loaded', requestId: String(req.headers['x-request-id'] ?? '') });
+  } catch (error) { next(error); }
+};
+
 export const updateAdminSupportTicket = async (req, res, next) => {
   try {
     const status = req.body?.status ? supportStatusSchema.parse({ status: req.body.status }).status : undefined;
     const message = req.body?.message ? supportMessageSchema.parse({ message: req.body.message }).message : undefined;
-    if (!status && !message) throw new AppError(400, 'BAD_REQUEST', 'A status or message is required');
-    const ticket = await supportTicketService.adminUpdate(req.user.sub, req.params.ticketId, { status, message });
+    const priority = req.body?.priority ? supportPrioritySchema.parse({ priority: req.body.priority }).priority : undefined;
+    const assignedTo = req.body?.assignedTo !== undefined ? req.body.assignedTo : undefined;
+    if (!status && !message && !priority && assignedTo === undefined) {
+      throw new AppError(400, 'BAD_REQUEST', 'A status, message, priority, or assignedTo is required');
+    }
+    const ticket = await supportTicketService.adminUpdate(req.user.sub, req.params.ticketId, { status, message, priority, assignedTo });
     res.status(200).json({ success: true, data: ticket, message: 'Support ticket updated', requestId: String(req.headers['x-request-id'] ?? '') });
   } catch (error) { next(error); }
 };

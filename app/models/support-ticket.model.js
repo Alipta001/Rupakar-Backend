@@ -17,6 +17,8 @@ const supportTicketSchema = new Schema({
   orderId: { type: Schema.Types.ObjectId, ref: 'Order', default: null },
   productId: { type: Schema.Types.ObjectId, ref: 'Product', default: null },
   status: { type: String, enum: ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'], default: 'OPEN', index: true },
+  priority: { type: String, enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], default: 'MEDIUM', index: true },
+  assignedTo: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   messages: { type: [supportMessageSchema], default: [] },
 }, { timestamps: true });
 

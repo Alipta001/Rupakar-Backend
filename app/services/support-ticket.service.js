@@ -53,21 +53,50 @@ export const supportTicketService = {
     return ticket.toObject();
   },
 
-  async adminList({ page, limit, status }) {
-    const filter = status ? { status } : {};
+  async adminList({ page = 1, limit = 20, status, search, category, priority }) {
+    const filter = {};
+    if (status) filter.status = status;
+    if (category) filter.category = category;
+    if (priority) filter.priority = priority;
+    if (search) {
+      filter.$or = [
+        { subject: { $regex: search, $options: 'i' } },
+        { category: { $regex: search, $options: 'i' } },
+      ];
+    }
     const [items, total] = await Promise.all([
-      SupportTicket.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      SupportTicket.find(filter)
+        .populate('userId', 'fullName name email')
+        .populate('vendorId', 'businessName storeName ownerUserId storeEmail')
+        .populate('assignedTo', 'fullName name email')
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
       SupportTicket.countDocuments(filter),
     ]);
     return { items, page, limit, total };
   },
 
-  async adminUpdate(adminUserId, ticketId, { message, status }) {
+  async adminGet(ticketId) {
+    const ticket = await SupportTicket.findById(ticketId)
+      .populate('userId', 'fullName name email')
+      .populate('vendorId', 'businessName storeName ownerUserId storeEmail')
+      .populate('assignedTo', 'fullName name email')
+      .populate('messages.senderUserId', 'fullName name email')
+      .lean();
+    if (!ticket) throw new AppError(404, 'SUPPORT_TICKET_NOT_FOUND', 'Support ticket not found');
+    return ticket;
+  },
+
+  async adminUpdate(adminUserId, ticketId, { message, status, priority, assignedTo }) {
     const ticket = await SupportTicket.findById(ticketId);
     if (!ticket) throw new AppError(404, 'SUPPORT_TICKET_NOT_FOUND', 'Support ticket not found');
     if (message) ticket.messages.push({ senderUserId: adminUserId, senderRole: 'admin', message });
     if (status) ticket.status = status;
+    if (priority) ticket.priority = priority;
+    if (assignedTo !== undefined) ticket.assignedTo = assignedTo;
     await ticket.save();
-    return ticket.toObject();
+    return await this.adminGet(ticketId);
   },
 };

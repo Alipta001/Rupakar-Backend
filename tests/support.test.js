@@ -23,4 +23,14 @@ describe('Seller support endpoints', () => {
     expect(detailResponse.status).toBe(401);
     expect(messageResponse.status).toBe(401);
   });
+
+  it('requires admin role for admin support listing, detail, and updates', async () => {
+    const listRes = await request(app).get('/api/v1/admin/support/tickets');
+    const detailRes = await request(app).get('/api/v1/admin/support/tickets/507f1f77bcf86cd799439011');
+    const updateRes = await request(app).patch('/api/v1/admin/support/tickets/507f1f77bcf86cd799439011').send({ status: 'RESOLVED' });
+
+    expect(listRes.status).toBe(401);
+    expect(detailRes.status).toBe(401);
+    expect(updateRes.status).toBe(401);
+  });
 });
