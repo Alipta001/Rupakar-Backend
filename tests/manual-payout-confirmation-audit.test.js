@@ -51,25 +51,51 @@ describe('MANUAL PAYOUT CONFIRMATION & SETTLEMENT FLOW AUDIT (15-POINT VERIFICAT
     ).rejects.toThrow('Cannot manually confirm payout in status ON_HOLD');
   });
 
-  // Item 3: Confirmed amount must exactly match the payout amount
-  it('3: Validates that confirmed amount strictly matches payout amount (rejects mismatch)', async () => {
+  // Item 3: Validates confirmed amount (rejects overpayment, supports partial payment)
+  it('3: Validates that confirmed amount rejects overpayment and zero/negative amounts, but supports partial payments', async () => {
     const payoutId = id();
+    const vendorId = id();
     const mockPayout = {
       _id: payoutId,
+      vendorId,
       status: 'READY',
       amountPaise: 50000, // ₹500.00
+      requestedAmount: 500,
+      ledgerEntryIds: [id(), id()],
       save: jest.fn().mockResolvedValue(true),
     };
     jest.spyOn(VendorPayout, 'findById').mockResolvedValue(mockPayout);
+    jest.spyOn(VendorLedgerEntry, 'find').mockReturnValue(chain([]));
+    jest.spyOn(VendorLedgerEntry, 'updateMany').mockResolvedValue({ modifiedCount: 1 });
+    jest.spyOn(VendorPayout, 'create').mockResolvedValue({ _id: id(), status: 'READY', amountPaise: 20000 });
 
-    // Mismatched amount: ₹450 instead of ₹500
+    // Overpayment: ₹550 instead of ₹500
     await expect(
       settlementService.confirmManualPayout(payoutId, {
         referenceId: 'UTR12345678',
-        amount: 450,
+        amount: 550,
         adminUserId: id(),
       })
-    ).rejects.toThrow('Confirmed amount (450) does not match payout amount (500)');
+    ).rejects.toThrow('Confirmed amount (550) exceeds payout payable amount (500)');
+
+    // Zero or negative
+    await expect(
+      settlementService.confirmManualPayout(payoutId, {
+        referenceId: 'UTR12345678',
+        amount: 0,
+        adminUserId: id(),
+      })
+    ).rejects.toThrow('Payout amount must be greater than zero');
+
+    // Partial payment: ₹300 out of ₹500 succeeds
+    const partialResult = await settlementService.confirmManualPayout(payoutId, {
+      referenceId: 'UTR-PARTIAL-123',
+      amount: 300,
+      adminUserId: id(),
+    });
+    expect(partialResult.status).toBe('PAID');
+    expect(partialResult.amountPaise).toBe(30000);
+    expect(partialResult.remainingPayout).toBeDefined();
   });
 
   // Item 4: Bank/reference number is required

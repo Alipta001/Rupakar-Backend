@@ -118,12 +118,15 @@ export class VendorLedgerService {
         }
         const categoryId = product?.categoryId || null;
 
+        const unitPrice = item.price !== undefined ? Number(item.price) : (item.quantity ? Number(item.lineTotal) / Number(item.quantity) : Number(item.lineTotal));
+
         let resolved;
         if (Array.isArray(preloadedConfigs)) {
           resolved = commissionService.resolveFromBatch({
             productId: item.productId,
             vendorId: vendorOrder.vendorId,
             categoryId,
+            price: unitPrice,
             configs: preloadedConfigs,
           });
         } else {
@@ -131,23 +134,34 @@ export class VendorLedgerService {
             productId: item.productId,
             vendorId: vendorOrder.vendorId,
             categoryId,
+            price: unitPrice,
             at: payment.paidAt || new Date(),
           });
         }
 
         const itemGrossPaise = toPaise(item.lineTotal);
-        const itemCommissionPaise = calcPercentagePaise(itemGrossPaise, resolved.rate);
+        let itemCommissionPaise = 0;
+        if (resolved?.commissionType === 'FIXED') {
+          const fixedPerUnitPaise = resolved.fixedAmountPaise || toPaise(resolved.fixedAmount || 0);
+          itemCommissionPaise = Math.min(itemGrossPaise, fixedPerUnitPaise * (item.quantity || 1));
+        } else {
+          itemCommissionPaise = calcPercentagePaise(itemGrossPaise, resolved?.rate || 0);
+        }
         vendorSubtotalPaise += itemGrossPaise;
+
+        const effectiveRate = resolved?.commissionType === 'FIXED'
+          ? (itemGrossPaise > 0 ? Math.round((itemCommissionPaise / itemGrossPaise) * 10000) / 100 : 0)
+          : (resolved?.rate || 0);
 
         lines.push({
           productId: item.productId,
           categoryId: categoryId || null,
           grossAmountPaise: itemGrossPaise,
           grossAmount: toRupees(itemGrossPaise),
-          rate: resolved.rate,
+          rate: effectiveRate,
           commissionAmountPaise: itemCommissionPaise,
           commissionAmount: toRupees(itemCommissionPaise),
-          source: resolved.source,
+          source: resolved?.source || 'DEFAULT',
         });
       }
 

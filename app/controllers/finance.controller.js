@@ -231,17 +231,23 @@ export const listEligibleSettlements = async (_req, res, next) => {
     // Fetch bank accounts for eligible vendors to facilitate manual transfer inspection
     let bankMap = new Map();
     let readyPayoutMap = new Map();
+    let paidPayoutMap = new Map();
     const isBankFindMocked = Boolean(VendorBankAccount.find?._isMockFunction || VendorBankAccount.find?.mock);
     if ((isDbConnected || isBankFindMocked) && Array.isArray(eligible) && eligible.length > 0) {
       try {
         const vendorIds = eligible.map((e) => e._id).filter(Boolean);
         if (vendorIds.length > 0) {
-          const [bankAccounts, readyPayouts] = await Promise.all([
+          const [bankAccounts, readyPayouts, paidPayouts] = await Promise.all([
             VendorBankAccount.find({ vendorId: { $in: vendorIds }, isDeleted: false }).lean(),
             VendorPayout.find({ vendorId: { $in: vendorIds }, status: { $in: ['READY', 'PROCESSING'] } }).sort({ createdAt: -1 }).lean(),
+            VendorPayout.aggregate([
+              { $match: { vendorId: { $in: vendorIds }, status: 'PAID' } },
+              { $group: { _id: '$vendorId', totalPaise: { $sum: '$amountPaise' }, totalAmount: { $sum: '$requestedAmount' } } },
+            ]),
           ]);
           bankMap = new Map((bankAccounts || []).map((b) => [String(b.vendorId), b]));
           readyPayoutMap = new Map((readyPayouts || []).map((p) => [String(p.vendorId), p]));
+          paidPayoutMap = new Map((paidPayouts || []).map((p) => [String(p._id), p.totalPaise || toPaise(p.totalAmount || 0)]));
         }
       } catch {}
     }
@@ -249,11 +255,21 @@ export const listEligibleSettlements = async (_req, res, next) => {
     const formatted = eligible.map((e) => {
       const bank = bankMap.get(String(e._id));
       const readyPayout = readyPayoutMap.get(String(e._id));
+      const alreadyPaidPaise = paidPayoutMap.get(String(e._id)) || 0;
+      const remainingPaise = readyPayout?.amountPaise ?? e.totalPayablePaise;
+      const totalEarnedPaise = remainingPaise + alreadyPaidPaise;
+
       return {
         vendorId: e._id,
         vendorName: e.vendor?.businessName || e.vendor?.storeName || 'Vendor',
-        eligibleAmount: toRupees(e.totalPayablePaise) || e.totalPayableRupees,
-        eligibleAmountPaise: e.totalPayablePaise,
+        eligibleAmount: toRupees(remainingPaise),
+        eligibleAmountPaise: remainingPaise,
+        alreadyPaidAmount: toRupees(alreadyPaidPaise),
+        alreadyPaidAmountPaise: alreadyPaidPaise,
+        totalPayable: toRupees(totalEarnedPaise),
+        totalPayablePaise: totalEarnedPaise,
+        remainingAmount: toRupees(remainingPaise),
+        remainingAmountPaise: remainingPaise,
         ordersCount: e.entryCount,
         entryCount: e.entryCount,
         entryIds: e.entryIds,
@@ -484,14 +500,33 @@ export const retryPayout = async (req, res, next) => {
 
 export const confirmManualPayout = async (req, res, next) => {
   try {
-    const { referenceId, notes, amount, confirmedAmount } = req.body || {};
-    const data = await settlementService.confirmManualPayout(req.params.id, {
+    const { referenceId, notes, amount, confirmedAmount, paymentDate } = req.body || {};
+    const result = await settlementService.confirmManualPayout(req.params.id, {
       referenceId,
       notes,
       amount: amount ?? confirmedAmount,
       adminUserId: req.user?.sub,
+      paymentDate,
     });
-    res.status(200).json({ success: true, data, message: 'Manual payout confirmed' });
+    const { payout, isPartial, remainingPayout } = result || {};
+    const actualPayout = payout || result;
+    res.status(200).json({
+      success: true,
+      data: {
+        payoutId: actualPayout._id,
+        payoutNumber: actualPayout.payoutNumber,
+        status: actualPayout.status,
+        amount: actualPayout.requestedAmount,
+        amountPaise: actualPayout.amountPaise,
+        referenceId: actualPayout.providerTransferId,
+        isPartial: Boolean(isPartial),
+        remainingAmount: isPartial ? remainingPayout?.requestedAmount : 0,
+        remainingPayoutId: isPartial ? remainingPayout?._id : null,
+      },
+      message: isPartial
+        ? `Partial manual payment of ₹${actualPayout.requestedAmount} confirmed. Remaining balance: ₹${remainingPayout?.requestedAmount}.`
+        : `Manual payment of ₹${actualPayout.requestedAmount} confirmed.`,
+    });
   } catch (error) { next(error); }
 };
 
@@ -571,7 +606,12 @@ export const createCommissionConfig = async (req, res, next) => {
   try {
     const payload = {
       scope: req.body.scope,
-      rate: Number(req.body.rate),
+      commissionType: req.body.commissionType || 'PERCENTAGE',
+      rate: req.body.rate !== undefined ? Number(req.body.rate) : 0,
+      fixedAmount: req.body.fixedAmount !== undefined ? Number(req.body.fixedAmount) : 0,
+      minPrice: req.body.minPrice !== undefined && req.body.minPrice !== '' ? Number(req.body.minPrice) : 0,
+      maxPrice: req.body.maxPrice !== undefined && req.body.maxPrice !== '' && req.body.maxPrice !== null ? Number(req.body.maxPrice) : null,
+      description: req.body.description || '',
       productId: req.body.productId || null,
       vendorId: req.body.vendorId || null,
       categoryId: req.body.categoryId || null,
@@ -590,8 +630,33 @@ export const listCommissionConfigs = async (_req, res, next) => {
       .populate('productId', 'title')
       .populate('vendorId', 'businessName storeName')
       .populate('categoryId', 'name')
-      .sort({ scope: 1, createdAt: -1 })
+      .sort({ scope: 1, minPrice: 1, createdAt: -1 })
       .lean();
     res.status(200).json({ success: true, data: configs, message: 'Commission configurations loaded' });
   } catch (error) { next(error); }
 };
+
+export const updateCommissionConfig = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const config = await commissionService.update(id, req.body);
+    res.status(200).json({ success: true, data: config, message: 'Commission configuration updated' });
+  } catch (error) { next(error); }
+};
+
+export const toggleCommissionConfigStatus = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const config = await commissionService.toggleStatus(id);
+    res.status(200).json({ success: true, data: config, message: `Commission configuration ${config.active ? 'activated' : 'deactivated'}` });
+  } catch (error) { next(error); }
+};
+
+export const deleteCommissionConfig = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await commissionService.delete(id);
+    res.status(200).json({ success: true, message: 'Commission configuration deleted' });
+  } catch (error) { next(error); }
+};
+

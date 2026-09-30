@@ -547,7 +547,7 @@ export class SettlementService {
    * Enforces admin authorization, reference number requirement, amount match,
    * eligibility verification, duplicate prevention, and immutable audit logging.
    */
-  async confirmManualPayout(payoutId, { referenceId, notes = '', adminUserId = null, amount = null }) {
+  async confirmManualPayout(payoutId, { referenceId, notes = '', adminUserId = null, amount = null, paymentDate = null }) {
     if (!mongoose.isValidObjectId(payoutId)) {
       throw new AppError(400, 'INVALID_PAYOUT_ID', 'Invalid payout ID');
     }
@@ -571,14 +571,18 @@ export class SettlementService {
       );
     }
 
-    // Exact amount match verification if amount was specified
+    // Validate confirmed amount in paise
+    let confirmedPaise = payout.amountPaise;
     if (amount !== undefined && amount !== null && amount !== '') {
-      const confirmedPaise = toPaise(amount);
-      if (confirmedPaise !== payout.amountPaise) {
+      confirmedPaise = toPaise(amount);
+      if (confirmedPaise <= 0) {
+        throw new AppError(400, 'INVALID_AMOUNT', 'Payout amount must be greater than zero');
+      }
+      if (confirmedPaise > payout.amountPaise) {
         throw new AppError(
           400,
-          'AMOUNT_MISMATCH',
-          `Confirmed amount (${toRupees(confirmedPaise)}) does not match payout amount (${toRupees(payout.amountPaise)})`
+          'AMOUNT_EXCEEDS_PAYABLE',
+          `Confirmed amount (${toRupees(confirmedPaise)}) exceeds payout payable amount (${toRupees(payout.amountPaise)})`
         );
       }
     }
@@ -626,54 +630,145 @@ export class SettlementService {
       }
     }
 
-    payout.status = 'PAID';
-    payout.provider = 'MANUAL_BANK_TRANSFER';
-    payout.providerTransferId = trimmedReference;
-    payout.processedAt = new Date();
-    payout.metadata = {
-      ...(payout.metadata || {}),
-      manualConfirmationNotes: notes || '',
-      confirmedBy: adminUserId,
-      confirmedAt: new Date().toISOString(),
-    };
-    await payout.save();
+    const isPartial = confirmedPaise < payout.amountPaise;
+    const remainingPaise = payout.amountPaise - confirmedPaise;
+    const paymentTimestamp = paymentDate ? new Date(paymentDate) : new Date();
 
-    // Transition linked ledger entries to SETTLED
-    if (Array.isArray(payout.ledgerEntryIds) && payout.ledgerEntryIds.length > 0) {
-      await VendorLedgerEntry.updateMany(
-        { _id: { $in: payout.ledgerEntryIds } },
-        { $set: { eligibilityStatus: 'SETTLED', settledAt: new Date(), payoutId: payout._id } }
-      );
+    let remainingPayout = null;
 
-      // Transition linked vendor orders to SETTLED
-      if (isDbConnected || Boolean(VendorOrder.updateMany?._isMockFunction || VendorOrder.updateMany?.mock)) {
+    if (isPartial) {
+      // Create distinct payout record for the remaining payable amount
+      const remainingPayoutNumber = `PO-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString(36).slice(-4).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+      const remainingIdempotencyKey = `payout:${payout._id}:rem:${Date.now().toString(36)}`;
+      
+      remainingPayout = await VendorPayout.create({
+        payoutNumber: remainingPayoutNumber,
+        vendorId: payout.vendorId,
+        batchId: payout.batchId,
+        ledgerEntryIds: payout.ledgerEntryIds,
+        amountPaise: remainingPaise,
+        requestedAmount: toRupees(remainingPaise),
+        eligibleAmount: toRupees(remainingPaise),
+        status: 'READY',
+        provider: 'MANUAL_BANK_TRANSFER',
+        idempotencyKey: remainingIdempotencyKey,
+        currency: payout.currency || 'INR',
+        bankSnapshot: payout.bankSnapshot,
+        initiatedAt: new Date(),
+        metadata: {
+          parentPayoutId: String(payout._id),
+          partialRemainderFrom: payout.payoutNumber,
+          remainingPaise,
+        },
+      });
+
+      // Update current payout to reflect confirmed partial payment
+      payout.amountPaise = confirmedPaise;
+      payout.requestedAmount = toRupees(confirmedPaise);
+      payout.eligibleAmount = toRupees(confirmedPaise);
+      payout.status = 'PAID';
+      payout.provider = 'MANUAL_BANK_TRANSFER';
+      payout.providerTransferId = trimmedReference;
+      payout.processedAt = paymentTimestamp;
+      payout.metadata = {
+        ...(payout.metadata || {}),
+        manualConfirmationNotes: notes || '',
+        confirmedBy: adminUserId,
+        confirmedAt: new Date().toISOString(),
+        paymentDate: paymentTimestamp.toISOString(),
+        isPartial: true,
+        remainingPayoutId: String(remainingPayout._id),
+        remainingAmount: toRupees(remainingPaise),
+      };
+      await payout.save();
+
+      // Allocate confirmed amount against linked ledger entries in FIFO order
+      if (Array.isArray(payout.ledgerEntryIds) && payout.ledgerEntryIds.length > 0 && (isDbConnected || isLedgerFindMocked)) {
         try {
-          const entries = await VendorLedgerEntry.find({ _id: { $in: payout.ledgerEntryIds } }).select('vendorOrderId').lean();
-          const vendorOrderIds = Array.isArray(entries) ? [...new Set(entries.map((e) => e.vendorOrderId).filter(Boolean))] : [];
-          if (vendorOrderIds.length > 0) {
-            await VendorOrder.updateMany(
-              { _id: { $in: vendorOrderIds } },
-              { $set: { settlementStatus: 'SETTLED' } }
+          const entries = await VendorLedgerEntry.find({ _id: { $in: payout.ledgerEntryIds } }).sort({ eligibleAt: 1, createdAt: 1 });
+          let remainingBudgetPaise = confirmedPaise;
+          const settledIds = [];
+          const remainingIds = [];
+
+          for (const entry of (entries || [])) {
+            const entryAmount = entry.netAmountPaise || toPaise(entry.netAmount || 0);
+            if (remainingBudgetPaise >= entryAmount && entryAmount > 0) {
+              settledIds.push(entry._id);
+              remainingBudgetPaise -= entryAmount;
+            } else {
+              remainingIds.push(entry._id);
+            }
+          }
+
+          if (settledIds.length > 0) {
+            await VendorLedgerEntry.updateMany(
+              { _id: { $in: settledIds } },
+              { $set: { eligibilityStatus: 'SETTLED', settledAt: paymentTimestamp, payoutId: payout._id } }
+            );
+          }
+          if (remainingIds.length > 0 && remainingPayout) {
+            await VendorLedgerEntry.updateMany(
+              { _id: { $in: remainingIds } },
+              { $set: { eligibilityStatus: 'PROCESSING', payoutId: remainingPayout._id } }
+            );
+            remainingPayout.ledgerEntryIds = remainingIds;
+            await remainingPayout.save();
+          }
+        } catch {}
+      }
+    } else {
+      // Full payment
+      payout.status = 'PAID';
+      payout.provider = 'MANUAL_BANK_TRANSFER';
+      payout.providerTransferId = trimmedReference;
+      payout.processedAt = paymentTimestamp;
+      payout.metadata = {
+        ...(payout.metadata || {}),
+        manualConfirmationNotes: notes || '',
+        confirmedBy: adminUserId,
+        confirmedAt: new Date().toISOString(),
+        paymentDate: paymentTimestamp.toISOString(),
+        isPartial: false,
+      };
+      await payout.save();
+
+      // Transition linked ledger entries to SETTLED
+      if (Array.isArray(payout.ledgerEntryIds) && payout.ledgerEntryIds.length > 0) {
+        await VendorLedgerEntry.updateMany(
+          { _id: { $in: payout.ledgerEntryIds } },
+          { $set: { eligibilityStatus: 'SETTLED', settledAt: paymentTimestamp, payoutId: payout._id } }
+        );
+
+        // Transition linked vendor orders to SETTLED
+        if (isDbConnected || Boolean(VendorOrder.updateMany?._isMockFunction || VendorOrder.updateMany?.mock)) {
+          try {
+            const entries = await VendorLedgerEntry.find({ _id: { $in: payout.ledgerEntryIds } }).select('vendorOrderId').lean();
+            const vendorOrderIds = Array.isArray(entries) ? [...new Set(entries.map((e) => e.vendorOrderId).filter(Boolean))] : [];
+            if (vendorOrderIds.length > 0) {
+              await VendorOrder.updateMany(
+                { _id: { $in: vendorOrderIds } },
+                { $set: { settlementStatus: 'SETTLED' } }
+              );
+            }
+          } catch {}
+        }
+      }
+
+      // Complete SettlementBatch if all associated payouts are now PAID
+      if (payout.batchId && (isDbConnected || Boolean(VendorPayout.countDocuments?._isMockFunction || VendorPayout.countDocuments?.mock))) {
+        try {
+          const remainingUnpaid = await VendorPayout.countDocuments({
+            batchId: payout.batchId,
+            status: { $ne: 'PAID' },
+          });
+          if (remainingUnpaid === 0) {
+            await SettlementBatch.updateOne(
+              { _id: payout.batchId },
+              { $set: { status: 'COMPLETED', processedAt: new Date() } }
             );
           }
         } catch {}
       }
-    }
-
-    // Complete SettlementBatch if all associated payouts are now PAID
-    if (payout.batchId && (isDbConnected || Boolean(VendorPayout.countDocuments?._isMockFunction || VendorPayout.countDocuments?.mock))) {
-      try {
-        const remainingUnpaid = await VendorPayout.countDocuments({
-          batchId: payout.batchId,
-          status: { $ne: 'PAID' },
-        });
-        if (remainingUnpaid === 0) {
-          await SettlementBatch.updateOne(
-            { _id: payout.batchId },
-            { $set: { status: 'COMPLETED', processedAt: new Date() } }
-          );
-        }
-      } catch {}
     }
 
     // Immutable audit trail recording
@@ -686,8 +781,14 @@ export class SettlementService {
       amount: payout.requestedAmount || toRupees(payout.amountPaise),
       referenceId: trimmedReference,
       notes: notes || '',
+      isPartial,
+      remainingAmount: isPartial ? toRupees(remainingPaise) : 0,
+      remainingPayoutId: remainingPayout ? String(remainingPayout._id) : null,
+      paymentDate: paymentTimestamp.toISOString(),
     });
 
+    payout.isPartial = isPartial;
+    payout.remainingPayout = remainingPayout;
     return payout;
   }
 

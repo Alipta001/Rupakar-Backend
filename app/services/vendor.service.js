@@ -140,30 +140,50 @@ export class VendorService {
   }
 
   async createDocument(vendorId, payload) {
-    const vendor = await Vendor.findById(vendorId);
-    if (!vendor || vendor.deletedAt) {
+    const query = mongoose.isValidObjectId(vendorId)
+      ? { $or: [{ _id: vendorId }, { ownerUserId: vendorId }] }
+      : { _id: null };
+    const vendor = await Vendor.findOne({ ...query, deletedAt: null });
+    if (!vendor) {
       throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
     }
 
-    return VendorDocument.create({
-      vendorId,
+    const doc = await VendorDocument.create({
+      vendorId: vendor._id,
       ...payload,
       status: 'PENDING',
       submittedAt: new Date(),
     });
+
+    await Vendor.updateOne({ _id: vendor._id }, { $addToSet: { documents: doc._id } }).catch(() => null);
+    return doc;
   }
 
   async listDocuments(vendorId) {
-    const vendor = await Vendor.findById(vendorId);
-    if (!vendor || vendor.deletedAt) {
+    const query = mongoose.isValidObjectId(vendorId)
+      ? { $or: [{ _id: vendorId }, { ownerUserId: vendorId }] }
+      : { _id: null };
+    const vendor = await Vendor.findOne({ ...query, deletedAt: null });
+    if (!vendor) {
       throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
     }
 
-    return VendorDocument.find({ vendorId, isDeleted: false }).sort({ submittedAt: -1, _id: -1 }).limit(100).lean();
+    return VendorDocument.find({ vendorId: vendor._id, isDeleted: { $ne: true } })
+      .sort({ submittedAt: -1, _id: -1 })
+      .limit(100)
+      .lean();
   }
 
   async updateDocumentStatus(vendorId, documentId, decision, actorUserId) {
-    const document = await VendorDocument.findOne({ _id: documentId, vendorId, isDeleted: false });
+    const query = mongoose.isValidObjectId(vendorId)
+      ? { $or: [{ _id: vendorId }, { ownerUserId: vendorId }] }
+      : { _id: null };
+    const vendor = await Vendor.findOne({ ...query, deletedAt: null });
+    if (!vendor) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
+    }
+
+    const document = await VendorDocument.findOne({ _id: documentId, vendorId: vendor._id, isDeleted: false });
     if (!document) {
       throw new AppError(404, 'DOCUMENT_NOT_FOUND', 'Document not found');
     }

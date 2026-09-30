@@ -24,6 +24,9 @@ import {
   listAdminCommissions,
   createCommissionConfig,
   listCommissionConfigs,
+  updateCommissionConfig,
+  toggleCommissionConfigStatus,
+  deleteCommissionConfig,
 } from '../controllers/finance.controller.js';
 
 const router = Router();
@@ -60,5 +63,8 @@ router.get('/admin/finance/vendor-ledgers', listAdminVendorLedgers);
 
 router.get('/admin/finance/commission-config', listCommissionConfigs);
 router.post('/admin/finance/commission-config', createCommissionConfig);
+router.put('/admin/finance/commission-config/:id', updateCommissionConfig);
+router.patch('/admin/finance/commission-config/:id/toggle', toggleCommissionConfigStatus);
+router.delete('/admin/finance/commission-config/:id', deleteCommissionConfig);
 
 export default router;
