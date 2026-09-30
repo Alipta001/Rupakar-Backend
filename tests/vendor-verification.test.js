@@ -7,6 +7,7 @@ import { Vendor } from '../app/models/vendor.model.js';
 import { VendorDocument } from '../app/models/vendor-document.model.js';
 import { VendorBankAccount } from '../app/models/vendor-bank.model.js';
 import { vendorVerificationService } from '../app/services/vendor-verification.service.js';
+import { vendorService } from '../app/services/vendor.service.js';
 
 const id = () => new mongoose.Types.ObjectId();
 const chain = (value) => ({ select: jest.fn().mockReturnThis(), sort: jest.fn().mockReturnThis(), lean: jest.fn().mockResolvedValue(value) });
@@ -43,5 +44,54 @@ describe('seller verification access', () => {
     const response = await request(app).get('/api/v1/vendor/dashboard');
     expect(response.status).toBe(401);
     expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  describe('vendorService document operations', () => {
+    it('creates a vendor document and links it without ReferenceError', async () => {
+      const vendorObjectId = id();
+      const docObjectId = id();
+      const mockVendor = { _id: vendorObjectId, ownerUserId: id() };
+      const mockDoc = { _id: docObjectId, vendorId: vendorObjectId, documentType: 'GST', status: 'PENDING' };
+
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue(mockVendor);
+      jest.spyOn(VendorDocument, 'create').mockResolvedValue(mockDoc);
+      jest.spyOn(Vendor, 'updateOne').mockResolvedValue({ modifiedCount: 1 });
+
+      const created = await vendorService.createDocument(vendorObjectId.toHexString(), {
+        documentType: 'GST',
+        fileName: 'gst_certificate.pdf',
+        mimeType: 'application/pdf',
+        fileSizeBytes: 1024,
+        storageKey: 'vendors/docs/gst.pdf',
+        storageProvider: 's3',
+      });
+
+      expect(created).toBeDefined();
+      expect(created._id).toEqual(docObjectId);
+      expect(VendorDocument.create).toHaveBeenCalledWith(expect.objectContaining({
+        vendorId: vendorObjectId,
+        documentType: 'GST',
+        storageKey: 'vendors/docs/gst.pdf',
+      }));
+      expect(Vendor.updateOne).toHaveBeenCalledWith(
+        { _id: vendorObjectId },
+        { $addToSet: { documents: docObjectId } }
+      );
+    });
+
+    it('lists vendor documents without ReferenceError', async () => {
+      const vendorObjectId = id();
+      const mockVendor = { _id: vendorObjectId };
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue(mockVendor);
+      jest.spyOn(VendorDocument, 'find').mockReturnValue({
+        sort: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([{ _id: id(), documentType: 'GST' }]),
+      });
+
+      const list = await vendorService.listDocuments(vendorObjectId.toHexString());
+      expect(list).toHaveLength(1);
+      expect(list[0].documentType).toBe('GST');
+    });
   });
 });

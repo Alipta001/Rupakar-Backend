@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { AppError } from '../utils/app-error.js';
 import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
