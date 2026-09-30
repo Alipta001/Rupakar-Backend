@@ -27,8 +27,9 @@ export const supportTicketService = {
     return ticket.toObject();
   },
 
-  async list(userId, { page, limit, status }) {
-    const filter = { userId };
+  async list(userId, { page = 1, limit = 20, status }) {
+    const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null }).lean();
+    const filter = vendor ? { $or: [{ userId }, { vendorId: vendor._id }] } : { userId };
     if (status) filter.status = status;
     const [items, total] = await Promise.all([
       SupportTicket.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
@@ -38,13 +39,21 @@ export const supportTicketService = {
   },
 
   async get(userId, ticketId) {
-    const ticket = await SupportTicket.findOne(ownedQuery(userId, ticketId)).lean();
+    const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null }).lean();
+    const query = vendor
+      ? { _id: ticketId, $or: [{ userId }, { vendorId: vendor._id }] }
+      : { _id: ticketId, userId };
+    const ticket = await SupportTicket.findOne(query).lean();
     if (!ticket) throw new AppError(404, 'SUPPORT_TICKET_NOT_FOUND', 'Support ticket not found');
     return ticket;
   },
 
   async addMessage(userId, ticketId, message) {
-    const ticket = await SupportTicket.findOne(ownedQuery(userId, ticketId));
+    const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null }).lean();
+    const query = vendor
+      ? { _id: ticketId, $or: [{ userId }, { vendorId: vendor._id }] }
+      : { _id: ticketId, userId };
+    const ticket = await SupportTicket.findOne(query);
     if (!ticket) throw new AppError(404, 'SUPPORT_TICKET_NOT_FOUND', 'Support ticket not found');
     if (['RESOLVED', 'CLOSED'].includes(ticket.status)) throw new AppError(409, 'SUPPORT_TICKET_CLOSED', 'This support ticket is closed');
     ticket.messages.push({ senderUserId: userId, senderRole: 'vendor', message });
