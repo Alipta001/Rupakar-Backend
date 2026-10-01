@@ -335,9 +335,14 @@ export async function startInvoiceWorker() {
 
       try {
         const order = await Order.findById(orderId).lean();
-        if (!order || order.paymentStatus !== 'PAID') throw new Error('Invoice requires a paid order');
         const vendorOrder = vendorOrderId ? await VendorOrder.findOne({ _id: vendorOrderId, parentOrderId: orderId }).lean() : null;
-        const vendor = vendorOrder ? await Vendor.findById(vendorOrder.vendorId).select('businessName legalName email address gstNumber').lean() : null;
+        let vendor = vendorOrder ? await Vendor.findById(vendorOrder.vendorId).select('businessName legalName email address gstNumber').lean() : null;
+        if (!vendor && order?.items?.length) {
+          const firstVendorId = order.items.find((i) => i.vendorId)?.vendorId;
+          if (firstVendorId) {
+            vendor = await Vendor.findById(firstVendorId).select('businessName legalName email address gstNumber').lean();
+          }
+        }
         const customer = await User.findById(customerId).select('name email').lean();
         const ledger = vendorOrder ? await VendorLedgerEntry.findOne({ vendorOrderId: vendorOrder._id, transactionType: 'SALE_CAPTURE' }).lean() : null;
         const items = vendorOrder?.items || order.items || [];

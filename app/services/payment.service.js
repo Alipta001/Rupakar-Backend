@@ -451,10 +451,39 @@ export class PaymentService {
   getEventType(payload, provider) {
     const directType = payload?.type || payload?.event;
     if (directType) return String(directType);
+    const refundStatus = payload?.payload?.refund?.entity?.status;
+    if (refundStatus === 'processed') return 'refund.processed';
     const entityStatus = payload?.payload?.payment?.entity?.status;
     if (entityStatus === 'captured') return 'payment.captured';
     if (entityStatus === 'failed') return 'payment.failed';
+    if (entityStatus === 'refunded') return 'payment.refunded';
     return `${provider}.updated`;
+  }
+
+  async syncRefundDocumentsCompleted({ providerRefundId, paymentId, orderId }) {
+    try {
+      const { Refund } = await import('../models/refund.model.js');
+      if (providerRefundId) {
+        const res = await Refund.updateMany(
+          { providerRefundId, status: { $ne: 'COMPLETED' } },
+          { $set: { status: 'COMPLETED' } }
+        );
+        if (res?.matchedCount > 0) return;
+      }
+      if (paymentId) {
+        await Refund.updateMany(
+          { paymentId, status: { $in: ['PROCESSING', 'APPROVED', 'REQUESTED'] } },
+          { $set: { status: 'COMPLETED' } }
+        );
+      } else if (orderId) {
+        await Refund.updateMany(
+          { orderId, status: { $in: ['PROCESSING', 'APPROVED', 'REQUESTED'] } },
+          { $set: { status: 'COMPLETED' } }
+        );
+      }
+    } catch (err) {
+      console.error('Failed to sync Refund documents to COMPLETED:', err?.message || err);
+    }
   }
 
   async processWebhook({ provider, payload, signature, rawBody, secret = env.RAZORPAY_WEBHOOK_SECRET }) {
@@ -475,13 +504,28 @@ export class PaymentService {
     const eventPayload = payload || {};
 
     const paymentEntity = eventPayload?.payload?.payment?.entity || eventPayload?.payload?.payment || {};
-    const paymentId = paymentEntity?.id || paymentEntity?.providerPaymentId;
+    const refundEntity = eventPayload?.payload?.refund?.entity || eventPayload?.payload?.refund || {};
+
+    const paymentId = paymentEntity?.id || paymentEntity?.providerPaymentId || refundEntity?.payment_id || refundEntity?.paymentId;
     const providerOrderId = paymentEntity?.order_id || paymentEntity?.orderId;
+    const providerRefundId = refundEntity?.id || eventPayload?.payload?.refund?.entity?.id || paymentEntity?.refund_id || null;
+
     const paymentLookup = paymentId || providerOrderId
       ? { $or: [{ providerPaymentId: paymentId }, { providerOrderId }] }
       : null;
-    const currentPayment = paymentLookup ? await Payment.findOne(paymentLookup) : null;
-    if ((paymentId || providerOrderId) && !currentPayment) {
+    let currentPayment = paymentLookup ? await Payment.findOne(paymentLookup) : null;
+    if (!currentPayment && providerRefundId) {
+      try {
+        const { Refund } = await import('../models/refund.model.js');
+        const refundDoc = await Refund.findOne({ providerRefundId }).select('paymentId orderId').lean();
+        if (refundDoc?.paymentId) {
+          currentPayment = await Payment.findById(refundDoc.paymentId);
+        }
+      } catch {
+        // Fallback lookup error ignored
+      }
+    }
+    if ((paymentId || providerOrderId || providerRefundId) && !currentPayment) {
       return { success: false, retryable: true, error: 'PAYMENT_NOT_FOUND', eventId: providerEventId };
     }
 
@@ -500,24 +544,29 @@ export class PaymentService {
       throw error;
     }
 
-    if (paymentId) {
-      const refundAmount = Number(paymentEntity?.amount ?? paymentEntity?.refund_amount ?? 0) / 100;
+    if (paymentId || currentPayment) {
+      const isRefundEvent = eventType === 'refund.processed' || eventType === 'payment.refunded';
+      const refundAmountInPaise = refundEntity?.amount ?? paymentEntity?.amount_refunded ?? paymentEntity?.refund_amount ?? 0;
+      const refundAmount = Number(refundAmountInPaise) / 100;
       const nextStatus = eventType === 'payment.captured'
         ? 'CAPTURED'
         : eventType === 'payment.failed'
           ? 'FAILED'
-          : eventType === 'payment.refunded'
-            ? (refundAmount > 0 && refundAmount < Number(currentPayment.amount) ? 'PARTIALLY_REFUNDED' : 'REFUNDED')
+          : isRefundEvent
+            ? (paymentEntity?.refund_status === 'partial' || (refundAmount > 0 && currentPayment?.amount && refundAmount < Number(currentPayment.amount)) ? 'PARTIALLY_REFUNDED' : 'REFUNDED')
             : 'PENDING';
       const canApply = currentPayment && (
         (nextStatus === 'CAPTURED' && ['PENDING', 'AUTHORIZED'].includes(currentPayment.status))
         || (nextStatus === 'FAILED' && ['PENDING', 'AUTHORIZED'].includes(currentPayment.status))
-        || (nextStatus === 'REFUNDED' && ['CAPTURED', 'REFUND_PENDING', 'PARTIALLY_REFUNDED'].includes(currentPayment.status))
-        || (nextStatus === 'PARTIALLY_REFUNDED' && ['CAPTURED', 'REFUND_PENDING', 'PARTIALLY_REFUNDED'].includes(currentPayment.status))
+        || (nextStatus === 'REFUNDED' && ['CAPTURED', 'PAID', 'REFUND_PENDING', 'PARTIALLY_REFUNDED'].includes(currentPayment.status))
+        || (nextStatus === 'PARTIALLY_REFUNDED' && ['CAPTURED', 'PAID', 'REFUND_PENDING', 'PARTIALLY_REFUNDED'].includes(currentPayment.status))
       );
       if (!canApply) {
         if (nextStatus === 'CAPTURED' && currentPayment?.status === 'CAPTURED') {
           await this.ensureCapturedOrderArtifacts(currentPayment.orderId, currentPayment._id, currentPayment);
+        }
+        if (isRefundEvent) {
+          await this.syncRefundDocumentsCompleted({ providerRefundId, paymentId: currentPayment?._id, orderId: currentPayment?.orderId });
         }
         return { success: true, duplicate: false, ignored: true, eventId: providerEventId };
       }
@@ -560,15 +609,38 @@ export class PaymentService {
             // Non-blocking notification dispatch
           }
         }
+
+        if (isRefundEvent) {
+          await this.syncRefundDocumentsCompleted({ providerRefundId, paymentId: updatedPayment._id, orderId: updatedPayment.orderId });
+        }
+
         const paymentStatus = nextStatus === 'CAPTURED' ? 'PAID' : nextStatus;
-        const orderStatus = nextStatus === 'CAPTURED' ? 'CONFIRMED' : nextStatus === 'FAILED' ? 'FAILED' : nextStatus === 'REFUNDED' ? 'REFUNDED' : nextStatus === 'PARTIALLY_REFUNDED' ? 'PARTIALLY_REFUNDED' : undefined;
+        let targetOrderStatus;
+        if (order?.status === 'CANCELLED') {
+          // Requirement: Preserve Order.status = CANCELLED; never change it to REFUNDED
+          targetOrderStatus = undefined;
+        } else if (nextStatus === 'CAPTURED') {
+          targetOrderStatus = 'CONFIRMED';
+        } else if (nextStatus === 'FAILED') {
+          targetOrderStatus = 'FAILED';
+        } else if (nextStatus === 'REFUNDED') {
+          targetOrderStatus = 'REFUNDED';
+        } else if (nextStatus === 'PARTIALLY_REFUNDED') {
+          targetOrderStatus = 'PARTIALLY_REFUNDED';
+        }
+
         await Order.updateOne({ _id: updatedPayment.orderId }, {
           $set: {
             paymentStatus,
-            ...(orderStatus ? { status: orderStatus } : {}),
+            ...(targetOrderStatus ? { status: targetOrderStatus } : {}),
           },
         });
-        if (orderStatus) await VendorOrder.updateMany({ parentOrderId: updatedPayment.orderId }, { $set: { status: orderStatus } });
+        if (targetOrderStatus) {
+          await VendorOrder.updateMany(
+            { parentOrderId: updatedPayment.orderId, status: { $ne: 'CANCELLED' } },
+            { $set: { status: targetOrderStatus } }
+          );
+        }
         if (nextStatus === 'CAPTURED') await this.ensureCapturedOrderArtifacts(updatedPayment.orderId, updatedPayment._id, updatedPayment);
       }
     }

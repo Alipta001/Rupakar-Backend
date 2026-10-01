@@ -245,10 +245,156 @@ export class PdfService {
     });
   }
 
+  async resolveVendorName(inv) {
+    if (!inv || typeof inv !== 'object') return '';
+
+    const extractName = (cand) => {
+      if (!cand) return '';
+      if (typeof cand === 'string') {
+        const trimmed = cand.trim();
+        // Ignore hex ObjectIds or synthetic ID strings
+        if (/^[0-9a-fA-F]{24}$/.test(trimmed) || /^(vnd|vendor|vend|user|usr|ord|prod)[_-]/i.test(trimmed)) {
+          return '';
+        }
+        return trimmed;
+      }
+      if (typeof cand === 'object') {
+        // Ignore raw ObjectId instances
+        if (cand._bsontype === 'ObjectID' || cand.constructor?.name === 'ObjectId') {
+          return '';
+        }
+        const raw = typeof cand.toObject === 'function' ? cand.toObject() : cand;
+        const name =
+          raw.businessName ||
+          raw.storeName ||
+          raw.name ||
+          raw.legalName ||
+          raw.shopName ||
+          raw.brandName ||
+          raw.vendorName ||
+          raw.sellerName;
+        if (name && typeof name === 'string') {
+          const trimmed = name.trim();
+          if (/^[0-9a-fA-F]{24}$/.test(trimmed)) return '';
+          return trimmed;
+        }
+      }
+      return '';
+    };
+
+    // 1. Direct candidate fields on the invoice object
+    let name =
+      extractName(inv.vendorSnapshot) ||
+      extractName(inv.vendor) ||
+      (typeof inv.vendorId === 'object' && !inv.vendorId?._bsontype ? extractName(inv.vendorId) : '') ||
+      extractName(inv.vendorName) ||
+      extractName(inv.sellerSnapshot) ||
+      extractName(inv.seller) ||
+      extractName(inv.sellerName) ||
+      extractName(inv.artisanSnapshot) ||
+      extractName(inv.artisan) ||
+      extractName(inv.artisanName);
+
+    if (name) return name;
+
+    // 2. Line item level candidates
+    if (Array.isArray(inv.items)) {
+      for (const it of inv.items) {
+        if (!it) continue;
+        name =
+          extractName(it.vendorName) ||
+          extractName(it.vendor) ||
+          extractName(it.vendorSnapshot) ||
+          extractName(it.vendorId) ||
+          extractName(it.sellerName) ||
+          extractName(it.seller) ||
+          extractName(it.productSnapshot?.vendorName) ||
+          extractName(it.productSnapshot?.vendor) ||
+          extractName(it.productSnapshot?.businessName) ||
+          extractName(it.productSnapshot?.storeName) ||
+          extractName(it.productSnapshot?.brandName) ||
+          extractName(it.productSnapshot?.artisan);
+        if (name) return name;
+      }
+    }
+
+    // 3. Fallback: Database lookup via relations (vendorId, vendorOrderId, orderId, productId)
+    try {
+      if (inv.vendorId) {
+        const vendorIdStr = String(inv.vendorId?._id || inv.vendorId);
+        if (vendorIdStr && vendorIdStr !== '[object Object]') {
+          const { Vendor } = await import('../models/vendor.model.js');
+          const v = await Vendor.findById(vendorIdStr).select('businessName storeName name legalName').lean();
+          name = extractName(v);
+          if (name) return name;
+        }
+      }
+
+      if (inv.vendorOrderId) {
+        const voId = String(inv.vendorOrderId?._id || inv.vendorOrderId);
+        const { VendorOrder } = await import('../models/vendor-order.model.js');
+        const { Vendor } = await import('../models/vendor.model.js');
+        const vo = await VendorOrder.findById(voId).select('vendorId').lean();
+        if (vo?.vendorId) {
+          const v = await Vendor.findById(vo.vendorId).select('businessName storeName name legalName').lean();
+          name = extractName(v);
+          if (name) return name;
+        }
+      }
+
+      if (inv.orderId) {
+        const ordId = String(inv.orderId?._id || inv.orderId);
+        const { VendorOrder } = await import('../models/vendor-order.model.js');
+        const { Order } = await import('../models/order.model.js');
+        const { Vendor } = await import('../models/vendor.model.js');
+
+        const vo = await VendorOrder.findOne({ parentOrderId: ordId }).select('vendorId').lean();
+        if (vo?.vendorId) {
+          const v = await Vendor.findById(vo.vendorId).select('businessName storeName name legalName').lean();
+          name = extractName(v);
+          if (name) return name;
+        }
+
+        const ord = await Order.findById(ordId).select('items.vendorId items.productSnapshot').lean();
+        if (ord?.items?.length) {
+          for (const it of ord.items) {
+            name = extractName(it.productSnapshot) || extractName(it.productSnapshot?.vendorName);
+            if (!name && it.vendorId) {
+              const v = await Vendor.findById(it.vendorId).select('businessName storeName name legalName').lean();
+              name = extractName(v);
+            }
+            if (name) return name;
+          }
+        }
+      }
+
+      if (Array.isArray(inv.items)) {
+        const { Product } = await import('../models/product.model.js');
+        const { Vendor } = await import('../models/vendor.model.js');
+        for (const it of inv.items) {
+          const pId = it?.productId?._id || it?.productId;
+          if (pId) {
+            const prod = await Product.findById(pId).select('vendorId').lean();
+            if (prod?.vendorId) {
+              const v = await Vendor.findById(prod.vendorId).select('businessName storeName name legalName').lean();
+              name = extractName(v);
+              if (name) return name;
+            }
+          }
+        }
+      }
+    } catch (_err) {
+      // Ignore DB lookup errors (e.g. in test environments without DB connection)
+    }
+
+    return '';
+  }
+
   async generateInvoicePdf(invoice) {
     if (!invoice?.invoiceNumber || !Array.isArray(invoice.items)) throw new AppError(400, 'INVALID_PDF_DATA', 'Invoice data is required');
 
     const logoBuffer = await this.getLogoBuffer();
+    const vendorName = await this.resolveVendorName(invoice);
 
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({ size: 'A4', bufferPages: true, compress: false, margins: { top: PAGE_MARGIN, bottom: PAGE_MARGIN, left: PAGE_MARGIN, right: PAGE_MARGIN } });
@@ -270,20 +416,6 @@ export class PdfService {
       const left       = PAGE_MARGIN;
       const right      = doc.page.width - PAGE_MARGIN;
       const innerWidth = right - left;
-
-      // Extract vendor/business name only from existing available data (never hardcoded)
-      const resolveVendorName = (inv) => {
-        const v = inv.vendorSnapshot || inv.vendor || {};
-        const name = v.businessName || v.storeName || v.name || v.legalName || inv.vendorName;
-        if (name && typeof name === 'string' && name.trim()) return name.trim();
-        if (Array.isArray(inv.items)) {
-          for (const it of inv.items) {
-            const itName = it.vendorName || it.vendor?.businessName || it.vendor?.storeName || it.vendor?.name;
-            if (itName && typeof itName === 'string' && itName.trim()) return itName.trim();
-          }
-        }
-        return '';
-      };
 
       const HEADER_RIGHT_WIDTH = 160;
       const HEADER_RIGHT_X     = right - HEADER_RIGHT_WIDTH;
@@ -371,8 +503,6 @@ export class PdfService {
       // Layout: 3 cards for SELLER (vendor name only), BILL TO, and SHIP TO
       const cardGap = 10;
       const cardWidth = Math.floor((innerWidth - 2 * cardGap) / 3);
-
-      const vendorName = resolveVendorName(invoice);
 
       // Card 1: Seller / Vendor - vendor/business name ONLY (no email, phone, address, bank, ID, GST/PAN)
       drawCard(left, 104, cardWidth, 84, 'SELLER', (cx, cy, cw) => {

@@ -164,6 +164,66 @@ describe('invoice PDF generation', () => {
     expect(pdfText).not.toContain('998877665544');
   });
 
+  it('resolves seller name when vendorSnapshot is empty but vendor or sellerName is provided', async () => {
+    const invoiceWithSellerName = {
+      ...oneItemInvoice,
+      invoiceNumber: 'INV-SELLER-001',
+      vendorSnapshot: {},
+      sellerName: 'Bengal Crafts Collective',
+    };
+    const pdf1 = await new PdfService().generateInvoicePdf(invoiceWithSellerName);
+    expect(decodePdfText(pdf1.content)).toContain('Bengal Crafts Collective');
+
+    const invoiceWithVendorObj = {
+      ...oneItemInvoice,
+      invoiceNumber: 'INV-VENDOR-OBJ-001',
+      vendorSnapshot: {},
+      vendor: { storeName: 'Kolkata Terracotta Works' },
+    };
+    const pdf2 = await new PdfService().generateInvoicePdf(invoiceWithVendorObj);
+    expect(decodePdfText(pdf2.content)).toContain('Kolkata Terracotta Works');
+
+    const invoiceWithProductSnapshot = {
+      ...oneItemInvoice,
+      invoiceNumber: 'INV-PROD-SNAP-001',
+      vendorSnapshot: {},
+      items: [
+        {
+          productName: 'Clay Teapot',
+          sku: 'SKU-CLAY-01',
+          quantity: 1,
+          unitPrice: 350,
+          lineTotal: 350,
+          productSnapshot: { vendorName: 'Kumartuli Artisan Studio' },
+        },
+      ],
+    };
+    const pdf3 = await new PdfService().generateInvoicePdf(invoiceWithProductSnapshot);
+    expect(decodePdfText(pdf3.content)).toContain('Kumartuli Artisan Studio');
+  });
+
+  it('resolves seller name via DB fallback when vendorSnapshot is empty and only vendorId/orderId is present', async () => {
+    const { Vendor } = await import('../app/models/vendor.model.js');
+    const spy = jest.spyOn(Vendor, 'findById').mockReturnValue({
+      select: () => ({
+        lean: async () => ({ businessName: 'Rural Heritage Weavers' }),
+      }),
+    });
+
+    try {
+      const invoiceWithOnlyVendorId = {
+        ...oneItemInvoice,
+        invoiceNumber: 'INV-VENDOR-ID-001',
+        vendorSnapshot: {},
+        vendorId: '6abe87dc0f30c82e3890e892',
+      };
+      const pdf = await new PdfService().generateInvoicePdf(invoiceWithOnlyVendorId);
+      expect(decodePdfText(pdf.content)).toContain('Rural Heritage Weavers');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('renders footer with Rupakar Support and hello@rupakar.com without fake phone number', async () => {
     const pdf = await new PdfService().generateInvoicePdf(oneItemInvoice);
     const pdfText = decodePdfText(pdf.content);

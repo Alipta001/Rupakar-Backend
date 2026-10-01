@@ -116,6 +116,13 @@ export class InvoiceService {
     if (!invoice) {
       const { User } = await import('../models/user.model.js');
       const customer = order.customerId ? await User.findById(order.customerId).select('name email').lean() : null;
+      let vendorSnapshot = {};
+      const firstVendorId = (order.items || []).find((i) => i.vendorId)?.vendorId;
+      if (firstVendorId) {
+        const { Vendor } = await import('../models/vendor.model.js');
+        const v = await Vendor.findById(firstVendorId).select('businessName legalName storeName name').lean();
+        if (v) vendorSnapshot = v;
+      }
       invoice = await this.createInvoice({
         orderId: order._id,
         customerId: order.customerId,
@@ -139,7 +146,7 @@ export class InvoiceService {
         paymentMethod: order.paymentMethod,
         paymentStatus: order.paymentStatus,
         customerSnapshot: customer || {},
-        vendorSnapshot: {},
+        vendorSnapshot,
         shippingAddressSnapshot: order.shippingAddressSnapshot || {},
         billingAddressSnapshot: order.billingAddressSnapshot || {},
       });

@@ -192,7 +192,17 @@ export const listAdminOrders = async (req, res, next) => {
     }
 
     const [orders, total] = await Promise.all([
-      Order.find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      Order.find(filter)
+        .populate('customerId', 'name email phone')
+        .populate('items.vendorId', 'businessName storeName name legalName')
+        .populate({
+          path: 'vendorOrders',
+          populate: { path: 'vendorId', select: 'businessName storeName name legalName' },
+        })
+        .sort({ createdAt: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
       Order.countDocuments(filter),
     ]);
     res.status(200).json({
@@ -208,7 +218,14 @@ export const listAdminOrders = async (req, res, next) => {
 
 export const getAdminOrder = async (req, res, next) => {
   try {
-    const order = await Order.findById(req.params.id).lean();
+    const order = await Order.findById(req.params.id)
+      .populate('customerId', 'name email phone')
+      .populate('items.vendorId', 'businessName storeName name legalName')
+      .populate({
+        path: 'vendorOrders',
+        populate: { path: 'vendorId', select: 'businessName storeName name legalName' },
+      })
+      .lean();
     if (!order) {
       throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
     }

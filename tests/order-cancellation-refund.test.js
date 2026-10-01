@@ -11,6 +11,9 @@ import { VendorOrder } from '../app/models/vendor-order.model.js';
 import { Payment } from '../app/models/payment.model.js';
 import { CancellationRequest } from '../app/models/cancellation-request.model.js';
 import { OrderStatusHistory } from '../app/models/order-status-history.model.js';
+import { Refund } from '../app/models/refund.model.js';
+import { PaymentEvent } from '../app/models/payment-event.model.js';
+import { listAdminRefunds } from '../app/controllers/admin.controller.js';
 
 describe('Order Cancellation & Refund Regression Tests', () => {
   const orderId = new mongoose.Types.ObjectId().toHexString();
@@ -484,6 +487,167 @@ describe('Order Cancellation & Refund Regression Tests', () => {
     expect(result.status).toBe('CANCELLED');
     expect(transitionSpy).toHaveBeenCalledWith('CREATED', 'CANCELLED', expect.anything());
     expect(refundSpy).not.toHaveBeenCalled();
+  });
+
+  it('handles Razorpay refund.processed webhook, transitions payment and order to REFUNDED, preserves CANCELLED status, and marks Refund COMPLETED', async () => {
+    const mockOrder = {
+      _id: orderId,
+      customerId,
+      status: 'CANCELLED',
+      paymentStatus: 'REFUND_PENDING',
+      items: [{ variantId: variantId1, quantity: 1 }],
+      total: 500,
+    };
+    const mockPayment = {
+      _id: paymentId,
+      orderId,
+      customerId,
+      status: 'REFUND_PENDING',
+      amount: 500,
+      currency: 'INR',
+      providerPaymentId: 'pay_test_123',
+    };
+
+    jest.spyOn(paymentService.provider, 'verifyWebhookSignature').mockReturnValue(true);
+    jest.spyOn(PaymentEvent, 'create').mockResolvedValue({ toObject: () => ({ status: 'PROCESSED' }) });
+    jest.spyOn(Payment, 'findOne').mockResolvedValue(mockPayment);
+    jest.spyOn(Payment, 'findOneAndUpdate').mockResolvedValue({
+      ...mockPayment,
+      status: 'REFUNDED',
+    });
+    jest.spyOn(Order, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue(mockOrder) });
+    const orderUpdateSpy = jest.spyOn(Order, 'updateOne').mockResolvedValue({ acknowledged: true });
+    const refundUpdateSpy = jest.spyOn(Refund, 'updateMany').mockResolvedValue({ acknowledged: true, matchedCount: 1, modifiedCount: 1 });
+
+    const payload = {
+      event: 'refund.processed',
+      payload: {
+        refund: {
+          entity: {
+            id: 'rfnd_test_456',
+            payment_id: 'pay_test_123',
+            amount: 50000,
+            status: 'processed',
+          },
+        },
+        payment: {
+          entity: {
+            id: 'pay_test_123',
+            amount: 50000,
+            amount_refunded: 50000,
+            status: 'refunded',
+          },
+        },
+      },
+    };
+
+    const result = await paymentService.processWebhook({
+      provider: 'razorpay',
+      payload,
+      signature: 'valid_signature',
+      rawBody: Buffer.from(JSON.stringify(payload)),
+    });
+
+    expect(result.success).toBe(true);
+
+    // Verify Payment transitioned to REFUNDED
+    expect(Payment.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: paymentId }),
+      expect.objectContaining({ $set: expect.objectContaining({ status: 'REFUNDED' }) }),
+      expect.anything()
+    );
+
+    // Verify Order.paymentStatus transitioned to REFUNDED while Order.status was NOT overwritten
+    expect(orderUpdateSpy).toHaveBeenCalledWith(
+      { _id: orderId },
+      expect.objectContaining({
+        $set: {
+          paymentStatus: 'REFUNDED',
+        },
+      })
+    );
+    // Ensure status was not set to REFUNDED
+    const setPayload = orderUpdateSpy.mock.calls[0][1].$set;
+    expect(setPayload.status).toBeUndefined();
+
+    // Verify Refund.status was updated to COMPLETED
+    expect(refundUpdateSpy).toHaveBeenCalledWith(
+      { providerRefundId: 'rfnd_test_456', status: { $ne: 'COMPLETED' } },
+      { $set: { status: 'COMPLETED' } }
+    );
+  });
+
+  it('handles duplicate refund.processed webhooks idempotently without re-executing transitions', async () => {
+    jest.spyOn(paymentService.provider, 'verifyWebhookSignature').mockReturnValue(true);
+    jest.spyOn(Payment, 'findOne').mockResolvedValue({ _id: paymentId, status: 'REFUNDED' });
+    jest.spyOn(PaymentEvent, 'create').mockRejectedValue({ code: 11000 });
+
+    const payload = {
+      event: 'refund.processed',
+      payload: {
+        refund: {
+          entity: {
+            id: 'rfnd_test_dup',
+            payment_id: 'pay_test_123',
+            amount: 50000,
+            status: 'processed',
+          },
+        },
+      },
+    };
+
+    const result = await paymentService.processWebhook({
+      provider: 'razorpay',
+      payload,
+      signature: 'valid_signature',
+      rawBody: Buffer.from(JSON.stringify(payload)),
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      duplicate: true,
+    });
+  });
+
+  it('listAdminRefunds exposes providerRefundId as gatewayReference', async () => {
+    const mockRefunds = [
+      {
+        _id: new mongoose.Types.ObjectId(),
+        orderId: { _id: new mongoose.Types.ObjectId(), orderNumber: 'RP-ORD-101', shippingAddressSnapshot: { name: 'Aarav' } },
+        amount: 1500,
+        reason: 'Customer cancelled',
+        status: 'COMPLETED',
+        providerRefundId: 'rfnd_razorpay_9999',
+        createdAt: new Date(),
+      },
+    ];
+
+    jest.spyOn(Refund, 'find').mockReturnValue({
+      populate: () => ({
+        sort: () => ({
+          skip: () => ({
+            limit: () => ({
+              lean: jest.fn().mockResolvedValue(mockRefunds),
+            }),
+          }),
+        }),
+      }),
+    });
+    jest.spyOn(Refund, 'countDocuments').mockResolvedValue(1);
+
+    const req = { query: {}, headers: {} };
+    let jsonResult = null;
+    const res = {
+      status: () => res,
+      json: (data) => { jsonResult = data; return res; },
+    };
+
+    await listAdminRefunds(req, res, (err) => { if (err) throw err; });
+
+    expect(jsonResult.success).toBe(true);
+    expect(jsonResult.data.items[0].gatewayReference).toBe('rfnd_razorpay_9999');
+    expect(jsonResult.data.items[0].providerRefundId).toBe('rfnd_razorpay_9999');
+    expect(jsonResult.data.items[0].status).toBe('Completed');
   });
 });
 

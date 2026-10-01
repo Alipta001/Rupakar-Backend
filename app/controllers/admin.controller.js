@@ -454,7 +454,8 @@ export const listAdminRefunds = async (req, res, next) => {
         formattedAmount: `₹${(r.amount || 0).toLocaleString('en-IN')}`,
         reason: r.reason || 'Customer requested return',
         status: r.status === 'PROCESSED' || r.status === 'COMPLETED' ? 'Completed' : 'Pending',
-        gatewayReference: r.gatewayRefundId || '',
+        gatewayReference: r.providerRefundId || r.gatewayRefundId || '',
+        providerRefundId: r.providerRefundId || '',
         date: new Date(r.createdAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
       };
     });
@@ -639,21 +640,34 @@ export const updateAdminReviewStatus = async (req, res, next) => {
 export const listAdminAuthenticity = async (req, res, next) => {
   try {
     const products = await Product.find({ 'authenticity.status': { $exists: true }, deletedAt: null })
-      .populate('vendorId', 'storeName name')
+      .populate('vendorId', 'businessName legalName storeName name originState originDistrict')
       .sort({ updatedAt: -1 })
       .limit(50)
       .lean();
 
-    const items = products.map((p) => ({
-      id: p._id.toString(),
-      certCode: p.authenticity?.reference || `AUTH-GI-${p._id.toString().slice(-5).toUpperCase()}`,
-      productTitle: p.name,
-      artisan: p.vendorId?.name || p.vendorId?.storeName || 'Master Artisan',
-      region: p.shipping?.originDistrict || 'Bengal',
-      district: p.shipping?.originState || 'West Bengal',
-      craftSource: p.authenticity?.reference || 'Geographical Indication GI Verified',
-      status: p.authenticity?.status === 'VERIFIED' ? 'Approved' : 'Under review',
-    }));
+    const items = products.map((p) => {
+      const artisanName = p.vendorId?.businessName || p.vendorId?.legalName || p.vendorId?.storeName || p.vendorId?.name || '—';
+      const certNumber = p.authenticity?.reference || `AUTH-GI-${p._id.toString().slice(-5).toUpperCase()}`;
+      const region = p.shipping?.originDistrict || p.vendorId?.originDistrict || '—';
+      const district = p.shipping?.originState || p.vendorId?.originState || '—';
+      const uiStatus = p.authenticity?.status === 'VERIFIED' ? 'Approved' : 'Under review';
+      return {
+        id: p._id.toString(),
+        productId: p._id.toString(),
+        productTitle: p.name,
+        certificateNumber: certNumber,
+        certCode: certNumber,
+        artisanName,
+        artisan: artisanName,
+        vendorName: artisanName,
+        region,
+        district,
+        giTagNumber: p.authenticity?.reference || 'State Handloom Certified',
+        craftSource: p.authenticity?.reference || 'Geographical Indication GI Verified',
+        status: p.authenticity?.status || 'PENDING',
+        uiStatus,
+      };
+    });
 
     sendSuccess(res, { items, total: items.length }, 'Authenticity certificates loaded', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
@@ -664,14 +678,15 @@ export const listAdminAuthenticity = async (req, res, next) => {
 export const verifyAdminAuthenticity = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const targetStatus = req.body?.status === 'REJECTED' ? 'UNVERIFIED' : 'VERIFIED';
     const product = await Product.findByIdAndUpdate(
       id,
-      { 'authenticity.status': 'VERIFIED' },
+      { 'authenticity.status': targetStatus },
       { new: true },
     ).lean();
 
     if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
-    sendSuccess(res, product, 'Product authenticity verified', String(req.headers['x-request-id'] ?? ''));
+    sendSuccess(res, product, `Product authenticity ${targetStatus.toLowerCase()}`, String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
