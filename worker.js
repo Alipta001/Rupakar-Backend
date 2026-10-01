@@ -1,4 +1,4 @@
-import { ensureQueueConnection, getQueueConnection, startInvoiceWorker, startPackingSlipWorker, startNotificationWorker, startEmailWorker, startOrderFulfillmentWorker, startSettlementWorker } from './app/jobs/queues.js';
+import { ensureQueueConnection, getQueueConnection, startInvoiceWorker, startPackingSlipWorker, startNotificationWorker, startEmailWorker, startOrderFulfillmentWorker, startSettlementWorker, scheduleNotificationCleanup } from './app/jobs/queues.js';
 import { connectMongo, disconnectMongo } from './app/database/connection.js';
 
 async function startWorkers() {
@@ -24,7 +24,8 @@ async function startWorkers() {
     console.log('✓ Packing slip worker started');
 
     const notificationWorker = await startNotificationWorker();
-    console.log('✓ Notification worker started');
+    await scheduleNotificationCleanup().catch(() => null);
+    console.log('✓ Notification worker started & cleanup scheduled');
 
     const emailWorker = await startEmailWorker();
     console.log('✓ Email worker started');

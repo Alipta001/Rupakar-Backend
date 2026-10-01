@@ -1,8 +1,23 @@
 import { AppError } from '../utils/app-error.js';
 import { Notification } from '../models/notification.model.js';
 import { User } from '../models/user.model.js';
+import { Vendor } from '../models/vendor.model.js';
+import { env } from '../config/env.js';
 
 export class NotificationService {
+  getRetentionCutoff(retentionDays = null) {
+    const days = Number(retentionDays ?? env.READ_NOTIFICATION_RETENTION_DAYS ?? 15);
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  }
+
+  async cleanupExpiredReadNotifications({ retentionDays = null } = {}) {
+    const cutoff = this.getRetentionCutoff(retentionDays);
+    const result = await Notification.deleteMany({
+      readAt: { $ne: null, $lt: cutoff },
+    });
+    return { deletedCount: result?.deletedCount ?? 0 };
+  }
+
   async createNotification({
     userId,
     type,
@@ -36,12 +51,29 @@ export class NotificationService {
     return notification.toObject ? notification.toObject() : notification;
   }
 
+  async notifyVendor({ vendorId, userId, type, title, message, channel = 'IN_APP', metadata = {} }) {
+    let targetUserId = userId;
+    if (!targetUserId && vendorId) {
+      const vendor = await Vendor.findById(vendorId).select('ownerUserId').lean();
+      targetUserId = vendor?.ownerUserId;
+    }
+    if (!targetUserId) return null;
+
+    return this.createNotification({
+      userId: targetUserId,
+      type,
+      title,
+      message,
+      channel,
+      metadata: { ...metadata, vendorId: vendorId ? String(vendorId) : undefined },
+    }).catch(() => null);
+  }
+
   async notifyAdmins({ type, title, message, channel = 'IN_APP', metadata = {} }) {
     const adminMetadata = { ...metadata, forAdmin: true };
     const admins = await User.find({ role: 'admin', isActive: true }).select('_id').lean();
 
     if (!admins || admins.length === 0) {
-      // In case no admin exists in active collection, find any user or fallback
       const anyUser = await User.findOne({}).select('_id').lean();
       if (anyUser) {
         return [await this.createNotification({
@@ -102,12 +134,10 @@ export class NotificationService {
   }
 
   async markAllAsRead(userId, role = null) {
-    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-    let filter = { userId, readAt: null, createdAt: { $gte: cutoff } };
+    let filter = { userId, readAt: null };
     if (role === 'admin') {
       filter = {
         readAt: null,
-        createdAt: { $gte: cutoff },
         $or: [
           { userId },
           { 'metadata.forAdmin': true },
@@ -121,9 +151,16 @@ export class NotificationService {
 
   async getUserNotifications(userId, { page = 1, limit = 20, unreadOnly = false }) {
     const skip = (page - 1) * limit;
-    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-    const filter = { userId, createdAt: { $gte: cutoff } };
-    if (unreadOnly) filter.readAt = null;
+    let filter;
+    if (unreadOnly) {
+      filter = { userId, readAt: null };
+    } else {
+      const cutoff = this.getRetentionCutoff();
+      filter = {
+        userId,
+        $or: [{ readAt: null }, { readAt: { $gte: cutoff } }],
+      };
+    }
 
     const notifications = await Notification.find(filter)
       .sort({ createdAt: -1, _id: -1 })
@@ -132,23 +169,31 @@ export class NotificationService {
       .lean();
 
     const total = await Notification.countDocuments(filter);
-    const unreadCount = await Notification.countDocuments({ userId, readAt: null, createdAt: { $gte: cutoff } });
+    const unreadCount = await Notification.countDocuments({ userId, readAt: null });
 
     return { notifications, page, limit, total, unreadCount };
   }
 
   async getAdminNotifications(adminUserId, { page = 1, limit = 20, unreadOnly = false }) {
     const skip = (page - 1) * limit;
-    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-    const filter = {
-      createdAt: { $gte: cutoff },
+    const adminCriteria = {
       $or: [
         { userId: adminUserId },
         { 'metadata.forAdmin': true },
         { type: { $regex: /^ADMIN_/i } },
       ],
     };
-    if (unreadOnly) filter.readAt = null;
+
+    let filter;
+    if (unreadOnly) {
+      filter = { ...adminCriteria, readAt: null };
+    } else {
+      const cutoff = this.getRetentionCutoff();
+      filter = {
+        ...adminCriteria,
+        $nor: [{ readAt: { $ne: null, $lt: cutoff } }],
+      };
+    }
 
     const notifications = await Notification.find(filter)
       .sort({ createdAt: -1, _id: -1 })
@@ -158,16 +203,25 @@ export class NotificationService {
 
     const total = await Notification.countDocuments(filter);
     const unreadCount = await Notification.countDocuments({
-      ...filter,
+      ...adminCriteria,
       readAt: null,
     });
 
     return { notifications, page, limit, total, unreadCount };
   }
 
-  async getUnreadCount(userId) {
-    const cutoff = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-    return Notification.countDocuments({ userId, readAt: null, createdAt: { $gte: cutoff } });
+  async getUnreadCount(userId, role = null) {
+    if (role === 'admin') {
+      return Notification.countDocuments({
+        $or: [
+          { userId },
+          { 'metadata.forAdmin': true },
+          { type: { $regex: /^ADMIN_/i } },
+        ],
+        readAt: null,
+      });
+    }
+    return Notification.countDocuments({ userId, readAt: null });
   }
 }
 

@@ -708,6 +708,38 @@ export const approveDocument = async (req, res, next) => {
       );
     }
 
+    try {
+      const vendor = await Vendor.findById(req.params.id).select('ownerUserId businessName').lean();
+      if (vendor?.ownerUserId) {
+        await notificationService.createNotification({
+          userId: vendor.ownerUserId,
+          type: 'VENDOR_DOCUMENT_APPROVED',
+          title: 'Document Approved',
+          message: `Your ${document.documentType} document has been approved.`,
+          metadata: { vendorId: req.params.id, documentId: req.params.documentId, documentType: document.documentType },
+        });
+        if (allApproved) {
+          await notificationService.createNotification({
+            userId: vendor.ownerUserId,
+            type: 'VENDOR_VERIFIED',
+            title: 'Verification Complete',
+            message: `Congratulations! Your vendor profile for "${vendor.businessName}" has been fully verified.`,
+            metadata: { vendorId: req.params.id },
+          });
+        }
+      }
+      if (allApproved && vendor) {
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_VENDOR_VERIFIED',
+          title: 'Vendor Verified',
+          message: `Vendor "${vendor.businessName}" has completed all document verifications.`,
+          metadata: { vendorId: req.params.id },
+        });
+      }
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
     res.status(200).json({
       success: true,
       data: document,
@@ -736,6 +768,21 @@ export const rejectDocument = async (req, res, next) => {
       { _id: req.params.id, verificationStatus: 'VERIFIED' },
       { $set: { verificationStatus: 'PENDING' } }
     );
+
+    try {
+      const vendor = await Vendor.findById(req.params.id).select('ownerUserId businessName').lean();
+      if (vendor?.ownerUserId) {
+        await notificationService.createNotification({
+          userId: vendor.ownerUserId,
+          type: 'VENDOR_DOCUMENT_REJECTED',
+          title: 'Document Rejected',
+          message: `Your ${document.documentType} document was rejected. Reason: ${payload.reason || 'Does not meet requirements'}`,
+          metadata: { vendorId: req.params.id, documentId: req.params.documentId, documentType: document.documentType, reason: payload.reason },
+        });
+      }
+    } catch {
+      // Non-blocking notification dispatch
+    }
 
     res.status(200).json({
       success: true,

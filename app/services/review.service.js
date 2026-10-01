@@ -4,6 +4,7 @@ import { Review } from '../models/review.model.js';
 import { Product } from '../models/product.model.js';
 import { Order } from '../models/order.model.js';
 import { Vendor } from '../models/vendor.model.js';
+import { notificationService } from './notification.service.js';
 
 const sanitizeReview = (review) => {
   if (!review) return review;
@@ -112,6 +113,20 @@ export class ReviewService {
       comment,
       status: 'PUBLISHED',
     });
+
+    try {
+      if (product.vendorId) {
+        await notificationService.notifyVendor({
+          vendorId: product.vendorId,
+          type: 'VENDOR_REVIEW_RECEIVED',
+          title: 'New Customer Review',
+          message: `New ${rating}★ review received for "${product.name}": "${title || 'Customer Review'}".`,
+          metadata: { productId: String(productId), reviewId: String(review._id), rating },
+        });
+      }
+    } catch {
+      // Non-blocking notification dispatch
+    }
 
     return sanitizeReview(review);
   }

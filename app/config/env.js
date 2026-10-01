@@ -144,4 +144,5 @@ export const env = {
   DELIVERY_API_TOKEN: process.env.DELIVERY_API_TOKEN ?? '',
   DELIVERY_WEBHOOK_SECRET: process.env.DELIVERY_WEBHOOK_SECRET ?? 'mock-delivery-webhook-secret',
   PAYMENT_MOCK_ENABLED: isDevelopment && process.env.PAYMENT_MOCK_ENABLED === 'true',
+  READ_NOTIFICATION_RETENTION_DAYS: Number(process.env.READ_NOTIFICATION_RETENTION_DAYS ?? 15),
 };

@@ -654,6 +654,17 @@ export class ProductService {
           forAdmin: true,
         },
       });
+      await notificationService.createNotification({
+        userId,
+        type: 'PRODUCT_SUBMITTED',
+        title: 'Product Submitted for Review',
+        message: `Your product "${product.name}" has been submitted for review.`,
+        channel: 'IN_APP',
+        metadata: {
+          productId: product._id.toString(),
+          productName: product.name,
+        },
+      });
     } catch {
       // Non-blocking notification dispatch
     }
@@ -1003,24 +1014,80 @@ export class ProductService {
       reason: reason || null,
     });
 
-    // Notify vendor about moderation status update
+    // Notify vendor and admin about moderation status update
     try {
-      const vendor = await Vendor.findById(product.vendorId).select('ownerUserId').lean();
+      const vendor = await Vendor.findById(product.vendorId).select('ownerUserId businessName').lean();
       const targetUserId = vendor?.ownerUserId;
-      if (targetUserId && (nextStatus === 'APPROVED' || nextStatus === 'REJECTED')) {
-        await notificationService.createNotification({
-          userId: targetUserId,
-          type: nextStatus === 'APPROVED' ? 'PRODUCT_APPROVED' : 'PRODUCT_REJECTED',
-          title: nextStatus === 'APPROVED' ? 'Product Approved' : 'Product Rejected',
-          message: nextStatus === 'APPROVED'
-            ? `Your product "${product.name}" has been approved.`
-            : `Your product "${product.name}" was rejected. Reason: ${reason || 'Does not meet artisan standards'}`,
-          channel: 'IN_APP',
-          metadata: {
-            productId: product._id.toString(),
-            status: nextStatus,
-            reason: reason || null,
-          },
+
+      if (targetUserId) {
+        if (nextStatus === 'APPROVED') {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'PRODUCT_APPROVED',
+            title: 'Product Approved',
+            message: `Your product "${product.name}" has been approved.`,
+            channel: 'IN_APP',
+            metadata: { productId: product._id.toString(), status: nextStatus },
+          });
+        } else if (nextStatus === 'REJECTED') {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'PRODUCT_REJECTED',
+            title: 'Product Rejected',
+            message: `Your product "${product.name}" was rejected. Reason: ${reason || 'Does not meet artisan standards'}`,
+            channel: 'IN_APP',
+            metadata: { productId: product._id.toString(), status: nextStatus, reason: reason || null },
+          });
+        } else if (nextStatus === 'CHANGES_REQUESTED') {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'PRODUCT_CORRECTION_REQUESTED',
+            title: 'Corrections Requested',
+            message: `Corrections requested for "${product.name}". Details: ${reason || 'Please review guidelines and update product details.'}`,
+            channel: 'IN_APP',
+            metadata: { productId: product._id.toString(), status: nextStatus, reason: reason || null },
+          });
+        } else if (nextStatus === 'PUBLISHED') {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'PRODUCT_PUBLISHED',
+            title: 'Product Published',
+            message: `Your product "${product.name}" is now live and published in the store.`,
+            channel: 'IN_APP',
+            metadata: { productId: product._id.toString(), status: nextStatus },
+          });
+        } else if (nextStatus === 'UNPUBLISHED') {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'PRODUCT_UNPUBLISHED',
+            title: 'Product Unpublished',
+            message: `Your product "${product.name}" has been unpublished.`,
+            channel: 'IN_APP',
+            metadata: { productId: product._id.toString(), status: nextStatus },
+          });
+        }
+      }
+
+      if (nextStatus === 'APPROVED') {
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_PRODUCT_APPROVED',
+          title: 'Product Approved',
+          message: `Product "${product.name}" has been approved.`,
+          metadata: { productId: product._id.toString(), vendorId: product.vendorId.toString() },
+        });
+      } else if (nextStatus === 'REJECTED') {
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_PRODUCT_REJECTED',
+          title: 'Product Rejected',
+          message: `Product "${product.name}" was rejected. Reason: ${reason || 'No reason provided'}`,
+          metadata: { productId: product._id.toString(), vendorId: product.vendorId.toString(), reason },
+        });
+      } else if (nextStatus === 'CHANGES_REQUESTED') {
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_PRODUCT_CORRECTION_REQUESTED',
+          title: 'Product Corrections Requested',
+          message: `Corrections requested for product "${product.name}".`,
+          metadata: { productId: product._id.toString(), vendorId: product.vendorId.toString(), reason },
         });
       }
     } catch {

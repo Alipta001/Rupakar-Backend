@@ -31,7 +31,7 @@ export const listNotifications = async (req, res, next) => {
 
 export const getUnreadCount = async (req, res, next) => {
   try {
-    const unreadCount = await notificationService.getUnreadCount(req.user.sub);
+    const unreadCount = await notificationService.getUnreadCount(req.user.sub, req.user?.role);
     sendSuccess(res, { unreadCount }, 'Unread count retrieved', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);

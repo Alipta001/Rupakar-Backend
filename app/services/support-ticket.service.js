@@ -3,6 +3,7 @@ import { Vendor } from '../models/vendor.model.js';
 import { Product } from '../models/product.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
 import { AppError } from '../utils/app-error.js';
+import { notificationService } from './notification.service.js';
 
 const getVendor = async (userId) => {
   const vendor = await Vendor.findOne({ ownerUserId: userId, deletedAt: null });
@@ -24,7 +25,26 @@ export const supportTicketService = {
       if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Referenced order was not found for this seller');
     }
     const ticket = await SupportTicket.create({ ...payload, userId, vendorId: vendor._id, messages: [{ senderUserId: userId, senderRole: 'vendor', message: payload.message }] });
-    return ticket.toObject();
+
+    try {
+      await notificationService.createNotification({
+        userId,
+        type: 'SUPPORT_TICKET_CREATED',
+        title: 'Support Ticket Created',
+        message: `Support ticket #${ticket.ticketNumber || String(ticket._id).slice(-8)} "${ticket.subject}" has been created.`,
+        metadata: { ticketId: String(ticket._id), subject: ticket.subject },
+      });
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_SUPPORT_TICKET_CREATED',
+        title: 'New Support Ticket',
+        message: `New support ticket from "${vendor.businessName}": "${ticket.subject}".`,
+        metadata: { ticketId: String(ticket._id), vendorId: String(vendor._id), subject: ticket.subject },
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
+    return ticket.toObject ? ticket.toObject() : ticket;
   },
 
   async list(userId, { page = 1, limit = 20, status }) {
@@ -59,6 +79,18 @@ export const supportTicketService = {
     ticket.messages.push({ senderUserId: userId, senderRole: 'vendor', message });
     if (ticket.status === 'OPEN') ticket.status = 'IN_PROGRESS';
     await ticket.save();
+
+    try {
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_SUPPORT_TICKET_REPLIED',
+        title: 'Support Ticket Reply',
+        message: `Seller replied on support ticket: "${ticket.subject}".`,
+        metadata: { ticketId: String(ticket._id), subject: ticket.subject },
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
     return ticket.toObject();
   },
 
@@ -102,10 +134,55 @@ export const supportTicketService = {
     const ticket = await SupportTicket.findById(ticketId);
     if (!ticket) throw new AppError(404, 'SUPPORT_TICKET_NOT_FOUND', 'Support ticket not found');
     if (message) ticket.messages.push({ senderUserId: adminUserId, senderRole: 'admin', message });
+    const prevStatus = ticket.status;
     if (status) ticket.status = status;
     if (priority) ticket.priority = priority;
     if (assignedTo !== undefined) ticket.assignedTo = assignedTo;
     await ticket.save();
+
+    try {
+      const targetUserId = ticket.userId;
+      if (targetUserId) {
+        if (message) {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'SUPPORT_TICKET_REPLIED',
+            title: 'Support Team Reply',
+            message: `Support team replied to your ticket: "${ticket.subject}".`,
+            metadata: { ticketId: String(ticket._id), subject: ticket.subject },
+          });
+        }
+        if (status === 'RESOLVED' && prevStatus !== 'RESOLVED') {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'SUPPORT_TICKET_RESOLVED',
+            title: 'Support Ticket Resolved',
+            message: `Your support ticket "${ticket.subject}" has been marked as resolved.`,
+            metadata: { ticketId: String(ticket._id), subject: ticket.subject },
+          });
+        } else if (status === 'CLOSED' && prevStatus !== 'CLOSED') {
+          await notificationService.createNotification({
+            userId: targetUserId,
+            type: 'SUPPORT_TICKET_CLOSED',
+            title: 'Support Ticket Closed',
+            message: `Your support ticket "${ticket.subject}" is now closed.`,
+            metadata: { ticketId: String(ticket._id), subject: ticket.subject },
+          });
+        }
+      }
+
+      if (status === 'RESOLVED' && prevStatus !== 'RESOLVED') {
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_SUPPORT_TICKET_RESOLVED',
+          title: 'Ticket Resolved',
+          message: `Support ticket "${ticket.subject}" has been resolved.`,
+          metadata: { ticketId: String(ticket._id), subject: ticket.subject },
+        });
+      }
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
     return await this.adminGet(ticketId);
   },
 };

@@ -279,6 +279,30 @@ export async function scheduleNotification({ userId, type, title, message, chann
   }
 }
 
+export async function scheduleNotificationCleanup() {
+  try {
+    const queue = getNotificationQueue();
+    await queue.waitUntilReady().catch(() => null);
+    const job = await queue.add(
+      'cleanup-expired-notifications',
+      {},
+      {
+        jobId: 'notification-cleanup:daily',
+        repeat: { pattern: '0 3 * * *' },
+        attempts: 2,
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: 10,
+        removeOnFail: 20,
+      }
+    );
+    await queue.close();
+    return job;
+  } catch (_err) {
+    if (env.NODE_ENV === 'production') throw _err;
+    return null;
+  }
+}
+
 export async function scheduleEmail({ to, subject, html, text, jobType = 'send-email', jobId = null }) {
   if (!to || !subject) return null;
 
@@ -405,6 +429,12 @@ export async function startNotificationWorker() {
   const worker = new Worker(
     'notification',
     async (job) => {
+      if (job.name === 'cleanup-expired-notifications' || job.name === 'cleanup-notifications') {
+        const deletedCount = await notificationService.cleanupExpiredReadNotifications();
+        console.log(`Cleaned up ${deletedCount} expired read notifications`);
+        return { deletedCount };
+      }
+
       const { userId, type, title, message, channel, metadata } = job.data;
       console.log(`Processing notification job ${job.id} for user ${userId}`);
 

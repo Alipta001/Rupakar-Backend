@@ -215,6 +215,13 @@ export class OrderService {
           }).catch(() => null);
         }
       }
+
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_ORDER_CANCELLED',
+        title: 'Order Cancelled',
+        message: `Order #${orderNumber} was cancelled. Reason: ${reason}`,
+        metadata: { orderId: order._id.toString(), orderNumber, reason },
+      }).catch(() => null);
     } catch (err) {
       console.error('Failed to send order cancellation notifications:', err?.message || err);
     }

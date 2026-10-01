@@ -246,6 +246,21 @@ export class PaymentService {
     await Order.updateOne({ _id: order._id }, { $set: { vendorOrders: vendorOrderIds } });
     await scheduleInvoiceGeneration({ orderId: order._id, customerId: order.customerId }).catch(() => null);
     await scheduleNotification({ userId: order.customerId, type: 'ORDER_CONFIRMED', title: 'Order confirmed', message: `Your order ${order.orderNumber} is confirmed.`, metadata: { orderId: order._id, idempotencyKey: `order-confirmed:${order._id}` } }).catch(() => null);
+    try {
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_ORDER_PLACED',
+        title: 'New Order Placed',
+        message: `Order #${order.orderNumber} placed for ₹${order.total}.`,
+        metadata: {
+          orderId: order._id.toString(),
+          orderNumber: order.orderNumber,
+          total: order.total,
+          idempotencyKey: `admin-order-placed:${order._id}`,
+        },
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
     await vendorLedgerService.recordCapturedPayment({ orderId: order._id, paymentId, payment }).catch((err) => {
       console.error('Failed to record captured payment in vendor ledger:', err?.message);
     });
@@ -523,7 +538,28 @@ export class PaymentService {
       if (updatedPayment) {
         const order = await Order.findById(updatedPayment.orderId).lean();
         if (order && nextStatus === 'CAPTURED') await inventoryReservationService.consumeOrderReservations({ orderId: updatedPayment.orderId, items: order.items });
-        if (order && nextStatus === 'FAILED') await inventoryReservationService.releaseOrderReservations({ orderId: updatedPayment.orderId, items: order.items, reason: 'PAYMENT_FAILED' });
+        if (order && nextStatus === 'FAILED') {
+          await inventoryReservationService.releaseOrderReservations({ orderId: updatedPayment.orderId, items: order.items, reason: 'PAYMENT_FAILED' });
+          try {
+            await notificationService.notifyAdmins({
+              type: 'ADMIN_PAYMENT_FAILED',
+              title: 'Payment Failed',
+              message: `Payment failed for order #${order.orderNumber}. Amount: ₹${order.total}.`,
+              metadata: { orderId: order._id.toString(), orderNumber: order.orderNumber, paymentId: updatedPayment._id.toString() },
+            });
+            if (order.customerId) {
+              await notificationService.createNotification({
+                userId: order.customerId,
+                type: 'PAYMENT_FAILED',
+                title: 'Payment Failed',
+                message: `Payment failed for order #${order.orderNumber}. Please try again from checkout.`,
+                metadata: { orderId: order._id.toString(), orderNumber: order.orderNumber },
+              });
+            }
+          } catch {
+            // Non-blocking notification dispatch
+          }
+        }
         const paymentStatus = nextStatus === 'CAPTURED' ? 'PAID' : nextStatus;
         const orderStatus = nextStatus === 'CAPTURED' ? 'CONFIRMED' : nextStatus === 'FAILED' ? 'FAILED' : nextStatus === 'REFUNDED' ? 'REFUNDED' : nextStatus === 'PARTIALLY_REFUNDED' ? 'PARTIALLY_REFUNDED' : undefined;
         await Order.updateOne({ _id: updatedPayment.orderId }, {

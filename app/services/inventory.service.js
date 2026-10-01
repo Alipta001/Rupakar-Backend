@@ -4,6 +4,7 @@ import { InventoryMovement } from '../models/inventory-movement.model.js';
 import { ProductVariant } from '../models/product-variant.model.js';
 import { Product } from '../models/product.model.js';
 import { Vendor } from '../models/vendor.model.js';
+import { notificationService } from './notification.service.js';
 
 const toPlain = (doc) => {
   if (!doc) return doc;
@@ -12,6 +13,53 @@ const toPlain = (doc) => {
 };
 
 const inventoryStatus = (availableQuantity, lowStockThreshold) => Number(availableQuantity) <= Number(lowStockThreshold) ? 'LOW_STOCK' : 'ACTIVE';
+
+async function checkAndSendInventoryAlerts(inventory, previousQuantity) {
+  try {
+    const product = await Product.findById(inventory.productId).select('name vendorId').lean();
+    if (!product) return;
+
+    const productName = product.name || 'Product';
+    const currentQty = inventory.availableQuantity;
+    const threshold = inventory.lowStockThreshold || 5;
+
+    if (currentQty === 0 && previousQuantity > 0) {
+      if (product.vendorId) {
+        await notificationService.notifyVendor({
+          vendorId: product.vendorId,
+          type: 'INVENTORY_OUT_OF_STOCK',
+          title: 'Out of Stock Alert',
+          message: `Product "${productName}" is now out of stock. Please restock your inventory.`,
+          metadata: { productId: String(inventory.productId), variantId: String(inventory.variantId) },
+        });
+      }
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_INVENTORY_OUT_OF_STOCK',
+        title: 'Product Out of Stock',
+        message: `Product "${productName}" is now out of stock.`,
+        metadata: { productId: String(inventory.productId), variantId: String(inventory.variantId), vendorId: String(product.vendorId || '') },
+      });
+    } else if (currentQty > 0 && currentQty <= threshold && previousQuantity > threshold) {
+      if (product.vendorId) {
+        await notificationService.notifyVendor({
+          vendorId: product.vendorId,
+          type: 'INVENTORY_LOW_STOCK',
+          title: 'Low Stock Alert',
+          message: `Low stock alert: Product "${productName}" has only ${currentQty} units remaining.`,
+          metadata: { productId: String(inventory.productId), variantId: String(inventory.variantId), availableQuantity: currentQty },
+        });
+      }
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_INVENTORY_LOW_STOCK',
+        title: 'Low Stock Alert',
+        message: `Product "${productName}" has only ${currentQty} units left.`,
+        metadata: { productId: String(inventory.productId), variantId: String(inventory.variantId), vendorId: String(product.vendorId || ''), availableQuantity: currentQty },
+      });
+    }
+  } catch {
+    // Non-blocking notification dispatch
+  }
+}
 
 export class InventoryService {
   async ensureVendorOwnsVariant(vendorUserId, variantId) {
@@ -142,6 +190,8 @@ export class InventoryService {
       actorId,
     });
 
+    await checkAndSendInventoryAlerts(inventory, inventory.availableQuantity + normalized);
+
     return inventory.toObject ? inventory.toObject() : inventory;
   }
 
@@ -174,6 +224,8 @@ export class InventoryService {
       reason,
       actorId,
     });
+
+    await checkAndSendInventoryAlerts(updated, inventory.availableQuantity);
 
     return updated.toObject ? updated.toObject() : updated;
   }

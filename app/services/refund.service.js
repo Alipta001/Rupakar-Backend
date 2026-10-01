@@ -7,6 +7,7 @@ import { paymentService } from './payment.service.js';
 import { vendorLedgerService } from './vendor-ledger.service.js';
 import { Order } from '../models/order.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
+import { notificationService } from './notification.service.js';
 
 export class RefundService {
   constructor() {
@@ -170,6 +171,35 @@ export class RefundService {
       }).catch((err) => {
         console.error('Failed to record refund adjustment in vendor ledger:', err?.message);
       });
+    }
+
+    try {
+      if (refundData.vendorId) {
+        await notificationService.notifyVendor({
+          vendorId: refundData.vendorId,
+          type: 'VENDOR_REFUND_PROCESSED',
+          title: 'Refund Processed',
+          message: `A refund of ₹${refund.amount} has been processed for order. Reason: ${refund.reason || 'RETURN_APPROVED'}`,
+          metadata: { orderId: String(refundData.orderId), refundId: String(refund._id), amount: refund.amount },
+        });
+      }
+      if (refundData.customerId) {
+        await notificationService.createNotification({
+          userId: refundData.customerId,
+          type: 'REFUND_COMPLETED',
+          title: 'Refund Completed',
+          message: `Your refund of ₹${refund.amount} has been processed successfully.`,
+          metadata: { orderId: String(refundData.orderId), refundId: String(refund._id), amount: refund.amount },
+        });
+      }
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_REFUND_PROCESSED',
+        title: 'Refund Processed',
+        message: `Refund #${refund.refundNumber} of ₹${refund.amount} has been processed.`,
+        metadata: { orderId: String(refundData.orderId), refundId: String(refund._id), amount: refund.amount },
+      });
+    } catch {
+      // Non-blocking notification dispatch
     }
 
     this.markRefundSeen({ orderId: refundData.orderId, returnId: refundData.returnId, refundKey: key });

@@ -3,6 +3,7 @@ import { AppError } from '../utils/app-error.js';
 import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { VendorDocument } from '../models/vendor-document.model.js';
+import { notificationService } from './notification.service.js';
 
 export const VENDOR_VALID_TRANSITIONS = {
   PENDING: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
@@ -48,6 +49,24 @@ export class VendorService {
       status: 'PENDING',
       verificationStatus: 'UNVERIFIED',
     });
+
+    try {
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_VENDOR_REGISTERED',
+        title: 'New Vendor Registration',
+        message: `New vendor "${vendor.businessName}" has submitted an application for review.`,
+        metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName },
+      });
+      await notificationService.createNotification({
+        userId: ownerUserId,
+        type: 'VENDOR_APPLICATION_SUBMITTED',
+        title: 'Application Submitted',
+        message: `Your vendor application for "${vendor.businessName}" has been submitted for review.`,
+        metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName },
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
 
     return vendor.toObject();
   }
@@ -105,6 +124,61 @@ export class VendorService {
       vendor.rejectionReason = reason || '';
     }
     await vendor.save();
+
+    try {
+      if (nextStatus === 'APPROVED') {
+        if (vendor.ownerUserId) {
+          await notificationService.createNotification({
+            userId: vendor.ownerUserId,
+            type: 'VENDOR_APPROVED',
+            title: 'Vendor Account Approved',
+            message: `Congratulations! Your vendor account for "${vendor.businessName}" has been approved.`,
+            metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName },
+          });
+        }
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_VENDOR_APPROVED',
+          title: 'Vendor Account Approved',
+          message: `Vendor "${vendor.businessName}" has been approved.`,
+          metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName },
+        });
+      } else if (nextStatus === 'REJECTED') {
+        if (vendor.ownerUserId) {
+          await notificationService.createNotification({
+            userId: vendor.ownerUserId,
+            type: 'VENDOR_REJECTED',
+            title: 'Vendor Application Decision',
+            message: `Your vendor application for "${vendor.businessName}" was not approved. Reason: ${vendor.rejectionReason}`,
+            metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName, reason: vendor.rejectionReason },
+          });
+        }
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_VENDOR_REJECTED',
+          title: 'Vendor Application Rejected',
+          message: `Vendor "${vendor.businessName}" was rejected. Reason: ${vendor.rejectionReason}`,
+          metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName, reason: vendor.rejectionReason },
+        });
+      } else if (nextStatus === 'SUSPENDED' || nextStatus === 'BLOCKED') {
+        if (vendor.ownerUserId) {
+          await notificationService.createNotification({
+            userId: vendor.ownerUserId,
+            type: 'VENDOR_SUSPENDED',
+            title: 'Vendor Account Suspended',
+            message: `Your vendor account for "${vendor.businessName}" has been suspended. Reason: ${vendor.rejectionReason || 'Policy violation'}`,
+            metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName, reason: vendor.rejectionReason },
+          });
+        }
+        await notificationService.notifyAdmins({
+          type: 'ADMIN_VENDOR_SUSPENDED',
+          title: 'Vendor Account Suspended',
+          message: `Vendor "${vendor.businessName}" has been suspended. Reason: ${vendor.rejectionReason || 'Policy violation'}`,
+          metadata: { vendorId: vendor._id.toString(), businessName: vendor.businessName, reason: vendor.rejectionReason },
+        });
+      }
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
     return this.getById(vendor._id);
   }
 
@@ -157,6 +231,27 @@ export class VendorService {
     });
 
     await Vendor.updateOne({ _id: vendor._id }, { $addToSet: { documents: doc._id } }).catch(() => null);
+
+    try {
+      if (vendor.ownerUserId) {
+        await notificationService.createNotification({
+          userId: vendor.ownerUserId,
+          type: 'VENDOR_DOCUMENT_SUBMITTED',
+          title: 'Verification Document Submitted',
+          message: `Your ${doc.documentType} document has been submitted for verification.`,
+          metadata: { vendorId: vendor._id.toString(), documentId: doc._id.toString(), documentType: doc.documentType },
+        });
+      }
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_VENDOR_DOCUMENT_SUBMITTED',
+        title: 'Vendor Document Submitted',
+        message: `Vendor "${vendor.businessName}" submitted a ${doc.documentType} document for review.`,
+        metadata: { vendorId: vendor._id.toString(), documentId: doc._id.toString(), documentType: doc.documentType },
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
     return doc;
   }
 

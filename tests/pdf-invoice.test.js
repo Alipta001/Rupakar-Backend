@@ -1,5 +1,15 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
+import PDFDocument from 'pdfkit';
 import { PdfService } from '../app/services/pdf.service.js';
+
+const decodePdfText = (buffer) => {
+  const raw = buffer.toString('latin1');
+  const tokens = [];
+  for (const m of raw.matchAll(/<([0-9a-fA-F]+)>/g)) {
+    tokens.push(Buffer.from(m[1], 'hex').toString('latin1'));
+  }
+  return tokens.join('');
+};
 
 // Shared fixture for a 1-item invoice with long IDs to stress-test header overflow.
 const LONG_INVOICE_ID  = 'INV-2026-AVERYLONGINVOICEID-XXXXXXXXXXXXXXXX';
@@ -124,6 +134,146 @@ describe('invoice PDF generation', () => {
       paymentMethod: 'razorpay', paymentStatus: 'PAID',
     });
     expect(Buffer.isBuffer(pdf.content)).toBe(true);
+  });
+
+  it('includes vendor name only and excludes vendor contact details (email, phone, address, GST, bank)', async () => {
+    const vendorInvoice = {
+      ...oneItemInvoice,
+      invoiceNumber: 'INV-VENDOR-TEST-001',
+      vendorSnapshot: {
+        businessName: 'Santipur Handloom Guild',
+        email: 'secret-artisan-email@example.com',
+        phone: '+919999988888',
+        address: 'Secret Village Road, Nadia, West Bengal',
+        gstNumber: 'GSTIN19ABCDE1234F1Z5',
+        bankDetails: { accountNumber: '998877665544' },
+      },
+    };
+
+    const pdf = await new PdfService().generateInvoicePdf(vendorInvoice);
+    const pdfText = decodePdfText(pdf.content);
+
+    // Vendor business name MUST appear
+    expect(pdfText).toContain('Santipur Handloom Guild');
+
+    // Vendor contact / sensitive details MUST NOT appear
+    expect(pdfText).not.toContain('secret-artisan-email@example.com');
+    expect(pdfText).not.toContain('+919999988888');
+    expect(pdfText).not.toContain('Secret Village Road');
+    expect(pdfText).not.toContain('GSTIN19ABCDE1234F1Z5');
+    expect(pdfText).not.toContain('998877665544');
+  });
+
+  it('renders footer with Rupakar Support and hello@rupakar.com without fake phone number', async () => {
+    const pdf = await new PdfService().generateInvoicePdf(oneItemInvoice);
+    const pdfText = decodePdfText(pdf.content);
+
+    expect(pdfText).toContain('hello@rupakar.com');
+    expect(pdfText).toContain('Rupakar Support');
+    expect(pdfText).not.toContain('+91 98765 43210');
+    expect(pdfText).not.toContain('98765 43210');
+  });
+
+  it('supports 20+ items across multiple pages with repeated table header and dynamic pagination', async () => {
+    const manyItems = Array.from({ length: 25 }, (_, i) => ({
+      productName: `Authentic Terracotta Artifact Item #${i + 1} From Bankura With Detailed Craft Description`,
+      sku: `SKU-BANKURA-${1000 + i}`,
+      quantity: (i % 3) + 1,
+      unitPrice: 1500 + i * 50,
+      lineTotal: (1500 + i * 50) * ((i % 3) + 1),
+      variantName: 'Terracotta Red / Medium Size',
+    }));
+
+    const multiPageInvoice = {
+      ...oneItemInvoice,
+      invoiceNumber: 'INV-2026-MULTIPAGE-001',
+      items: manyItems,
+      subtotal: manyItems.reduce((acc, it) => acc + it.lineTotal, 0),
+      total: manyItems.reduce((acc, it) => acc + it.lineTotal, 0) + 100,
+    };
+
+    const pdf = await new PdfService().generateInvoicePdf(multiPageInvoice);
+    const pdfRaw = pdf.content.toString('latin1');
+    const countMatch = pdfRaw.match(/\/Count\s+(\d+)/);
+    const pageCount = countMatch ? parseInt(countMatch[1], 10) : -1;
+
+    // Must automatically paginate across multiple pages
+    expect(pageCount).toBeGreaterThan(1);
+
+    const pdfText = decodePdfText(pdf.content);
+
+    expect(pdfText).toContain(`Page 1 of ${pageCount}`);
+    expect(pdfText).toContain(`Page ${pageCount} of ${pageCount}`);
+  });
+
+  it('handles large INR amounts without overflow or error', async () => {
+    const largeAmountInvoice = {
+      ...oneItemInvoice,
+      invoiceNumber: 'INV-2026-LARGE-AMOUNT-001',
+      items: [
+        {
+          productName: 'Royal Silk Saree with Real Gold Zari Work Handcrafted by Master Weaver',
+          sku: 'SKU-ROYAL-SILK-001',
+          quantity: 10,
+          unitPrice: 2500000.00,
+          lineTotal: 25000000.00,
+          variantName: 'Pure Gold Zari / Ceremonial Red',
+        },
+      ],
+      subtotal: 25000000.00,
+      discount: 500000.00,
+      tax: 4410000.00,
+      shipping: 25000.00,
+      total: 28935000.00,
+    };
+
+    const pdf = await new PdfService().generateInvoicePdf(largeAmountInvoice);
+    expect(Buffer.isBuffer(pdf.content)).toBe(true);
+
+    const pdfText = decodePdfText(pdf.content);
+
+    expect(pdfText).toContain('2,89,35,000.00');
+  });
+
+  it('renders header respecting page margin (36pt) and 3 info cards with exactly equal widths', async () => {
+    const rectSpy = jest.spyOn(PDFDocument.prototype, 'rect');
+    const roundedRectSpy = jest.spyOn(PDFDocument.prototype, 'roundedRect');
+
+    try {
+      const pdf = await new PdfService().generateInvoicePdf(oneItemInvoice);
+      expect(Buffer.isBuffer(pdf.content)).toBe(true);
+
+      // Verify header respects PAGE_MARGIN (36pt)
+      const headerRect = rectSpy.mock.calls.find(([, , , h]) => h === 62);
+      expect(headerRect).toBeDefined();
+      expect(headerRect[0]).toBe(36); // left margin
+      expect(headerRect[1]).toBe(36); // headerTop === PAGE_MARGIN (not 30)
+
+      // Verify 3 info cards (height === 84) have equal widths
+      const infoCards = roundedRectSpy.mock.calls.filter(([, y, , h]) => y === 104 && h === 84);
+      expect(infoCards).toHaveLength(3);
+
+      const [card1, card2, card3] = infoCards;
+      const cardWidth = card1[2];
+      const cardGap = 10;
+      const left = 36;
+
+      expect(card1[0]).toBe(left);
+      expect(card1[2]).toBe(cardWidth);
+
+      expect(card2[0]).toBe(left + cardWidth + cardGap);
+      expect(card2[2]).toBe(cardWidth);
+
+      expect(card3[0]).toBe(left + (cardWidth + cardGap) * 2);
+      expect(card3[2]).toBe(cardWidth);
+
+      // Verify cards stay strictly within A4 width
+      const a4Width = 595.28;
+      expect(card3[0] + cardWidth).toBeLessThanOrEqual(a4Width - left);
+    } finally {
+      rectSpy.mockRestore();
+      roundedRectSpy.mockRestore();
+    }
   });
 });
 

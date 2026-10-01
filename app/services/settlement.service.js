@@ -13,6 +13,7 @@ import { financialSettingsService } from './financial-settings.service.js';
 import { razorpayRouteProvider } from './settlement-providers/razorpay-route.provider.js';
 import { toPaise, toRupees } from '../utils/money.js';
 import { auditService } from './audit.service.js';
+import { notificationService } from './notification.service.js';
 import { env } from '../config/env.js';
 
 const sum = (items, field) => Number(items?.[0]?.[field] || 0);
@@ -430,6 +431,29 @@ export class SettlementService {
     batch.processedAt = new Date();
     await batch.save();
 
+    try {
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_SETTLEMENT_BATCH_CREATED',
+        title: 'Settlement Batch Created',
+        message: `Settlement batch #${batch.batchNumber} created for ${processedVendorIds.length} vendor(s) totaling ₹${toRupees(totalBatchPaise)}.`,
+        metadata: { batchId: String(batch._id), batchNumber: batch.batchNumber, totalAmount: toRupees(totalBatchPaise) },
+      });
+
+      for (const payout of createdPayouts) {
+        if (payout.vendorId) {
+          await notificationService.notifyVendor({
+            vendorId: payout.vendorId,
+            type: 'PAYOUT_INITIATED',
+            title: 'Payout Initiated',
+            message: `Payout of ₹${toRupees(payout.amountPaise)} (${payout.payoutNumber}) has been initiated for your account.`,
+            metadata: { payoutId: String(payout._id), payoutNumber: payout.payoutNumber, amount: toRupees(payout.amountPaise) },
+          });
+        }
+      }
+    } catch {
+      // Non-blocking notification dispatch
+    }
+
     return {
       created: true,
       batch: batch.toObject ? batch.toObject() : batch,
@@ -771,7 +795,6 @@ export class SettlementService {
       }
     }
 
-    // Immutable audit trail recording
     auditService.log('MANUAL_PAYOUT_CONFIRMED', {
       adminUserId: String(adminUserId || ''),
       payoutId: String(payout._id),
@@ -786,6 +809,27 @@ export class SettlementService {
       remainingPayoutId: remainingPayout ? String(remainingPayout._id) : null,
       paymentDate: paymentTimestamp.toISOString(),
     });
+
+    try {
+      const amountRupees = payout.requestedAmount || toRupees(payout.amountPaise);
+      if (payout.vendorId) {
+        await notificationService.notifyVendor({
+          vendorId: payout.vendorId,
+          type: 'PAYOUT_SETTLED',
+          title: 'Payout Settled',
+          message: `Payout of ₹${amountRupees} (${payout.payoutNumber}) has been settled to your bank account. UTR: ${trimmedReference}`,
+          metadata: { payoutId: String(payout._id), payoutNumber: payout.payoutNumber, amount: amountRupees, utr: trimmedReference },
+        });
+      }
+      await notificationService.notifyAdmins({
+        type: 'ADMIN_PAYOUT_SETTLED',
+        title: 'Payout Confirmed',
+        message: `Payout ${payout.payoutNumber} for ₹${amountRupees} confirmed with UTR ${trimmedReference}.`,
+        metadata: { payoutId: String(payout._id), payoutNumber: payout.payoutNumber, amount: amountRupees, utr: trimmedReference },
+      });
+    } catch {
+      // Non-blocking notification dispatch
+    }
 
     payout.isPartial = isPartial;
     payout.remainingPayout = remainingPayout;
