@@ -1,5 +1,3 @@
-import { AppError } from '../utils/app-error.js';
-
 const DEFAULT_GST_RATE = 5;
 const GST_RATE_BY_CODE = {
   GST_5: 5,

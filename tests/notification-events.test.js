@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { notificationService } from '../app/services/notification.service.js';
-import { Notification } from '../app/models/notification.model.js';
 import { Vendor } from '../app/models/vendor.model.js';
 import { User } from '../app/models/user.model.js';
 import { inventoryService } from '../app/services/inventory.service.js';
@@ -16,7 +15,6 @@ import { VendorLedgerEntry } from '../app/models/vendor-ledger-entry.model.js';
 
 describe('Notification Event Triggers & Recipient Isolation', () => {
   const vendorId1 = new mongoose.Types.ObjectId();
-  const vendorId2 = new mongoose.Types.ObjectId();
   const ownerUserId1 = new mongoose.Types.ObjectId();
   const ownerUserId2 = new mongoose.Types.ObjectId();
   const adminUserId = new mongoose.Types.ObjectId();

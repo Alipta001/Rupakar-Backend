@@ -1,7 +1,7 @@
 import { Product } from '../models/product.model.js';
 
 export class SearchService {
-  buildPublicQuery({ q, category, brand, vendor, minPrice, maxPrice, sort = 'newest', limit = 20, cursor = null } = {}) {
+  buildPublicQuery({ q, category, brand, vendor, _minPrice, _maxPrice, sort = 'newest', limit = 20, cursor = null } = {}) {
     const query = { status: 'PUBLISHED', deletedAt: null };
 
     if (q && String(q).trim()) {

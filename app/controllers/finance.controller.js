@@ -29,8 +29,6 @@ const approvedVendor = async (userId) => {
   return vendor;
 };
 
-// ==================== VENDOR ENDPOINTS ====================
-
 export const listVendorLedger = async (req, res, next) => {
   try {
     const vendor = await approvedVendor(req.user.sub);
@@ -74,8 +72,6 @@ export const getVendorPayout = async (req, res, next) => {
     res.status(200).json({ success: true, data, message: 'Vendor payout loaded', requestId: String(req.headers['x-request-id'] ?? '') });
   } catch (error) { next(error); }
 };
-
-// ==================== ADMIN ENDPOINTS ====================
 
 export const getAdminFinanceOverview = async (req, res, next) => {
   try {
@@ -292,8 +288,6 @@ export const listEligibleSettlements = async (_req, res, next) => {
 
 export const listSettlementReadinessOverview = async (_req, res, next) => {
   try {
-    const isDbConnected = mongoose.connection?.readyState === 1;
-
     // Aggregate all active unsettled entries by vendor and status
     const unSettled = await VendorLedgerEntry.aggregate([
       { $match: { status: 'POSTED', eligibilityStatus: { $in: ['PENDING', 'ON_HOLD', 'ELIGIBLE'] } } },

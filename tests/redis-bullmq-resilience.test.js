@@ -1,6 +1,5 @@
 import { describe, it, expect, jest, afterAll } from '@jest/globals';
 import { getQueueConnection, ensureQueueConnection, getEmailQueue, closeQueueConnection } from '../app/jobs/queues.js';
-import { env } from '../app/config/env.js';
 
 describe('Redis & BullMQ Queue Resilience', () => {
   afterAll(async () => {

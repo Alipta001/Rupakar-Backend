@@ -11,7 +11,6 @@ import { Cart } from '../app/models/cart.model.js';
 import { Inventory } from '../app/models/inventory.model.js';
 import { Order } from '../app/models/order.model.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
-import { Payment } from '../app/models/payment.model.js';
 import { OrderStatusHistory } from '../app/models/order-status-history.model.js';
 import { inventoryReservationService } from '../app/services/inventory-reservation.service.js';
 import { paymentService } from '../app/services/payment.service.js';

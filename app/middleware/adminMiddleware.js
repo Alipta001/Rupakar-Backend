@@ -11,7 +11,7 @@ const adminMiddleware = (req, res, next) => {
 
     next();
 
-  } catch (error) {
+  } catch {
 
     return res.status(500).json({
       status: false,

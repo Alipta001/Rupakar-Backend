@@ -15,7 +15,6 @@ import { Payment } from '../app/models/payment.model.js';
 import { PaymentTransaction } from '../app/models/payment-transaction.model.js';
 import { PaymentEvent } from '../app/models/payment-event.model.js';
 import { paymentService } from '../app/services/payment.service.js';
-import { userAddressService } from '../app/services/user-address.service.js';
 import { pricingService } from '../app/services/pricing.service.js';
 import { inventoryReservationService } from '../app/services/inventory-reservation.service.js';
 import { OrderStatusHistory } from '../app/models/order-status-history.model.js';

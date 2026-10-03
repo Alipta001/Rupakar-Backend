@@ -5,11 +5,9 @@ import { razorpayRouteProvider } from '../app/services/settlement-providers/razo
 import { auditService } from '../app/services/audit.service.js';
 import { VendorPayout } from '../app/models/vendor-payout.model.js';
 import { VendorLedgerEntry } from '../app/models/vendor-ledger-entry.model.js';
-import { VendorOrder } from '../app/models/vendor-order.model.js';
 import { Order } from '../app/models/order.model.js';
 import { Payment } from '../app/models/payment.model.js';
 import { Refund } from '../app/models/refund.model.js';
-import { AppError } from '../app/utils/app-error.js';
 import { getAdminFinanceOverview } from '../app/controllers/finance.controller.js';
 
 const id = () => new mongoose.Types.ObjectId();
@@ -220,8 +218,6 @@ describe('MANUAL PAYOUT CONFIRMATION & SETTLEMENT FLOW AUDIT (15-POINT VERIFICAT
 
   // Item 9: Vendor payable/balance is updated consistently
   it('9: Vendor balance moves from reserved to settled consistently upon manual confirmation', async () => {
-    const vendorId = id();
-
     // Before confirmation: payout is in READY (counted in reserved)
     // After confirmation: payout is in PAID (counted in settled)
     // The balance calculation sums:

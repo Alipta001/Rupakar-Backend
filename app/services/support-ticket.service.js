@@ -11,8 +11,6 @@ const getVendor = async (userId) => {
   return vendor;
 };
 
-const ownedQuery = (userId, ticketId) => ({ _id: ticketId, userId });
-
 export const supportTicketService = {
   async create(userId, payload) {
     const vendor = await getVendor(userId);

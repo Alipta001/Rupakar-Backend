@@ -118,10 +118,10 @@ export class VendorService {
     if (nextStatus === 'REJECTED') {
       vendor.rejectedAt = new Date();
       vendor.rejectedBy = actorUserId;
-      vendor.rejectionReason = reason || 'No reason provided';
+      vendor.rejectionReason = reasonText || 'No reason provided';
     }
     if (nextStatus === 'SUSPENDED' || nextStatus === 'BLOCKED') {
-      vendor.rejectionReason = reason || '';
+      vendor.rejectionReason = reasonText || '';
     }
     await vendor.save();
 

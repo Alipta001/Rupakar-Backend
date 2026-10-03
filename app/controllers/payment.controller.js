@@ -6,8 +6,6 @@ import { AppError } from '../utils/app-error.js';
 import { env } from '../config/env.js';
 import { z } from 'zod';
 import { inventoryReservationService } from '../services/inventory-reservation.service.js';
-import { VendorOrder } from '../models/vendor-order.model.js';
-import { vendorLedgerService } from '../services/vendor-ledger.service.js';
 
 export const paymentWebhook = async (req, res, next) => {
   try {

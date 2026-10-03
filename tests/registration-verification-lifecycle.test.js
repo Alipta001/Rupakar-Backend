@@ -10,7 +10,6 @@ import { Cart } from '../app/models/cart.model.js';
 import { Wishlist } from '../app/models/wishlist.model.js';
 import { RefreshSession } from '../app/models/refresh-session.model.js';
 import { emailService } from '../app/services/email.service.js';
-import { env } from '../app/config/env.js';
 
 describe('registration and verification lifecycle', () => {
   beforeEach(() => {
@@ -336,9 +335,9 @@ describe('registration and verification lifecycle', () => {
     jest.spyOn(Invoice, 'exists').mockResolvedValue(false);
     jest.spyOn(Vendor, 'findOne').mockResolvedValue(null);
 
-    const deleteCartSpy = jest.spyOn(Cart, 'deleteMany').mockResolvedValue({ acknowledged: true });
-    const deleteWishlistSpy = jest.spyOn(Wishlist, 'deleteMany').mockResolvedValue({ acknowledged: true });
-    const deleteSessionSpy = jest.spyOn(RefreshSession, 'deleteMany').mockResolvedValue({ acknowledged: true });
+    jest.spyOn(Cart, 'deleteMany').mockResolvedValue({ acknowledged: true });
+    jest.spyOn(Wishlist, 'deleteMany').mockResolvedValue({ acknowledged: true });
+    jest.spyOn(RefreshSession, 'deleteMany').mockResolvedValue({ acknowledged: true });
     const deleteUserSpy = jest.spyOn(User, 'deleteOne').mockResolvedValue({ acknowledged: true });
 
     const result = await authService.cleanupPendingRegistrations({ now });

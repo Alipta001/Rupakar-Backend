@@ -77,8 +77,6 @@ export class ReconciliationService {
         checkedVendorOrders += vendorOrders.length;
         const sumVoTotalPaise = vendorOrders.reduce((sum, vo) => sum + toPaise(vo.total), 0);
         const sumVoDiscountPaise = vendorOrders.reduce((sum, vo) => sum + toPaise(vo.discount), 0);
-        const sumVoTaxPaise = vendorOrders.reduce((sum, vo) => sum + toPaise(vo.tax), 0);
-        const sumVoShippingPaise = vendorOrders.reduce((sum, vo) => sum + toPaise(vo.shipping), 0);
 
         if (sumVoTotalPaise !== orderTotalPaise) {
           discrepancies.push({

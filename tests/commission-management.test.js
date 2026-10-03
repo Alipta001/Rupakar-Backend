@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { commissionService } from '../app/services/commission.service.js';
 import { CommissionConfig } from '../app/models/commission-config.model.js';
-import { AppError } from '../app/utils/app-error.js';
 
 const id = () => new mongoose.Types.ObjectId();
 

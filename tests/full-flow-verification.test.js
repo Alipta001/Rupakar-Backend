@@ -1,13 +1,12 @@
 import mongoose from 'mongoose';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
-import { toPaise, toRupees, calcPercentagePaise, allocateProportionallyPaise } from '../app/utils/money.js';
+import { calcPercentagePaise, allocateProportionallyPaise } from '../app/utils/money.js';
 import { financialSettingsService } from '../app/services/financial-settings.service.js';
 import { commissionService } from '../app/services/commission.service.js';
 import { vendorLedgerService } from '../app/services/vendor-ledger.service.js';
 import { settlementService } from '../app/services/settlement.service.js';
 import { reconciliationService } from '../app/services/reconciliation.service.js';
 import { razorpayRouteProvider } from '../app/services/settlement-providers/razorpay-route.provider.js';
-import { FinancialSettings } from '../app/models/financial-settings.model.js';
 import { VendorLedgerEntry } from '../app/models/vendor-ledger-entry.model.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
 import { Order } from '../app/models/order.model.js';
@@ -369,7 +368,6 @@ describe('RUPAKAR 13-POINT VERIFICATION SUITE', () => {
     };
 
     // Update settings to version 2 (commission 15%)
-    const v1Settings = { version: 1, commission: { defaultRate: 10 } };
     const v2Settings = { version: 2, commission: { defaultRate: 15 } };
     jest.spyOn(financialSettingsService, 'getCurrentSettings').mockResolvedValue(v2Settings);
 

@@ -3,7 +3,6 @@ import {
   SmsService,
   MockSmsProvider,
   TwilioSmsProvider,
-  HttpSmsProvider,
   Msg91SmsProvider,
   normalizePhoneNumber,
   maskPhoneNumber,

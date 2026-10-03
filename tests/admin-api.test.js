@@ -1,6 +1,4 @@
-import { describe, expect, it, jest, beforeEach } from '@jest/globals';
-import jwt from 'jsonwebtoken';
-import { env } from '../app/config/env.js';
+import { describe, expect, it, jest } from '@jest/globals';
 import { requireAuth, requireRole } from '../app/middleware/auth.middleware.js';
 import { getAdminSettings } from '../app/controllers/admin.controller.js';
 

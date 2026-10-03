@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
-import { getInvoiceDetail, listCustomerInvoices, downloadInvoice, downloadOrderInvoice, listAdminInvoices, getAdminInvoiceDetail, listVendorInvoices } from '../controllers/invoice.controller.js';
+import { getInvoiceDetail, listCustomerInvoices, downloadInvoice, downloadOrderInvoice, listAdminInvoices, getAdminInvoiceDetail } from '../controllers/invoice.controller.js';
 
 const router = Router();
 

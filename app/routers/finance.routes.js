@@ -31,14 +31,14 @@ import {
 
 const router = Router();
 
-// ==================== VENDOR ROUTES ====================
+// Vendor routes
 router.get('/vendor/finance/ledger', requireAuth, listVendorLedger);
 router.get('/vendor/finance/summary', requireAuth, getVendorLedgerSummary);
 router.get('/vendor/finance/balance', requireAuth, getVendorBalance);
 router.get('/vendor/finance/payouts', requireAuth, listVendorPayouts);
 router.get('/vendor/finance/payouts/:id', requireAuth, getVendorPayout);
 
-// ==================== ADMIN ROUTES ====================
+// Admin routes
 router.get('/admin/commissions', requireAuth, requireRole('admin'), listAdminCommissions);
 
 router.use('/admin/finance', requireAuth, requireRole('admin'));

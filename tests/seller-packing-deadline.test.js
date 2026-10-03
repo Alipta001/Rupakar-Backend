@@ -77,8 +77,8 @@ describe('Seller Packing Deadline & Reminder Automation', () => {
       jest.spyOn(Notification, 'findOne').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
 
       const notifSpy = jest.spyOn(notificationService, 'createNotification').mockResolvedValue({});
-      const emailSpy = jest.spyOn(emailService, 'sendEmail').mockResolvedValue({});
-      const smsSpy = jest.spyOn(smsService, 'sendSms').mockResolvedValue({});
+      jest.spyOn(emailService, 'sendEmail').mockResolvedValue({});
+      jest.spyOn(smsService, 'sendSms').mockResolvedValue({});
 
       // Step 1: 12h elapsed, 36h remaining
       const step1Result = await orderFulfillmentService.sendPackingReminder(vendorOrderId1, 1);
@@ -208,7 +208,7 @@ describe('Seller Packing Deadline & Reminder Automation', () => {
       const stockSpy = jest.spyOn(inventoryService, 'increaseStock').mockResolvedValue({});
       const refundSpy = jest.spyOn(refundService, 'createRefund').mockResolvedValue({ refundId: 'rf-123' });
       const notifSpy = jest.spyOn(notificationService, 'createNotification').mockResolvedValue({});
-      const emailSpy = jest.spyOn(emailService, 'sendEmail').mockResolvedValue({});
+      jest.spyOn(emailService, 'sendEmail').mockResolvedValue({});
 
       const result = await orderFulfillmentService.autoCancelUnpackedVendorOrder(vendorOrderId1);
 

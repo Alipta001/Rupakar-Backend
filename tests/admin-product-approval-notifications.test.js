@@ -6,7 +6,7 @@ import { User } from '../app/models/user.model.js';
 import { Notification } from '../app/models/notification.model.js';
 import { productService } from '../app/services/product.service.js';
 import { notificationService } from '../app/services/notification.service.js';
-import { approveProduct, adminProductDetail, adminProductList } from '../app/controllers/product.controller.js';
+import { approveProduct, adminProductDetail } from '../app/controllers/product.controller.js';
 import { listAdminNotifications, markNotificationAsRead } from '../app/controllers/notification.controller.js';
 
 describe('Admin Product Approval, Dynamic Details & Notifications Flow', () => {

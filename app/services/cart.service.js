@@ -180,7 +180,7 @@ export class CartService {
     return this.formatCart(cart);
   }
 
-  async mergeGuestCart({ userId, guestSessionId, items = [] }) {
+  async mergeGuestCart({ userId, guestSessionId, _items = [] }) {
     const guestCart = await Cart.findOne({ guestSessionId });
     const userCart = await Cart.findOne({ userId });
 

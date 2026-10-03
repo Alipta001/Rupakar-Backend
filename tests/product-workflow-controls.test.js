@@ -114,7 +114,7 @@ describe('Product Workflow Controls, Admin Moderation & Seller Operations', () =
         status: 'PUBLISHED',
       });
 
-      const updated = await productService.setProductStatus(productId, 'PUBLISHED', adminId);
+      await productService.setProductStatus(productId, 'PUBLISHED', adminId);
       expect(mockProduct.status).toBe('PUBLISHED');
       expect(mockProduct.publishedAt).toBeInstanceOf(Date);
     });
@@ -204,7 +204,7 @@ describe('Product Workflow Controls, Admin Moderation & Seller Operations', () =
           select: () => ({ lean: async () => ({ ownerUserId: vendorUserId }) }),
         });
 
-        const updated = await productService.setProductStatus(productId, 'REJECTED', adminId, 'Inadequate photos');
+        await productService.setProductStatus(productId, 'REJECTED', adminId, 'Inadequate photos');
         expect(mockProduct.status).toBe('REJECTED');
         expect(mockProduct.rejectionReason).toBe('Inadequate photos');
         expect(mockProduct.reviewedBy).toBe(adminId);
@@ -266,7 +266,7 @@ describe('Product Workflow Controls, Admin Moderation & Seller Operations', () =
         populate: () => ({ populate: () => ({ populate: () => ({ populate: () => ({ lean: async () => ({ ...mockProduct, status: 'EDITED' }) }) }) }) }),
       });
 
-      const updated = await productService.updateProduct(vendorUserId, productId, {
+      await productService.updateProduct(vendorUserId, productId, {
         shortDescription: 'Updated artisan handcrafted terracotta vase',
       });
 

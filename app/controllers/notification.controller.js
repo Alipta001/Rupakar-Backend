@@ -1,4 +1,3 @@
-import { Notification } from '../models/notification.model.js';
 import { sendSuccess } from '../utils/response.js';
 import { notificationService } from '../services/notification.service.js';
 import { listNotificationsQuerySchema, notificationIdSchema } from '../validators/notification.validators.js';

@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { notificationService } from '../app/services/notification.service.js';
 import { Notification } from '../app/models/notification.model.js';
-import { env } from '../app/config/env.js';
 
 describe('Notification 15-Day Read Retention & Preservation of Unread', () => {
   const userId = new mongoose.Types.ObjectId().toHexString();
