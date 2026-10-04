@@ -396,7 +396,7 @@ export class PaymentService {
     if (nextStatus === 'CAPTURED' && capturedPayment) await this.ensureCapturedOrderArtifacts(orderId, capturedPayment._id, capturedPayment);
 
     if (nextStatus === 'CAPTURED') {
-      if (order) await Cart.updateOne({ userId: customerId }, { $pull: { items: { variantId: { $in: order.items.map((item) => item.variantId) } } } });
+      if (order && !order.isDirectCheckout) await Cart.updateOne({ userId: customerId }, { $pull: { items: { variantId: { $in: order.items.map((item) => item.variantId) } } } });
     }
 
     const updatedOrder = await Order.findOne({ _id: orderId, customerId }).lean();

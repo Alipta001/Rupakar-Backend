@@ -409,6 +409,7 @@ export class OrderService {
 
   async createOrder({
     customerId,
+    items: directItems,
     shippingAddressId,
     shippingAddress,
     billingAddressId,
@@ -438,16 +439,26 @@ export class OrderService {
       }
     }
 
-    const cartDoc = await Cart.findOne({ userId: customerId });
-    if (!cartDoc || !Array.isArray(cartDoc.items) || cartDoc.items.length === 0) {
-      throw new AppError(400, 'EMPTY_CART', 'Cart is empty');
-    }
+    let items;
+    const isDirectCheckout = Array.isArray(directItems) && directItems.length > 0;
+    if (isDirectCheckout) {
+      items = directItems.map((item) => ({
+        productId: item.productId,
+        variantId: item.variantId,
+        quantity: Number(item.quantity ?? 1),
+      }));
+    } else {
+      const cartDoc = await Cart.findOne({ userId: customerId });
+      if (!cartDoc || !Array.isArray(cartDoc.items) || cartDoc.items.length === 0) {
+        throw new AppError(400, 'EMPTY_CART', 'Cart is empty');
+      }
 
-    const items = cartDoc.items.map((item) => ({
-      productId: item.productId,
-      variantId: item.variantId,
-      quantity: Number(item.quantity ?? 1),
-    }));
+      items = cartDoc.items.map((item) => ({
+        productId: item.productId,
+        variantId: item.variantId,
+        quantity: Number(item.quantity ?? 1),
+      }));
+    }
 
     const summary = await pricingService.buildPriceSummary({
       userId: customerId,
@@ -549,6 +560,7 @@ export class OrderService {
       status: 'PENDING_PAYMENT',
       paymentMethod: normalizedPaymentMethod,
       idempotencyKey,
+      isDirectCheckout,
       shippingAddressSnapshot: summary.shippingAddress || shippingAddress || {},
       billingAddressSnapshot: {},
     });
@@ -588,7 +600,7 @@ export class OrderService {
       throw error;
     }
 
-    if (normalizedPaymentMethod === 'cod') {
+    if (!isDirectCheckout && normalizedPaymentMethod === 'cod') {
       await Cart.updateOne({ userId: customerId }, { $pull: { items: { variantId: { $in: orderItems.map((item) => item.variantId) } } } });
     }
 

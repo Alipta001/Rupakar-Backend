@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { checkoutItemSchema } from './checkout.validators.js';
 
 export const createOrderSchema = z.object({
+  items: z.array(checkoutItemSchema).min(1).optional(),
   shippingAddressId: z.string().trim().min(1).optional(),
   billingAddressId: z.string().trim().min(1).optional(),
   couponCode: z.string().trim().min(1).max(64).optional(),

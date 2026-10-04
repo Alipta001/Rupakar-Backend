@@ -40,6 +40,7 @@ const orderSchema = new Schema(
     paymentMethod: { type: String, default: 'razorpay' },
     financialSnapshot: { type: Object, default: null },
     idempotencyKey: { type: String, default: null, index: true },
+    isDirectCheckout: { type: Boolean, default: false },
     cancelledAt: { type: Date, default: null },
     cancelledReason: { type: String, default: null },
     deletedAt: { type: Date, default: null },

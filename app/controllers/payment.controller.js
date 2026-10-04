@@ -167,10 +167,12 @@ export const confirmPayment = async (req, res, next) => {
       throw new AppError(409, 'PAYMENT_CONFIRMATION_CONFLICT', 'Payment confirmation is already being processed or has changed');
     }
 
-    await Cart.updateOne(
-      { userId: req.user.sub },
-      { $pull: { items: { variantId: { $in: order.items.map((item) => item.variantId) } } } },
-    );
+    if (!order.isDirectCheckout) {
+      await Cart.updateOne(
+        { userId: req.user.sub },
+        { $pull: { items: { variantId: { $in: order.items.map((item) => item.variantId) } } } },
+      );
+    }
 
     order.paymentStatus = 'PAID';
     order.status = 'CONFIRMED';

@@ -17,6 +17,7 @@ export const createOrder = async (req, res, next) => {
 
     const order = await orderService.createOrder({
       customerId,
+      items: payload.items,
       shippingAddressId: payload.shippingAddressId,
       shippingAddress: payload.shippingAddress,
       billingAddressId: payload.billingAddressId,
