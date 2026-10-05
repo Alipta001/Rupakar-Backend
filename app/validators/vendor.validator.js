@@ -17,7 +17,23 @@ export const vendorApplySchema = z
   })
   .strict();
 
-export const vendorUpdateSchema = vendorApplySchema.partial();
+export const vendorPickupAddressSchema = z
+  .object({
+    pickupLocationName: z.string().trim().min(2, 'Pickup location name must be at least 2 characters').max(100),
+    contactPerson: z.string().trim().min(2, 'Contact person must be at least 2 characters').max(100),
+    phone: z.string().trim().regex(/^[6-9]\d{9}$/, 'Phone number must be a valid 10-digit Indian mobile number'),
+    addressLine1: z.string().trim().min(3, 'Address line 1 must be at least 3 characters').max(200),
+    addressLine2: z.string().trim().max(200).optional().default(''),
+    city: z.string().trim().min(2, 'City is required').max(100),
+    state: z.string().trim().min(2, 'State is required').max(100),
+    pincode: z.string().trim().regex(/^\d{6}$/, 'Pincode must be a valid 6-digit Indian postal code'),
+    country: z.string().trim().max(100).optional().default('India'),
+  })
+  .strict();
+
+export const vendorUpdateSchema = vendorApplySchema.partial().extend({
+  pickupAddress: vendorPickupAddressSchema.optional(),
+});
 
 export const adminVendorDecisionSchema = z.object({
   reason: z.string().trim().max(500).optional(),

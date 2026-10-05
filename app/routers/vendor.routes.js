@@ -4,6 +4,8 @@ import {
   applyVendor,
   getMyVendor,
   updateMyVendor,
+  getVendorPickupAddress,
+  updateVendorPickupAddress,
   getMyVendorStatus,
   getMyVendorVerification,
   addDocument,
@@ -50,7 +52,7 @@ const handleDocumentUpload = (req, res, next) => {
 };
 import { listVendorOrders, getVendorOrder } from '../controllers/order.controller.js';
 import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
-import { packVendorOrder, processVendorOrder, readyVendorOrder, shipVendorOrder } from '../controllers/shipping.controller.js';
+import { packVendorOrder, processVendorOrder, readyVendorOrder, shipVendorOrder, downloadVendorShippingLabel } from '../controllers/shipping.controller.js';
 import { listVendorInvoices, downloadVendorOrderInvoice, downloadVendorPackingSlip } from '../controllers/invoice.controller.js';
 import {
   listVendorCancellationRequests,
@@ -64,6 +66,9 @@ router.use(requireAuth);
 router.post('/apply', applyVendor);
 router.get('/me', getMyVendor);
 router.patch('/me', updateMyVendor);
+router.get('/pickup-address', getVendorPickupAddress);
+router.put('/pickup-address', updateVendorPickupAddress);
+router.patch('/pickup-address', updateVendorPickupAddress);
 router.get('/me/status', getMyVendorStatus);
 router.get('/me/verification', getMyVendorVerification);
 router.get('/dashboard', getVendorDashboard);
@@ -75,6 +80,7 @@ router.get('/orders', listVendorOrders);
 router.get('/orders/:id', getVendorOrder);
 router.get('/orders/:orderId/invoice', downloadVendorOrderInvoice);
 router.get('/orders/:orderId/packing-slip', downloadVendorPackingSlip);
+router.get('/orders/:orderId/shipping-label', downloadVendorShippingLabel);
 router.post('/orders/:id/pack', packVendorOrder);
 router.post('/orders/:id/process', processVendorOrder);
 router.post('/orders/:id/ready-to-ship', readyVendorOrder);

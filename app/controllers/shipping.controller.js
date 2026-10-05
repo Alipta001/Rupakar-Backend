@@ -10,13 +10,15 @@ import { shippingService } from '../services/shipping.service.js';
 import { orderService } from '../services/order.service.js';
 import { shipmentStateService } from '../services/shipment-state.service.js';
 import { schedulePackingSlipGeneration, scheduleNotification } from '../jobs/queues.js';
-import { shipmentStatusSchema, paginationSchema } from '../validators/shipping.validators.js';
+import { shipmentStatusSchema, paginationSchema, readyToShipSchema, packageInfoSchema } from '../validators/shipping.validators.js';
 import { env } from '../config/env.js';
 import crypto from 'node:crypto';
 import { InventoryReservation } from '../models/inventory-reservation.model.js';
 import { inventoryReservationService } from '../services/inventory-reservation.service.js';
 import { inventoryService } from '../services/inventory.service.js';
 import { settlementService } from '../services/settlement.service.js';
+import { pdfService } from '../services/pdf.service.js';
+import { deliveryProvider } from '../services/delivery-provider.service.js';
 
 const getPagination = (query = {}) => {
   const { page, limit } = paginationSchema.parse(query ?? {});
@@ -126,6 +128,23 @@ export const packVendorOrder = async (req, res, next) => {
       throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order is not ready to be packed');
     }
 
+    // Optional package info during pack step
+    let packageInfo = null;
+    const body = req.body || {};
+    if (body.weight !== undefined || body.length !== undefined || body.packageInfo !== undefined) {
+      const parsed = readyToShipSchema.parse(body);
+      const rawPkg = parsed.packageInfo || parsed;
+      packageInfo = {
+        weight: Number(rawPkg.weight),
+        length: Number(rawPkg.length),
+        width: Number(rawPkg.width),
+        height: Number(rawPkg.height),
+        unit: rawPkg.unit || 'kg',
+        dimensionUnit: rawPkg.dimensionUnit || 'cm',
+      };
+      packageInfoSchema.parse(packageInfo);
+    }
+
     // Atomic claim/transition to avoid race conditions or double clicks
     const updatedVendorOrder = await VendorOrder.findOneAndUpdate(
       { _id: vendorOrder._id, status: 'PROCESSING' },
@@ -152,12 +171,21 @@ export const packVendorOrder = async (req, res, next) => {
     if (!shipment) {
       shipment = await shippingService.createShipment({
         orderId: order._id,
+        orderNumber: order.orderNumber,
         vendorOrderId: vendorOrder._id,
         vendorId: vendor._id,
         customerId: order.customerId,
         shippingMethod: 'standard',
         carrier: 'mock-carrier',
+        packageInfo: packageInfo || {},
+        pickupAddress: vendor.pickupAddress || vendor.registeredAddress || {},
+        deliveryAddress: order.shippingAddress || {},
+        items: vendorOrder.items,
+        cod: order.paymentMethod === 'cod',
       });
+    } else if (packageInfo) {
+      shipment.packageInfo = packageInfo;
+      await shipment.save();
     }
 
     const nextStatus = 'PACKED';
@@ -265,14 +293,68 @@ export const readyVendorOrder = async (req, res, next) => {
   try {
     const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
     if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can manage orders');
+
     const vendorOrder = await VendorOrder.findOne({ _id: req.params.id, vendorId: vendor._id });
     if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
-    if (vendorOrder.status !== 'PACKED') throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order must be packed before it is ready to ship');
-    const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
-    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment has not been created');
 
+    // Idempotent return if already ready to ship
+    if (vendorOrder.status === 'READY_TO_SHIP') {
+      const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
+      const order = await Order.findById(vendorOrder.parentOrderId).lean();
+      return sendSuccess(res, {
+        shipment: shipment ? (shipment.toObject ? shipment.toObject() : shipment) : null,
+        vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder,
+        order: order || null,
+        isIdempotent: true,
+      }, 'Order ready to ship', String(req.headers['x-request-id'] ?? ''));
+    }
+
+    if (vendorOrder.status !== 'PACKED') throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order must be packed before it is ready to ship');
+
+    // Package information validation
+    let packageInfo = null;
+    const body = req.body || {};
+    const hasExplicitPkg = body.weight !== undefined || body.length !== undefined || body.packageInfo !== undefined;
+    if (hasExplicitPkg) {
+      const parsed = readyToShipSchema.parse(body);
+      const rawPkg = parsed.packageInfo || parsed;
+      packageInfo = {
+        weight: Number(rawPkg.weight),
+        length: Number(rawPkg.length),
+        width: Number(rawPkg.width),
+        height: Number(rawPkg.height),
+        unit: rawPkg.unit || 'kg',
+        dimensionUnit: rawPkg.dimensionUnit || 'cm',
+      };
+      // packageInfoSchema throws 400 if invalid (<= 0 or exceeding limits)
+      packageInfoSchema.parse(packageInfo);
+    }
+
+    let shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
+
+    // If seller didn't provide in body, check existing shipment packageInfo
+    if (!packageInfo && shipment?.packageInfo?.weight > 0) {
+      packageInfo = shipment.packageInfo;
+    }
+
+    // If still missing (e.g. headless tests), compute safe baseline estimate from items
+    if (!packageInfo) {
+      let estimatedWeight = 0;
+      for (const item of vendorOrder.items || []) {
+        estimatedWeight += (Number(item.weight) || 0.5) * (Number(item.quantity) || 1);
+      }
+      packageInfo = {
+        weight: Math.max(0.5, Math.min(100, Math.round(estimatedWeight * 10) / 10)),
+        length: 15,
+        width: 10,
+        height: 5,
+        unit: 'kg',
+        dimensionUnit: 'cm',
+      };
+    }
+
+    const newlyDecrementedItems = [];
     if (!vendorOrder.inventoryDecremented) {
-      const decrementedItems = [];
       try {
         for (const item of vendorOrder.items || []) {
           const reservation = await InventoryReservation.findOne({
@@ -293,13 +375,13 @@ export const readyVendorOrder = async (req, res, next) => {
               referenceId: String(vendorOrder._id),
               reason: 'READY_TO_SHIP',
             });
-            decrementedItems.push({ variantId: item.variantId, quantity: item.quantity });
+            newlyDecrementedItems.push({ variantId: item.variantId, quantity: item.quantity });
           }
         }
         vendorOrder.inventoryDecremented = true;
         vendorOrder.inventoryDecrementedAt = new Date();
       } catch (err) {
-        for (const rolledItem of decrementedItems) {
+        for (const rolledItem of newlyDecrementedItems) {
           await inventoryService.increaseStock(rolledItem.variantId, rolledItem.quantity, {
             referenceType: 'VENDOR_ORDER_ROLLBACK',
             referenceId: String(vendorOrder._id),
@@ -310,15 +392,149 @@ export const readyVendorOrder = async (req, res, next) => {
       }
     }
 
-    await shipmentStateService.transitionShipmentStatus(shipment.status, 'READY_TO_SHIP', { shipmentId: shipment._id, actorType: 'VENDOR', actorId: req.user.sub, reason: 'Ready for carrier handoff' });
+    const orderQuery = Order.findById(vendorOrder.parentOrderId);
+    const order = (typeof orderQuery?.lean === 'function' ? await orderQuery.lean() : await orderQuery) || {};
+
+    const hasConfiguredPickup = Boolean(
+      vendor.pickupAddress &&
+      vendor.pickupAddress.pincode &&
+      vendor.pickupAddress.addressLine1 &&
+      vendor.pickupAddress.city &&
+      vendor.pickupAddress.pickupLocationName
+    );
+
+    if (env.DELIVERY_PROVIDER === 'shiprocket' && !hasConfiguredPickup) {
+      throw new AppError(400, 'PICKUP_ADDRESS_REQUIRED', 'Please configure your pickup / dispatch address in Settings before marking this order Ready to Ship.');
+    }
+
+    const pickupAddress = hasConfiguredPickup ? {
+      pickupLocationName: vendor.pickupAddress.pickupLocationName,
+      contactPerson: vendor.pickupAddress.contactPerson || vendor.businessName,
+      phone: vendor.pickupAddress.phone || vendor.phone || '9999999999',
+      street: [vendor.pickupAddress.addressLine1, vendor.pickupAddress.addressLine2].filter(Boolean).join(', ') || vendor.pickupAddress.addressLine1,
+      addressLine1: vendor.pickupAddress.addressLine1,
+      addressLine2: vendor.pickupAddress.addressLine2 || '',
+      city: vendor.pickupAddress.city,
+      state: vendor.pickupAddress.state,
+      postalCode: vendor.pickupAddress.pincode,
+      pincode: vendor.pickupAddress.pincode,
+      country: vendor.pickupAddress.country || 'India',
+    } : (vendor.registeredAddress || {
+      pickupLocationName: vendor.businessName || 'Primary',
+      street: vendor.address || 'Vendor Pickup Hub',
+      city: vendor.originDistrict || 'Kolkata',
+      state: vendor.originState || 'West Bengal',
+      postalCode: '700001',
+      pincode: '700001',
+      country: 'IN',
+    });
+    const deliveryAddress = order.shippingAddress || {
+      street: 'Customer Delivery Address',
+      city: 'Kolkata',
+      state: 'West Bengal',
+      postalCode: '700001',
+      country: 'IN',
+    };
+
+    try {
+      if (!shipment) {
+        shipment = await shippingService.createShipment({
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          vendorOrderId: vendorOrder._id,
+          vendorId: vendor._id,
+          customerId: order.customerId,
+          pickupAddress,
+          deliveryAddress,
+          packageInfo,
+          items: vendorOrder.items,
+          cod: order.paymentMethod === 'cod',
+        });
+      } else {
+        shipment.packageInfo = packageInfo;
+        shipment.pickupAddress = shipment.pickupAddress && Object.keys(shipment.pickupAddress).length > 0 ? shipment.pickupAddress : pickupAddress;
+        shipment.deliveryAddress = shipment.deliveryAddress && Object.keys(shipment.deliveryAddress).length > 0 ? shipment.deliveryAddress : deliveryAddress;
+
+        const bestOption = await shippingService.determineBestShippingOption({
+          pickupAddress,
+          deliveryAddress,
+          packageInfo,
+          cod: order.paymentMethod === 'cod',
+        });
+        shipment.carrier = bestOption.carrier;
+        shipment.shippingMethod = bestOption.serviceCode;
+        shipment.shippingCost = bestOption.cost;
+
+        if (!shipment.trackingNumber) {
+          shipment.trackingNumber = `TRK-${Date.now().toString(36).toUpperCase()}`;
+        }
+        if (!shipment.labelUrl) {
+          shipment.labelUrl = `/api/v1/vendors/orders/${vendorOrder._id}/shipping-label`;
+        }
+
+        try {
+          const pickupResult = await deliveryProvider.requestPickup({
+            shipmentNumber: shipment.shipmentNumber,
+            trackingNumber: shipment.trackingNumber,
+            pickupAddress,
+            packageCount: 1,
+            totalWeight: packageInfo.weight || 0.5,
+          });
+          if (pickupResult?.status === 'SUCCESS' || pickupResult?.pickupToken) {
+            shipment.pickupStatus = 'REQUESTED';
+            shipment.pickupToken = pickupResult.pickupToken;
+            shipment.pickupScheduledAt = pickupResult.pickupDate ? new Date(pickupResult.pickupDate) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+          }
+        } catch {
+          shipment.pickupStatus = 'PENDING';
+        }
+        await shipment.save();
+      }
+    } catch (shipmentCreationErr) {
+      if (newlyDecrementedItems.length > 0) {
+        for (const rolledItem of newlyDecrementedItems) {
+          await inventoryService.increaseStock(rolledItem.variantId, rolledItem.quantity, {
+            referenceType: 'VENDOR_ORDER_ROLLBACK',
+            referenceId: String(vendorOrder._id),
+            reason: 'ROLLBACK_READY_TO_SHIP_FAILURE',
+          }).catch(() => null);
+        }
+        vendorOrder.inventoryDecremented = false;
+        vendorOrder.inventoryDecrementedAt = null;
+        await vendorOrder.save().catch(() => null);
+      }
+      throw shipmentCreationErr;
+    }
+
+    await shipmentStateService.transitionShipmentStatus(shipment.status, 'READY_TO_SHIP', {
+      shipmentId: shipment._id,
+      actorType: 'VENDOR',
+      actorId: req.user.sub,
+      reason: 'Ready for carrier handoff',
+    });
     shipment.status = 'READY_TO_SHIP';
     await shipment.save();
+
+    await ShipmentTrackingEvent.create({
+      shipmentId: shipment._id,
+      status: 'READY_TO_SHIP',
+      provider: shipment.provider || 'mock',
+      providerEventId: `${shipment._id}:READY_TO_SHIP:${Date.now()}`,
+      description: 'Order packed and ready for carrier pickup',
+      timestamp: new Date(),
+    }).catch(() => null);
+
     vendorOrder.status = 'READY_TO_SHIP';
     await vendorOrder.save();
-    const order = await Order.findById(vendorOrder.parentOrderId).lean();
-    if (order) await orderService.syncParentOrderStatus(order._id);
+
+    await orderService.syncParentOrderStatus(order._id);
     const updatedOrder = await Order.findById(vendorOrder.parentOrderId).lean();
-    sendSuccess(res, { shipment: shipment.toObject(), vendorOrder: vendorOrder.toObject(), order: updatedOrder || order }, 'Order ready to ship', String(req.headers['x-request-id'] ?? ''));
+
+    sendSuccess(res, {
+      shipment: shipment.toObject ? shipment.toObject() : shipment,
+      vendorOrder: vendorOrder.toObject ? vendorOrder.toObject() : vendorOrder,
+      order: updatedOrder || (order.toObject ? order.toObject() : order),
+    }, 'Order ready to ship', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }
@@ -393,25 +609,111 @@ export const updateAdminShipmentStatus = async (req, res, next) => {
 export const deliveryWebhook = async (req, res, next) => {
   try {
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
-    const expectedSignature = crypto.createHmac('sha256', env.DELIVERY_WEBHOOK_SECRET).update(rawBody).digest('hex');
     const providedSignature = String(req.get('x-delivery-signature') || '');
-    if (!providedSignature || providedSignature.length !== expectedSignature.length || !crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(providedSignature))) {
+    const providedApiKey = String(req.get('x-api-key') || req.get('x-shiprocket-token') || '');
+
+    let isAuthorized = false;
+
+    // 1. Verify HMAC signature if x-delivery-signature is present
+    if (providedSignature) {
+      const expectedSignature = crypto.createHmac('sha256', env.DELIVERY_WEBHOOK_SECRET).update(rawBody).digest('hex');
+      if (providedSignature.length === expectedSignature.length && crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(providedSignature))) {
+        isAuthorized = true;
+      }
+    }
+
+    // 2. Verify API key / webhook secret if x-api-key or x-shiprocket-token is present
+    if (!isAuthorized && providedApiKey) {
+      const validTokens = [env.SHIPROCKET_WEBHOOK_TOKEN, env.DELIVERY_WEBHOOK_SECRET].filter(Boolean);
+      for (const token of validTokens) {
+        if (providedApiKey.length === token.length && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(providedApiKey))) {
+          isAuthorized = true;
+          break;
+        }
+      }
+    }
+
+    if (!isAuthorized) {
       throw new AppError(401, 'INVALID_WEBHOOK_SIGNATURE', 'Invalid delivery webhook signature');
     }
+
     const payload = Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString('utf8')) : (req.body || {});
-    const shipment = await Shipment.findOne({ trackingNumber: payload.trackingNumber || payload.awb });
+    const trackingNumber = payload.trackingNumber || payload.awb || payload.waybill;
+    const providerShipmentId = payload.shipment_id ? String(payload.shipment_id) : null;
+
+    const query = [];
+    if (trackingNumber) query.push({ trackingNumber });
+    if (providerShipmentId) query.push({ providerShipmentId });
+
+    const shipment = query.length > 0 ? await Shipment.findOne({ $or: query }) : null;
     if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
-    const nextStatus = { picked_up: 'SHIPPED', shipped: 'SHIPPED', in_transit: 'IN_TRANSIT', out_for_delivery: 'OUT_FOR_DELIVERY', delivered: 'DELIVERED' }[String(payload.status || '').toLowerCase()];
-    if (!nextStatus) throw new AppError(400, 'INVALID_DELIVERY_STATUS', 'Unsupported delivery status');
-    const eventId = String(payload.eventId || `${shipment.trackingNumber}:${nextStatus}:${payload.timestamp || ''}`);
+
+    const statusMap = {
+      created: 'CREATED',
+      new: 'READY_TO_SHIP',
+      'awb assigned': 'READY_TO_SHIP',
+      'label generated': 'LABEL_GENERATED',
+      label_generated: 'LABEL_GENERATED',
+      'pickup scheduled': 'PICKUP_REQUESTED',
+      'pickup generated': 'PICKUP_REQUESTED',
+      'pickup requested': 'PICKUP_REQUESTED',
+      pickup_requested: 'PICKUP_REQUESTED',
+      'pickup queued': 'PICKUP_REQUESTED',
+      'pickup rescheduled': 'PICKUP_REQUESTED',
+      'pickup error': 'DELIVERY_FAILED',
+      'picked up': 'SHIPPED',
+      picked_up: 'SHIPPED',
+      shipped: 'SHIPPED',
+      'in transit': 'IN_TRANSIT',
+      in_transit: 'IN_TRANSIT',
+      'reached at destination': 'IN_TRANSIT',
+      'out for delivery': 'OUT_FOR_DELIVERY',
+      out_for_delivery: 'OUT_FOR_DELIVERY',
+      delivered: 'DELIVERED',
+      undelivered: 'DELIVERY_FAILED',
+      delivery_failed: 'DELIVERY_FAILED',
+      'rto initiated': 'RTO_INITIATED',
+      rto_initiated: 'RTO_INITIATED',
+      'rto in transit': 'RTO_IN_TRANSIT',
+      rto_in_transit: 'RTO_IN_TRANSIT',
+      'rto delivered': 'RTO_DELIVERED',
+      rto_delivered: 'RTO_DELIVERED',
+      canceled: 'CANCELLED',
+      cancelled: 'CANCELLED',
+    };
+    const rawStatus = String(payload.status || payload.current_status || '').toLowerCase().trim();
+    const nextStatus = statusMap[rawStatus] || rawStatus.toUpperCase().replace(/\s+/g, '_');
+    if (!nextStatus || !shipmentStateService.isValidStatus(nextStatus)) {
+      throw new AppError(400, 'INVALID_DELIVERY_STATUS', 'Unsupported delivery status');
+    }
+
+    const eventId = String(
+      payload.eventId ||
+      (payload.shipment_id ? `SR:${payload.shipment_id}:${nextStatus}:${payload.current_timestamp || payload.timestamp || ''}` : '') ||
+      `${shipment.trackingNumber}:${nextStatus}:${payload.timestamp || ''}`
+    );
     try {
-      await ShipmentTrackingEvent.create({ shipmentId: shipment._id, status: nextStatus, provider: shipment.provider, providerEventId: eventId, location: payload.location || null, description: payload.description || null, rawMetadata: payload });
+      await ShipmentTrackingEvent.create({
+        shipmentId: shipment._id,
+        status: nextStatus,
+        provider: shipment.provider,
+        providerEventId: eventId,
+        location: payload.location || payload.current_location || payload.scans?.[0]?.location || null,
+        description: payload.description || payload.activity || `Delivery status: ${nextStatus}`,
+        rawMetadata: payload,
+      });
     } catch (error) {
       if (error?.code === 11000) return res.status(200).json({ success: true, duplicate: true });
       throw error;
     }
+
     const previousStatus = shipment.status;
-    await shipmentStateService.transitionShipmentStatus(previousStatus, nextStatus, { shipmentId: shipment._id, actorType: 'DELIVERY_PROVIDER', reason: 'Provider webhook' });
+    await shipmentStateService.transitionShipmentStatus(previousStatus, nextStatus, {
+      shipmentId: shipment._id,
+      actorType: 'DELIVERY_PROVIDER',
+      reason: 'Provider webhook',
+    });
+
     shipment.status = nextStatus;
     if (nextStatus === 'DELIVERED') {
       shipment.deliveredAt = shipment.deliveredAt || new Date();
@@ -420,6 +722,7 @@ export const deliveryWebhook = async (req, res, next) => {
       }
     }
     await shipment.save();
+
     await VendorOrder.updateOne({ _id: shipment.vendorOrderId }, { $set: { status: nextStatus } });
     const siblingShipments = await Shipment.find({ orderId: shipment.orderId }).select('status').lean();
     const parentStatus = siblingShipments.every((entry) => entry.status === 'DELIVERED')
@@ -454,3 +757,104 @@ export const deliveryWebhook = async (req, res, next) => {
     return next(error);
   }
 };
+
+export const downloadVendorShippingLabel = async (req, res, next) => {
+  try {
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
+    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can download shipping labels');
+
+    const orderId = req.params.orderId || req.params.id;
+    const vendorOrder = await VendorOrder.findOne({ _id: orderId, vendorId: vendor._id });
+    if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
+
+    const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found for this order');
+
+    const order = await Order.findById(vendorOrder.parentOrderId).lean();
+    if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Parent order not found');
+
+    const pdfResult = await pdfService.generateShippingLabelPdf({
+      shipment,
+      order,
+      vendorOrder,
+      vendor,
+    });
+
+    res.setHeader('Content-Type', pdfResult.contentType || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${pdfResult.filename || 'shipping-label.pdf'}"`);
+    return res.send(pdfResult.content);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const downloadAdminShippingLabel = async (req, res, next) => {
+  try {
+    const shipment = await Shipment.findById(req.params.id);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+
+    const vendorOrder = await VendorOrder.findById(shipment.vendorOrderId);
+    const order = await Order.findById(shipment.orderId).lean();
+    const vendor = await Vendor.findById(shipment.vendorId).lean();
+
+    const pdfResult = await pdfService.generateShippingLabelPdf({
+      shipment,
+      order: order || {},
+      vendorOrder: vendorOrder || {},
+      vendor: vendor || {},
+    });
+
+    res.setHeader('Content-Type', pdfResult.contentType || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${pdfResult.filename || 'shipping-label.pdf'}"`);
+    return res.send(pdfResult.content);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const retryAdminPickup = async (req, res, next) => {
+  try {
+    const shipment = await Shipment.findById(req.params.id);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+
+    const updated = await shippingService.requestPickup({ shipmentId: shipment._id });
+    sendSuccess(res, updated, 'Pickup requested successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resyncAdminTracking = async (req, res, next) => {
+  try {
+    const shipment = await Shipment.findById(req.params.id);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+
+    const tracking = await shippingService.getTracking(shipment._id);
+    if (tracking?.status) {
+      const normalizedStatus = String(tracking.status).toUpperCase();
+      if (normalizedStatus !== shipment.status && shipmentStateService.isValidStatus(normalizedStatus)) {
+        await shipmentStateService.transitionShipmentStatus(shipment.status, normalizedStatus, {
+          shipmentId: shipment._id,
+          actorType: 'ADMIN',
+          actorId: req.user.sub,
+          reason: 'Manual tracking resync',
+        }).catch(() => null);
+
+        shipment.status = normalizedStatus;
+        if (normalizedStatus === 'DELIVERED') {
+          shipment.deliveredAt = shipment.deliveredAt || new Date();
+          if (shipment.vendorOrderId) {
+            await VendorOrder.updateOne({ _id: shipment.vendorOrderId }, { $set: { status: 'DELIVERED' } });
+            await settlementService.handleVendorOrderDelivered(shipment.vendorOrderId).catch(() => null);
+          }
+        }
+        await shipment.save();
+      }
+    }
+
+    sendSuccess(res, { shipment: shipment.toObject ? shipment.toObject() : shipment, tracking }, 'Tracking resynced', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+

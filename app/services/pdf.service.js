@@ -622,6 +622,134 @@ export class PdfService {
       doc.end();
     });
   }
+
+  async generateShippingLabelPdf({ shipment, order, vendorOrder, vendor }) {
+    if (!shipment || !order) throw new AppError(400, 'INVALID_SHIPPING_LABEL_DATA', 'Shipment and order data are required');
+
+    const logoBuffer = await this.getLogoBuffer();
+
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({
+        size: [288, 432],
+        bufferPages: true,
+        compress: false,
+        margins: { top: 12, bottom: 12, left: 12, right: 12 },
+      });
+      const chunks = [];
+
+      doc.on('data', (chunk) => chunks.push(chunk));
+      doc.on('end', () => resolve({
+        content: Buffer.concat(chunks),
+        contentType: 'application/pdf',
+        filename: `shipping-label-${shipment.trackingNumber || shipment.shipmentNumber}.pdf`,
+      }));
+      doc.on('error', (err) => reject(err));
+
+      const left = 12;
+      const right = 276;
+      const width = 264;
+
+      doc.rect(left, 12, width, 408).lineWidth(1.5).strokeColor('#1E1A17').stroke();
+
+      doc.fillColor('#1E1A17').rect(left, 12, width, 38).fill();
+      if (logoBuffer) {
+        try {
+          doc.image(logoBuffer, left + 8, 16, { fit: [28, 28] });
+        } catch {}
+      }
+      doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(11).text('RUPAKAR LOGISTICS', left + 42, 18, { width: 130 });
+      doc.font('Helvetica').fontSize(7).text(safeText(shipment.carrier || 'Express Surface').toUpperCase(), left + 42, 32);
+
+      const isCod = order.paymentMethod === 'cod';
+      const codText = isCod ? `COD: INR ${Number(order.total || 0).toLocaleString('en-IN')}` : 'PREPAID';
+      doc.font('Helvetica-Bold').fontSize(9).text(codText, right - 95, 22, { width: 85, align: 'right' });
+
+      const destPin = String(order.shippingAddressSnapshot?.postalCode || order.shippingAddressSnapshot?.pincode || '—');
+      doc.fillColor('#F5EFEB').rect(left, 50, width, 32).fill();
+      doc.fillColor('#1E1A17').font('Helvetica').fontSize(8).text('DESTINATION PINCODE', left + 8, 56);
+      doc.font('Helvetica-Bold').fontSize(16).text(destPin, left + 8, 65);
+
+      const serviceType = String(shipment.shippingMethod || 'STANDARD').toUpperCase();
+      doc.font('Helvetica-Bold').fontSize(10).text(serviceType, right - 95, 62, { width: 85, align: 'right' });
+
+      doc.moveTo(left, 82).lineTo(right, 82).lineWidth(1).strokeColor('#1E1A17').stroke();
+      doc.fillColor('#1E1A17').font('Helvetica-Bold').fontSize(11).text(`AWB: ${safeText(shipment.trackingNumber || shipment.shipmentNumber)}`, left, 90, { width, align: 'center' });
+
+      const barY = 106;
+      const barH = 26;
+      const awbStr = String(shipment.trackingNumber || shipment.shipmentNumber || 'RUPAKAR123');
+      let curX = left + 14;
+      for (let i = 0; i < awbStr.length; i++) {
+        const code = awbStr.charCodeAt(i);
+        const w = (code % 3) + 1;
+        doc.rect(curX, barY, w, barH).fill('#1E1A17');
+        curX += w + 2;
+      }
+      doc.font('Helvetica').fontSize(7.5).text(`* ${safeText(shipment.trackingNumber || shipment.shipmentNumber)} *`, left, barY + barH + 4, { width, align: 'center' });
+
+      const shipToY = 152;
+      doc.moveTo(left, shipToY).lineTo(right, shipToY).lineWidth(1).strokeColor('#1E1A17').stroke();
+
+      doc.fillColor('#1E1A17').font('Helvetica-Bold').fontSize(8).text('SHIP TO (CONSIGNEE):', left + 8, shipToY + 6);
+      const custAddr = order.shippingAddressSnapshot || {};
+      doc.font('Helvetica-Bold').fontSize(9).text(safeText(custAddr.name || custAddr.fullName || 'Customer'), left + 8, shipToY + 18, { width: width - 16 });
+      const addrLines = [
+        custAddr.line1 || custAddr.addressLine1,
+        custAddr.line2 || custAddr.addressLine2,
+        `${safeText(custAddr.city)}, ${safeText(custAddr.state)} - ${destPin}`,
+        `Phone: ${safeText(custAddr.phone)}`,
+      ].filter(Boolean).join('\n');
+      doc.font('Helvetica').fontSize(8).text(addrLines, left + 8, shipToY + 30, { width: width - 16, lineGap: 1.5 });
+
+      const shipFromY = 224;
+      doc.moveTo(left, shipFromY).lineTo(right, shipFromY).lineWidth(1).strokeColor('#1E1A17').stroke();
+
+      doc.fillColor('#1E1A17').font('Helvetica-Bold').fontSize(8).text('SHIP FROM (SELLER):', left + 8, shipFromY + 6);
+      const vName = vendor?.businessName || vendor?.storeName || vendor?.legalName || 'Rupakar Artisan Vendor';
+      doc.font('Helvetica-Bold').fontSize(8.5).text(safeText(vName), left + 8, shipFromY + 18, { width: width - 16 });
+      const vendorAddr = [
+        vendor?.address || '',
+        `${safeText(vendor?.originDistrict || '')} ${safeText(vendor?.originState || '')}`,
+        `Phone: ${safeText(vendor?.phone || '—')}`,
+      ].filter(Boolean).join('\n');
+      doc.font('Helvetica').fontSize(7.5).text(vendorAddr, left + 8, shipFromY + 30, { width: width - 16, lineGap: 1 });
+
+      const pkgY = 286;
+      doc.moveTo(left, pkgY).lineTo(right, pkgY).lineWidth(1).strokeColor('#1E1A17').stroke();
+      doc.fillColor('#F9F9F8').rect(left, pkgY, width, 52).fill();
+      doc.fillColor('#1E1A17').font('Helvetica-Bold').fontSize(7.5).text('PACKAGE DETAILS', left + 8, pkgY + 6);
+
+      const pkg = shipment.packageInfo || {};
+      const weightVal = pkg.weight ? `${Number(pkg.weight)} ${pkg.unit || 'kg'}` : '0.5 kg';
+      const dimsVal = pkg.length && pkg.width && pkg.height ? `${pkg.length} x ${pkg.width} x ${pkg.height} ${pkg.dimensionUnit || 'cm'}` : 'Standard';
+
+      doc.font('Helvetica').fontSize(7.5).text(`Weight: ${weightVal}`, left + 8, pkgY + 18);
+      doc.text(`Dimensions: ${dimsVal}`, left + 8, pkgY + 28);
+      doc.text(`Shipment #: ${safeText(shipment.shipmentNumber)}`, left + 8, pkgY + 38);
+
+      const orderNum = order.orderNumber || String(order._id).slice(-8).toUpperCase();
+      doc.font('Helvetica').fontSize(7.5).text(`Order #: ${orderNum}`, right - 115, pkgY + 18, { width: 105, align: 'right' });
+      doc.text(`Date: ${new Date(shipment.createdAt || Date.now()).toLocaleDateString('en-IN')}`, right - 115, pkgY + 28, { width: 105, align: 'right' });
+
+      const itemsY = 340;
+      doc.moveTo(left, itemsY).lineTo(right, itemsY).lineWidth(1).strokeColor('#1E1A17').stroke();
+      doc.font('Helvetica-Bold').fontSize(7).text('ITEM DESCRIPTION', left + 8, itemsY + 6);
+      doc.text('QTY', right - 40, itemsY + 6, { width: 30, align: 'right' });
+
+      const items = Array.isArray(vendorOrder?.items) ? vendorOrder.items : (Array.isArray(order.items) ? order.items : []);
+      let itemY = itemsY + 18;
+      items.slice(0, 3).forEach((it) => {
+        doc.font('Helvetica').fontSize(7).text(safeText(it.productName || it.sku || 'Handicraft Item'), left + 8, itemY, { width: 210, lineBreak: false });
+        doc.text(String(it.quantity || 1), right - 40, itemY, { width: 30, align: 'right' });
+        itemY += 11;
+      });
+
+      doc.moveTo(left, 396).lineTo(right, 396).lineWidth(0.5).strokeColor('#888').stroke();
+      doc.font('Helvetica').fontSize(6).text('Handcrafted with pride in India · rupakar.com', left, 402, { width, align: 'center' });
+
+      doc.end();
+    });
+  }
 }
 
 export const pdfService = new PdfService();

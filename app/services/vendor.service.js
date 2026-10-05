@@ -89,6 +89,34 @@ export class VendorService {
     return vendor;
   }
 
+  async getPickupAddress(ownerUserId) {
+    const vendor = await Vendor.findOne({ ownerUserId, deletedAt: null }).lean();
+    if (!vendor) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor record not found');
+    }
+    return (vendor.pickupAddress && vendor.pickupAddress.pincode) ? vendor.pickupAddress : null;
+  }
+
+  async updatePickupAddress(ownerUserId, payload) {
+    const vendor = await Vendor.findOne({ ownerUserId, deletedAt: null });
+    if (!vendor) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor record not found');
+    }
+    vendor.pickupAddress = {
+      pickupLocationName: payload.pickupLocationName,
+      contactPerson: payload.contactPerson,
+      phone: payload.phone,
+      addressLine1: payload.addressLine1,
+      addressLine2: payload.addressLine2 || '',
+      city: payload.city,
+      state: payload.state,
+      pincode: payload.pincode,
+      country: payload.country || 'India',
+    };
+    await vendor.save();
+    return vendor.toObject();
+  }
+
   async transitionStatus(vendorId, nextStatus, actorUserId, reason = '', options = {}) {
     const opts = typeof reason === 'object' && reason !== null ? reason : options;
     const reasonText = typeof reason === 'string' ? reason : (opts.reason || '');

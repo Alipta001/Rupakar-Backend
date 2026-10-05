@@ -138,11 +138,23 @@ export const env = {
   SHIPPING_EXTRA_ITEM_FEE: Number(process.env.SHIPPING_EXTRA_ITEM_FEE ?? 20),
   FREE_SHIPPING_THRESHOLD: Number(process.env.FREE_SHIPPING_THRESHOLD ?? 1500),
   WEST_BENGAL_SHIPPING_DISCOUNT: Number(process.env.WEST_BENGAL_SHIPPING_DISCOUNT ?? 10),
-  DELIVERY_MODE: (process.env.DELIVERY_MODE === 'delhivery' && hasRealDeliveryConfig(process.env.DELIVERY_API_URL, process.env.DELIVERY_API_TOKEN)) ? 'delhivery' : 'mock',
-  DELIVERY_PROVIDER: (process.env.DELIVERY_PROVIDER === 'delhivery' && hasRealDeliveryConfig(process.env.DELIVERY_API_URL, process.env.DELIVERY_API_TOKEN)) ? 'delhivery' : 'mock',
+  DELIVERY_MODE: (process.env.DELIVERY_MODE === 'shiprocket')
+    ? 'shiprocket'
+    : (process.env.DELIVERY_MODE === 'delhivery' && hasRealDeliveryConfig(process.env.DELIVERY_API_URL, process.env.DELIVERY_API_TOKEN))
+      ? 'delhivery'
+      : (process.env.DELIVERY_MODE || 'mock'),
+  DELIVERY_PROVIDER: (process.env.DELIVERY_PROVIDER === 'shiprocket' || (process.env.DELIVERY_PROVIDER === undefined && process.env.DELIVERY_MODE === 'shiprocket'))
+    ? 'shiprocket'
+    : ((process.env.DELIVERY_PROVIDER === 'delhivery' || (process.env.DELIVERY_PROVIDER === undefined && process.env.DELIVERY_MODE === 'delhivery')) && hasRealDeliveryConfig(process.env.DELIVERY_API_URL, process.env.DELIVERY_API_TOKEN))
+      ? 'delhivery'
+      : (process.env.DELIVERY_PROVIDER || 'mock'),
   DELIVERY_API_URL: process.env.DELIVERY_API_URL ?? '',
   DELIVERY_API_TOKEN: process.env.DELIVERY_API_TOKEN ?? '',
   DELIVERY_WEBHOOK_SECRET: process.env.DELIVERY_WEBHOOK_SECRET ?? 'mock-delivery-webhook-secret',
+  SHIPROCKET_EMAIL: process.env.SHIPROCKET_EMAIL ?? '',
+  SHIPROCKET_PASSWORD: process.env.SHIPROCKET_PASSWORD ?? '',
+  SHIPROCKET_API_URL: (process.env.SHIPROCKET_API_URL || 'https://apiv2.shiprocket.in').replace(/\/+$/, ''),
+  SHIPROCKET_WEBHOOK_TOKEN: process.env.SHIPROCKET_WEBHOOK_TOKEN ?? '',
   PAYMENT_MOCK_ENABLED: isDevelopment && process.env.PAYMENT_MOCK_ENABLED === 'true',
   READ_NOTIFICATION_RETENTION_DAYS: Number(process.env.READ_NOTIFICATION_RETENTION_DAYS ?? 15),
 };

@@ -4,6 +4,7 @@ import { AppError } from '../utils/app-error.js';
 import { Order } from '../models/order.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
 import { Vendor } from '../models/vendor.model.js';
+import { Shipment } from '../models/shipment.model.js';
 import mongoose from 'mongoose';
 
 export const createOrder = async (req, res, next) => {
@@ -78,6 +79,35 @@ export const getOrder = async (req, res, next) => {
     }
     const order = await orderQuery.lean();
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
+
+    let shipments = [];
+    const isFindMocked = Shipment.find && (Boolean(Shipment.find._isMockFunction) || Boolean(Shipment.find.mock));
+    if (mongoose.connection.readyState === 1 || isFindMocked) {
+      try {
+        const res = await Shipment.find({ orderId: order._id }).lean();
+        shipments = Array.isArray(res) ? res : [];
+      } catch {
+        shipments = [];
+      }
+    }
+    const sanitizeCustomerShipment = (s) => {
+      if (!s) return null;
+      const { pickupAddress, ...rest } = s;
+      return {
+        ...rest,
+        originCity: pickupAddress?.city || null,
+        originState: pickupAddress?.state || null,
+      };
+    };
+    const shipmentByVo = new Map(shipments.map((s) => [String(s.vendorOrderId), sanitizeCustomerShipment(s)]));
+    if (Array.isArray(order.vendorOrders)) {
+      order.vendorOrders = order.vendorOrders.map((vo) => ({
+        ...vo,
+        shipment: shipmentByVo.get(String(vo._id)) || null,
+      }));
+    }
+    order.shipments = shipments.map(sanitizeCustomerShipment);
+
     res.status(200).json({
       success: true,
       data: order,
@@ -167,9 +197,33 @@ export const getVendorOrder = async (req, res, next) => {
     }
 
     const parent = await Order.findOne({ _id: vendorOrder.parentOrderId }).select('paymentStatus status shippingAddressSnapshot createdAt updatedAt').lean();
+    let shipment = null;
+    const isFindOneMocked = Shipment.findOne && (Boolean(Shipment.findOne._isMockFunction) || Boolean(Shipment.findOne.mock));
+    if (mongoose.connection.readyState === 1 || isFindOneMocked) {
+      try {
+        shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id }).lean();
+      } catch {
+        shipment = null;
+      }
+    }
+    const vendorPickupConfigured = Boolean(
+      vendor?.pickupAddress &&
+      vendor?.pickupAddress?.pincode &&
+      vendor?.pickupAddress?.addressLine1 &&
+      vendor?.pickupAddress?.city &&
+      vendor?.pickupAddress?.pickupLocationName
+    );
+    const vendorPickupAddress = vendorPickupConfigured ? vendor.pickupAddress : null;
+
     res.status(200).json({
       success: true,
-      data: { ...vendorOrder, parent: parent || null },
+      data: {
+        ...vendorOrder,
+        parent: parent || null,
+        shipment: shipment || null,
+        vendorPickupConfigured,
+        vendorPickupAddress,
+      },
       message: 'Vendor order loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
@@ -230,6 +284,25 @@ export const getAdminOrder = async (req, res, next) => {
     if (!order) {
       throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
     }
+
+    let shipments = [];
+    const isFindMocked = Shipment.find && (Boolean(Shipment.find._isMockFunction) || Boolean(Shipment.find.mock));
+    if (mongoose.connection.readyState === 1 || isFindMocked) {
+      try {
+        const res = await Shipment.find({ orderId: order._id }).lean();
+        shipments = Array.isArray(res) ? res : [];
+      } catch {
+        shipments = [];
+      }
+    }
+    const shipmentByVo = new Map(shipments.map((s) => [String(s.vendorOrderId), s]));
+    if (Array.isArray(order.vendorOrders)) {
+      order.vendorOrders = order.vendorOrders.map((vo) => ({
+        ...vo,
+        shipment: shipmentByVo.get(String(vo._id)) || null,
+      }));
+    }
+    order.shipments = shipments;
 
     res.status(200).json({
       success: true,

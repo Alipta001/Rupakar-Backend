@@ -1,6 +1,6 @@
 import path from 'path';
 import { AppError } from '../utils/app-error.js';
-import { vendorApplySchema, vendorUpdateSchema, adminVendorDecisionSchema, bankAccountSchema } from '../validators/vendor.validator.js';
+import { vendorApplySchema, vendorUpdateSchema, vendorPickupAddressSchema, adminVendorDecisionSchema, bankAccountSchema } from '../validators/vendor.validator.js';
 import { vendorService } from '../services/vendor.service.js';
 import { VendorBankAccount } from '../models/vendor-bank.model.js';
 import { vendorVerificationService, REQUIRED_DOCUMENT_TYPES } from '../services/vendor-verification.service.js';
@@ -50,6 +50,17 @@ const sanitizeVendor = (vendor) => {
     address: vendor.address,
     originState: vendor.originState,
     originDistrict: vendor.originDistrict,
+    pickupAddress: (vendor.pickupAddress && vendor.pickupAddress.pincode) ? {
+      pickupLocationName: vendor.pickupAddress.pickupLocationName || '',
+      contactPerson: vendor.pickupAddress.contactPerson || '',
+      phone: vendor.pickupAddress.phone || '',
+      addressLine1: vendor.pickupAddress.addressLine1 || '',
+      addressLine2: vendor.pickupAddress.addressLine2 || '',
+      city: vendor.pickupAddress.city || '',
+      state: vendor.pickupAddress.state || '',
+      pincode: vendor.pickupAddress.pincode || '',
+      country: vendor.pickupAddress.country || 'India',
+    } : null,
     gstNumber: vendor.gstNumber,
     panNumber: vendor.panNumber,
     status: vendor.status,
@@ -211,6 +222,35 @@ export const updateMyVendor = async (req, res, next) => {
       success: true,
       data: sanitizeVendor(vendor),
       message: 'Vendor profile updated',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getVendorPickupAddress = async (req, res, next) => {
+  try {
+    const address = await vendorService.getPickupAddress(req.user.sub);
+    res.status(200).json({
+      success: true,
+      data: address,
+      message: address ? 'Vendor pickup address loaded' : 'No pickup address configured',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateVendorPickupAddress = async (req, res, next) => {
+  try {
+    const payload = vendorPickupAddressSchema.parse(req.body);
+    const vendor = await vendorService.updatePickupAddress(req.user.sub, payload);
+    res.status(200).json({
+      success: true,
+      data: vendor.pickupAddress,
+      message: 'Pickup address updated successfully',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
   } catch (error) {

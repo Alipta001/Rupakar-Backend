@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.middleware.js';
 import { listAdminOrders, getAdminOrder } from '../controllers/order.controller.js';
-import { listAdminShipments, getAdminShipment, updateAdminShipmentStatus } from '../controllers/shipping.controller.js';
+import {
+  listAdminShipments,
+  getAdminShipment,
+  updateAdminShipmentStatus,
+  downloadAdminShippingLabel,
+  retryAdminPickup,
+  resyncAdminTracking,
+} from '../controllers/shipping.controller.js';
 import { listAdminReturns, getAdminReturn, approveReturn, rejectReturn } from '../controllers/return.controller.js';
 import { listAdminInvoices, getAdminInvoiceDetail } from '../controllers/invoice.controller.js';
 import { listAdminNotifications } from '../controllers/notification.controller.js';
@@ -75,6 +82,9 @@ router.get('/orders', listAdminOrders);
 router.get('/orders/:id', getAdminOrder);
 router.get('/shipments', listAdminShipments);
 router.get('/shipments/:id', getAdminShipment);
+router.get('/shipments/:id/label', downloadAdminShippingLabel);
+router.post('/shipments/:id/retry-pickup', retryAdminPickup);
+router.post('/shipments/:id/resync-tracking', resyncAdminTracking);
 router.patch('/shipments/:id/status', updateAdminShipmentStatus);
 
 // Returns (existing)
