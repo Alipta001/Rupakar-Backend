@@ -31,8 +31,17 @@ export const vendorPickupAddressSchema = z
   })
   .strict();
 
+export const vendorShippingSettingsSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    fee: z.number().min(0, 'Delivery fee cannot be negative').default(0),
+    freeDeliveryThreshold: z.number().min(0, 'Free delivery threshold cannot be negative').default(0),
+  })
+  .strict();
+
 export const vendorUpdateSchema = vendorApplySchema.partial().extend({
   pickupAddress: vendorPickupAddressSchema.optional(),
+  shippingSettings: vendorShippingSettingsSchema.optional(),
 });
 
 export const adminVendorDecisionSchema = z.object({

@@ -822,4 +822,192 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
       expect(requestSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('Shiprocket Shipment ID Extraction & Safe Error Handling', () => {
+    it('extracts shipment_id from alternate valid paths (response.shipment_id, data.shipment_id, shipments array)', async () => {
+      // 1. response.shipment_id
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/orders/create/adhoc')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              response: {
+                order_id: 112233,
+                shipment_id: 445566,
+              },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res1 = await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-SR-PATH-1',
+        pickupAddress: { pickupLocationName: 'Hub 1' },
+        deliveryAddress: { phone: '9876543210' },
+      });
+      expect(res1.providerShipmentId).toBe('445566');
+
+      // 2. data.shipment_id
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/orders/create/adhoc')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: {
+                order_id: 223344,
+                shipment_id: 556677,
+              },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res2 = await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-SR-PATH-2',
+        pickupAddress: { pickupLocationName: 'Hub 2' },
+        deliveryAddress: { phone: '9876543210' },
+      });
+      expect(res2.providerShipmentId).toBe('556677');
+
+      // 3. shipments[0].shipment_id
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/orders/create/adhoc')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              order_id: 334455,
+              shipments: [{ shipment_id: 667788 }],
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res3 = await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-SR-PATH-3',
+        pickupAddress: { pickupLocationName: 'Hub 3' },
+        deliveryAddress: { phone: '9876543210' },
+      });
+      expect(res3.providerShipmentId).toBe('667788');
+    });
+
+    it('exposes actual safe error instead of SHIPROCKET_SHIPMENT_ID_MISSING when Shiprocket rejects with HTTP 200', async () => {
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/orders/create/adhoc')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              status_code: 422,
+              message: 'Invalid pickup location',
+              errors: {
+                pickup_location: ['The pickup location is not registered in Shiprocket panel'],
+              },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      await expect(
+        provider.createShipment({
+          orderId: new mongoose.Types.ObjectId(),
+          orderNumber: 'RUP-SR-ERR-1',
+          pickupAddress: { pickupLocationName: 'Unregistered Hub' },
+          deliveryAddress: { phone: '9876543210' },
+        })
+      ).rejects.toMatchObject({
+        code: 'SHIPROCKET_ORDER_FAILED',
+        statusCode: 422,
+        message: expect.stringContaining('The pickup location is not registered in Shiprocket panel'),
+      });
+    });
+
+    it('exposes field-level error messages and redacts PII like phone numbers and tokens', async () => {
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/orders/create/adhoc')) {
+          return Promise.resolve({
+            ok: false,
+            status: 422,
+            json: async () => ({
+              message: 'The given data was invalid.',
+              errors: {
+                billing_phone: ['Phone 9876543210 cannot be serviced with token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_token_long_secret_signature'],
+              },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      try {
+        await provider.createShipment({
+          orderId: new mongoose.Types.ObjectId(),
+          orderNumber: 'RUP-SR-PII-1',
+          pickupAddress: { pickupLocationName: 'Hub' },
+          deliveryAddress: { phone: '9876543210' },
+        });
+        expect(true).toBe(false);
+      } catch (err) {
+        expect(err.code).toBe('SHIPROCKET_ORDER_FAILED');
+        expect(err.message).toContain('[REDACTED_PHONE]');
+        expect(err.message).toContain('[REDACTED_TOKEN]');
+        expect(err.message).not.toContain('9876543210');
+        expect(err.message).not.toContain('dummy_token_long_secret_signature');
+      }
+    });
+
+    it('recovers existing shipment ID on duplicate order without creating a duplicate Shiprocket order', async () => {
+      let adhocCallCount = 0;
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/orders/create/adhoc')) {
+          adhocCallCount++;
+          return Promise.resolve({
+            ok: false,
+            status: 422,
+            json: async () => ({
+              message: 'The order_id has already been taken.',
+              errors: { order_id: ['The order_id has already been taken.'] },
+            }),
+          });
+        }
+        if (path.includes('/orders?channel_order_id=')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: [
+                {
+                  id: 999111,
+                  order_id: 999111,
+                  channel_order_id: 'RUP-DUP-1',
+                  shipment_id: 888222,
+                },
+              ],
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-DUP-1',
+        pickupAddress: { pickupLocationName: 'Hub' },
+        deliveryAddress: { phone: '9876543210' },
+      });
+
+      expect(adhocCallCount).toBe(1);
+      expect(res.providerShipmentId).toBe('888222');
+      expect(res.metadata.shiprocketOrderId).toBe(999111);
+    });
+  });
 });

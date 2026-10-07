@@ -30,6 +30,26 @@ export const createCustomerReview = async (req, res, next) => {
   }
 };
 
+export const getReviewEligibility = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'customer') {
+      throw new AppError(403, 'FORBIDDEN', 'Only customers can check review eligibility');
+    }
+
+    const { productId } = req.params;
+    const orderId = req.query.orderId ? String(req.query.orderId) : null;
+    const eligibility = await reviewService.checkReviewEligibility({
+      customerId: req.user.sub,
+      productId,
+      orderId,
+    });
+
+    sendSuccess(res, eligibility, 'Review eligibility loaded', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const listPublicProductReviews = async (req, res, next) => {
   try {
     const { page, limit } = listReviewsQuerySchema.parse(req.query ?? {});

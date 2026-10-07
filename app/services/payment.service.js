@@ -154,7 +154,12 @@ export class PaymentService {
         const subtotalPaise = items.reduce((sum, item) => sum + toPaise(item.lineTotal), 0);
         const discPaise = allocatedDiscounts.get(vendorId) || 0;
         const taxPaise = allocatedTaxes.get(vendorId) || 0;
-        const shipPaise = allocatedShippings.get(vendorId) || 0;
+
+        const vendorShippingSnapshot = order.financialSnapshot?.shippingBreakdown?.[String(vendorId)];
+        const shipPaise = vendorShippingSnapshot !== undefined
+          ? toPaise(vendorShippingSnapshot.shippingFee)
+          : (allocatedShippings.get(vendorId) || 0);
+
         const totalPaise = subtotalPaise - discPaise + taxPaise + shipPaise;
 
         try {
@@ -170,6 +175,13 @@ export class PaymentService {
             shipping: toRupees(shipPaise),
             total: toRupees(totalPaise),
             currency: order.currency,
+            financialSnapshot: {
+              subtotal: toRupees(subtotalPaise),
+              discount: toRupees(discPaise),
+              tax: toRupees(taxPaise),
+              shipping: toRupees(shipPaise),
+              total: toRupees(totalPaise),
+            },
           });
         } catch (error) {
           if (error?.code !== 11000) throw error;

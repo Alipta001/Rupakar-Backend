@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import crypto from 'node:crypto';
 import { ShippingService } from '../app/services/shipping.service.js';
 import { DeliveryProvider, MockDeliveryProvider, deliveryProvider } from '../app/services/delivery-provider.service.js';
@@ -50,12 +50,19 @@ describe('Comprehensive Production Shipping System', () => {
   const vendorOrderId2 = new mongoose.Types.ObjectId();
   const variantId1 = new mongoose.Types.ObjectId();
   const variantId2 = new mongoose.Types.ObjectId();
+  let originalDeliveryProvider;
 
   beforeEach(() => {
     jest.restoreAllMocks();
     jest.clearAllMocks();
+    originalDeliveryProvider = env.DELIVERY_PROVIDER;
+    env.DELIVERY_PROVIDER = 'mock';
     jest.spyOn(orderService, 'syncParentOrderStatus').mockResolvedValue(true);
     jest.spyOn(settlementService, 'handleVendorOrderDelivered').mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    env.DELIVERY_PROVIDER = originalDeliveryProvider;
   });
 
   describe('1. Shipping Rates & Automatic Carrier Selection', () => {

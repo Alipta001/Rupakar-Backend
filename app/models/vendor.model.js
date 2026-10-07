@@ -35,6 +35,11 @@ const vendorSchema = new Schema(
       pincode: { type: String, trim: true, default: '' },
       country: { type: String, trim: true, default: 'India' },
     },
+    shippingSettings: {
+      enabled: { type: Boolean, default: false },
+      fee: { type: Number, default: 0, min: 0 },
+      freeDeliveryThreshold: { type: Number, default: 0, min: 0 },
+    },
     gstNumber: { type: String, trim: true },
     panNumber: { type: String, trim: true },
     status: { type: String, enum: vendorStatus, default: 'PENDING' },

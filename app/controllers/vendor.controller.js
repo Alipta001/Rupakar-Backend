@@ -61,6 +61,11 @@ const sanitizeVendor = (vendor) => {
       pincode: vendor.pickupAddress.pincode || '',
       country: vendor.pickupAddress.country || 'India',
     } : null,
+    shippingSettings: {
+      enabled: Boolean(vendor.shippingSettings?.enabled),
+      fee: Number(vendor.shippingSettings?.fee || 0),
+      freeDeliveryThreshold: Number(vendor.shippingSettings?.freeDeliveryThreshold || 0),
+    },
     gstNumber: vendor.gstNumber,
     panNumber: vendor.panNumber,
     status: vendor.status,

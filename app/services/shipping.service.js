@@ -4,22 +4,117 @@ import { env } from '../config/env.js';
 import { deliveryProvider } from './delivery-provider.service.js';
 
 export class ShippingService {
-  calculateShipping({ subtotal = 0, items = [], shippingAddress = null }) {
+  calculateShipping({ subtotal = 0, items = [], shippingAddress = null, vendors = [] } = {}) {
     if (!env.SHIPPING_ENABLED) {
       return {
         amount: 0,
         currency: 'INR',
         method: 'disabled',
+        vendorBreakdown: {},
       };
     }
 
-    const itemCount = Array.isArray(items) ? items.length : 0;
+    const safeItems = Array.isArray(items) ? items : [];
+    if (safeItems.length === 0) {
+      return {
+        amount: 0,
+        currency: 'INR',
+        method: 'standard',
+        vendorBreakdown: {},
+      };
+    }
+
+    // Index vendors by string ID
+    const vendorMap = new Map();
+    if (Array.isArray(vendors)) {
+      vendors.forEach((v) => {
+        if (v && (v._id || v.id)) vendorMap.set(String(v._id || v.id), v);
+      });
+    } else if (vendors instanceof Map) {
+      vendors.forEach((v, k) => vendorMap.set(String(k), v));
+    } else if (vendors && typeof vendors === 'object') {
+      Object.entries(vendors).forEach(([k, v]) => vendorMap.set(String(k), v));
+    }
+
+    // Group items by vendor
+    const vendorGroups = new Map();
+    let hasIdentifiedVendors = false;
+
+    for (const item of safeItems) {
+      const vId = item.vendorId || item.product?.vendorId;
+      if (vId) {
+        hasIdentifiedVendors = true;
+        const key = String(vId);
+        if (!vendorGroups.has(key)) {
+          vendorGroups.set(key, []);
+        }
+        vendorGroups.get(key).push(item);
+      }
+    }
+
+    // If items have vendor association, calculate seller-aware fees independently
+    if (hasIdentifiedVendors) {
+      const vendorBreakdown = {};
+      let totalAmount = 0;
+
+      for (const [vId, groupItems] of vendorGroups.entries()) {
+        const vendorDoc = vendorMap.get(vId);
+        const settings = vendorDoc?.shippingSettings
+          || groupItems[0]?.vendor?.shippingSettings
+          || groupItems[0]?.product?.vendor?.shippingSettings
+          || null;
+
+        const groupSubtotal = groupItems.reduce((acc, curr) => {
+          const itemTotal = Number(curr.lineTotal ?? (Number(curr.unitPrice || 0) * Number(curr.quantity || 1))) || 0;
+          return acc + itemTotal;
+        }, 0);
+
+        const allFreeShipping = groupItems.length > 0 && groupItems.every(
+          (curr) => curr.product?.shipping?.freeShipping === true || curr.freeShipping === true
+        );
+
+        let vendorFee = 0;
+        const enabled = Boolean(settings?.enabled);
+        const configuredFee = Number(settings?.fee || 0);
+        const threshold = Number(settings?.freeDeliveryThreshold || 0);
+
+        if (enabled && configuredFee > 0) {
+          if (threshold > 0 && groupSubtotal >= threshold) {
+            vendorFee = 0;
+          } else if (allFreeShipping) {
+            vendorFee = 0;
+          } else {
+            vendorFee = configuredFee;
+          }
+        }
+
+        vendorBreakdown[vId] = {
+          vendorId: vId,
+          subtotal: groupSubtotal,
+          shippingFee: vendorFee,
+          isFree: vendorFee === 0,
+          freeDeliveryThreshold: threshold,
+        };
+
+        totalAmount += vendorFee;
+      }
+
+      return {
+        amount: Math.max(0, totalAmount),
+        currency: 'INR',
+        method: 'standard',
+        vendorBreakdown,
+      };
+    }
+
+    // Fallback when items have no vendor mapping (e.g. legacy standalone unit tests)
+    const itemCount = safeItems.length;
     const safeSubtotal = Number(subtotal) || 0;
 
-    let amount = env.SHIPPING_BASE_FEE;
-    if (itemCount > 2) amount += env.SHIPPING_EXTRA_ITEM_FEE;
+    let amount = Number(env.SHIPPING_BASE_FEE) || 0;
+    if (amount > 0 && itemCount > 2) amount += env.SHIPPING_EXTRA_ITEM_FEE;
     if (safeSubtotal >= env.FREE_SHIPPING_THRESHOLD) amount = 0;
-    if (shippingAddress && shippingAddress.state && /west bengal|wb/i.test(shippingAddress.state)) {
+    if (amount > 0 && shippingAddress && shippingAddress.state && /west bengal|wb/i.test(shippingAddress.state)) {
       amount = Math.max(0, amount - env.WEST_BENGAL_SHIPPING_DISCOUNT);
     }
 
@@ -27,6 +122,7 @@ export class ShippingService {
       amount: Math.max(0, amount),
       currency: 'INR',
       method: 'standard',
+      vendorBreakdown: {},
     };
   }
 

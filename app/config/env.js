@@ -134,7 +134,7 @@ export const env = {
   RAZORPAY_WEBHOOK_SECRET: process.env.RAZORPAY_WEBHOOK_SECRET ?? '',
   RAZORPAY_ROUTE_ENABLED: process.env.RAZORPAY_ROUTE_ENABLED === 'true',
   SHIPPING_ENABLED: String(process.env.SHIPPING_ENABLED ?? (isProduction ? 'false' : 'true')).toLowerCase() !== 'false',
-  SHIPPING_BASE_FEE: Number(process.env.SHIPPING_BASE_FEE ?? 50),
+  SHIPPING_BASE_FEE: Number(process.env.SHIPPING_BASE_FEE ?? 0),
   SHIPPING_EXTRA_ITEM_FEE: Number(process.env.SHIPPING_EXTRA_ITEM_FEE ?? 20),
   FREE_SHIPPING_THRESHOLD: Number(process.env.FREE_SHIPPING_THRESHOLD ?? 1500),
   WEST_BENGAL_SHIPPING_DISCOUNT: Number(process.env.WEST_BENGAL_SHIPPING_DISCOUNT ?? 10),

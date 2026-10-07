@@ -528,6 +528,120 @@ export const SHIPROCKET_STATUS_MAP = {
   CANCELLED: 'CANCELLED',
 };
 
+const sanitizeSafeErrorMessage = (rawMessage) => {
+  if (!rawMessage || typeof rawMessage !== 'string') return '';
+  return rawMessage
+    .replace(/(?:bearer\s+)?[a-zA-Z0-9_\-.]{32,}/gi, '[REDACTED_TOKEN]')
+    .replace(/\b(?:\+?91[\s-]?)?[6-9]\d{9}\b/g, '[REDACTED_PHONE]')
+    .replace(/password[:=]\s*\S+/gi, 'password=[REDACTED]');
+};
+
+const extractSafeShiprocketErrorMessage = (payload, fallbackStatus = 502) => {
+  if (!payload || typeof payload !== 'object') {
+    return sanitizeSafeErrorMessage(`Shiprocket request failed with status ${fallbackStatus}`);
+  }
+
+  const collected = [];
+
+  if (payload.errors) {
+    if (typeof payload.errors === 'string') {
+      collected.push(payload.errors);
+    } else if (Array.isArray(payload.errors)) {
+      collected.push(payload.errors.filter(Boolean).join(', '));
+    } else if (typeof payload.errors === 'object') {
+      const parts = [];
+      for (const [key, val] of Object.entries(payload.errors)) {
+        if (Array.isArray(val)) {
+          parts.push(`${key}: ${val.join(', ')}`);
+        } else if (typeof val === 'string') {
+          parts.push(`${key}: ${val}`);
+        } else if (val) {
+          parts.push(`${key}: ${JSON.stringify(val)}`);
+        }
+      }
+      if (parts.length > 0) collected.push(parts.join('; '));
+    }
+  }
+
+  if (payload.message && typeof payload.message === 'string') {
+    const mainMsg = payload.message.trim();
+    if (mainMsg && !collected.some((c) => c.includes(mainMsg))) {
+      collected.unshift(mainMsg);
+    }
+  } else if (payload.error && typeof payload.error === 'string') {
+    const errStr = payload.error.trim();
+    if (errStr && !collected.some((c) => c.includes(errStr))) {
+      collected.unshift(errStr);
+    }
+  } else if (payload.response?.message && typeof payload.response.message === 'string') {
+    collected.unshift(payload.response.message.trim());
+  }
+
+  const combined = collected.filter(Boolean).join(': ') || `Shiprocket request failed with status ${fallbackStatus}`;
+  return sanitizeSafeErrorMessage(combined);
+};
+
+const extractShiprocketShipmentId = (data) => {
+  if (!data || typeof data !== 'object') return null;
+
+  const candidate =
+    data.shipment_id ??
+    data.response?.shipment_id ??
+    data.data?.shipment_id ??
+    data.payload?.shipment_id ??
+    data.shipment_details?.shipment_id ??
+    data.response?.data?.shipment_id ??
+    data.shipments?.[0]?.shipment_id ??
+    data.shipments?.[0]?.id ??
+    data.packages?.[0]?.shipment_id ??
+    data.packages?.[0]?.id ??
+    null;
+
+  if (candidate !== null && candidate !== undefined && candidate !== '') {
+    const num = Number(candidate);
+    if (!isNaN(num) && num > 0) return num;
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return null;
+};
+
+const extractShiprocketOrderId = (data) => {
+  if (!data || typeof data !== 'object') return null;
+
+  const candidate =
+    data.order_id ??
+    data.response?.order_id ??
+    data.data?.order_id ??
+    data.payload?.order_id ??
+    data.response?.data?.order_id ??
+    data.id ??
+    null;
+
+  if (candidate !== null && candidate !== undefined && candidate !== '') {
+    return candidate;
+  }
+  return null;
+};
+
+const isShiprocketResponseRejection = (data) => {
+  if (!data || typeof data !== 'object') return false;
+
+  if (data.status_code !== undefined && data.status_code !== null) {
+    const sc = Number(data.status_code);
+    if (!isNaN(sc) && sc !== 1 && sc !== 200 && sc !== 201) return true;
+  }
+
+  if (data.status === 'error' || data.status === 'failed' || data.success === false) {
+    return true;
+  }
+
+  if (data.errors && (Array.isArray(data.errors) ? data.errors.length > 0 : Object.keys(data.errors).length > 0)) {
+    return true;
+  }
+
+  return false;
+};
+
 export class ShiprocketProvider extends DeliveryProvider {
   constructor(options = {}) {
     super();
@@ -783,14 +897,46 @@ export class ShiprocketProvider extends DeliveryProvider {
       body: JSON.stringify(adhocPayload),
     });
 
-    if (!createRes.ok) {
-      const err = await createRes.json().catch(() => ({}));
-      throw new AppError(createRes.status, 'SHIPROCKET_ORDER_FAILED', err?.message || `Shiprocket order creation failed with status ${createRes.status}`);
-    }
+    const createData = await createRes.json().catch(() => ({}));
 
-    const createData = await createRes.json();
-    const srOrderId = createData.order_id;
-    const srShipmentId = createData.shipment_id;
+    let srShipmentId = extractShiprocketShipmentId(createData);
+    let srOrderId = extractShiprocketOrderId(createData);
+
+    if (!createRes.ok || isShiprocketResponseRejection(createData) || (!srShipmentId && (createData.message || createData.error || createData.errors))) {
+      const safeError = extractSafeShiprocketErrorMessage(createData, createRes.status);
+      const isDuplicateOrder =
+        createRes.status === 409 ||
+        /already\s+(?:been\s+)?(?:taken|exist)/i.test(safeError) ||
+        /order\s+id\s+already/i.test(safeError);
+
+      if (isDuplicateOrder) {
+        try {
+          const listRes = await this.request(`/v1/external/orders?channel_order_id=${encodeURIComponent(srOrderIdCustom)}`);
+          if (listRes.ok) {
+            const listData = await listRes.json().catch(() => ({}));
+            const existingOrder = Array.isArray(listData?.data)
+              ? listData.data.find((o) => o.channel_order_id === srOrderIdCustom || String(o.order_id) === srOrderIdCustom)
+              : null;
+            const existingShipmentId = extractShiprocketShipmentId(existingOrder);
+            if (existingShipmentId) {
+              srShipmentId = existingShipmentId;
+              srOrderId = extractShiprocketOrderId(existingOrder) || existingOrder?.id || srOrderId;
+            }
+          }
+        } catch {
+          // Fall through to error
+        }
+      }
+
+      if (!srShipmentId) {
+        const errorStatusCode = createRes.status >= 400
+          ? createRes.status
+          : (Number(createData?.status_code) >= 400 && Number(createData?.status_code) < 600
+            ? Number(createData.status_code)
+            : 422);
+        throw new AppError(errorStatusCode, 'SHIPROCKET_ORDER_FAILED', safeError);
+      }
+    }
 
     if (!srShipmentId) {
       throw new AppError(502, 'SHIPROCKET_SHIPMENT_ID_MISSING', 'Shiprocket response did not include shipment_id');

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { Vendor } from '../app/models/vendor.model.js';
 import { VendorOrder } from '../app/models/vendor-order.model.js';
 import { Order } from '../app/models/order.model.js';
@@ -10,6 +10,7 @@ import { inventoryReservationService } from '../app/services/inventory-reservati
 import { shipmentStateService } from '../app/services/shipment-state.service.js';
 import { shippingService } from '../app/services/shipping.service.js';
 import { orderService } from '../app/services/order.service.js';
+import { env } from '../app/config/env.js';
 import {
   processVendorOrder,
   packVendorOrder,
@@ -25,10 +26,17 @@ describe('Seller Order Workflow & Inventory Decrement at READY_TO_SHIP', () => {
   const vendorOrderId = new mongoose.Types.ObjectId();
   const variantId1 = new mongoose.Types.ObjectId();
   const variantId2 = new mongoose.Types.ObjectId();
+  let originalDeliveryProvider;
 
   beforeEach(() => {
     jest.restoreAllMocks();
     jest.clearAllMocks();
+    originalDeliveryProvider = env.DELIVERY_PROVIDER;
+    env.DELIVERY_PROVIDER = 'mock';
+  });
+
+  afterEach(() => {
+    env.DELIVERY_PROVIDER = originalDeliveryProvider;
   });
 
   describe('Workflow Progression & Transition Guards', () => {

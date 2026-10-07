@@ -563,6 +563,15 @@ export class OrderService {
       isDirectCheckout,
       shippingAddressSnapshot: summary.shippingAddress || shippingAddress || {},
       billingAddressSnapshot: {},
+      financialSnapshot: {
+        subtotal: summary.subtotal,
+        discount: summary.discount,
+        tax: summary.tax,
+        shipping: summary.shipping,
+        total: summary.total,
+        currency: summary.currency,
+        shippingBreakdown: summary.breakdown?.shipping?.vendorBreakdown || {},
+      },
     });
 
     const reservationRecords = [];

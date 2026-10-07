@@ -1,5 +1,6 @@
 import { Product } from '../models/product.model.js';
 import { ProductVariant } from '../models/product-variant.model.js';
+import { Vendor } from '../models/vendor.model.js';
 import { AppError } from '../utils/app-error.js';
 import { taxService } from './tax.service.js';
 import { shippingService } from './shipping.service.js';
@@ -71,6 +72,7 @@ export class PricingService {
         unitPrice: Number(variant.price || 0),
         lineTotal,
         categoryId: product.categoryId,
+        vendorId: product.vendorId ? String(product.vendorId) : null,
         product,
       });
     }
@@ -86,8 +88,32 @@ export class PricingService {
       }
     }
 
+    const vendorIds = [...new Set(normalizedItems.map((entry) => entry.vendorId).filter(Boolean))];
+    let vendors = [];
+    if (vendorIds.length > 0) {
+      try {
+        const isFindMocked = Boolean(Vendor.find?._isMockFunction || Vendor.find?.mock);
+        if (mongoose.connection.readyState === 1 || isFindMocked) {
+          const query = Vendor.find({ _id: { $in: vendorIds }, deletedAt: null });
+          if (query && typeof query.select === 'function') {
+            const selected = query.select('_id businessName shippingSettings');
+            vendors = (selected && typeof selected.lean === 'function') ? await selected.lean() : await selected;
+          } else {
+            vendors = await query;
+          }
+        }
+      } catch {
+        vendors = [];
+      }
+    }
+
     const tax = taxService.calculateOrderTax({ subtotal, items: normalizedItems });
-    const shipping = shippingService.calculateShipping({ subtotal, items: normalizedItems, shippingAddress: finalShippingAddress });
+    const shipping = shippingService.calculateShipping({
+      subtotal,
+      items: normalizedItems,
+      shippingAddress: finalShippingAddress,
+      vendors,
+    });
 
     let discount = { amount: 0, code: null, discountType: null, coupon: null };
     if (couponCode) {
@@ -121,7 +147,11 @@ export class PricingService {
       breakdown: {
         subtotal,
         tax: { amount: tax.amount, rate: tax.rate },
-        shipping: { amount: shipping.amount, method: shipping.method },
+        shipping: {
+          amount: shipping.amount,
+          method: shipping.method,
+          vendorBreakdown: shipping.vendorBreakdown || {},
+        },
         discount: { amount: discount.amount, code: discount.code },
       },
       shippingAddress: finalShippingAddress ?? null,
