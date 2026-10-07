@@ -17,6 +17,27 @@ export function normalizePhoneNumber(phone) {
   return `+${digits}`;
 }
 
+export function normalizeIndianPhone10(phone) {
+  if (!phone) return null;
+  const cleaned = String(phone).trim();
+  const digits = cleaned.replace(/\D/g, '');
+  if (!digits) return null;
+
+  let tenDigits = null;
+  if (digits.length === 10) {
+    tenDigits = digits;
+  } else if (digits.length === 12 && digits.startsWith('91')) {
+    tenDigits = digits.slice(2);
+  } else if (digits.length === 11 && digits.startsWith('0')) {
+    tenDigits = digits.slice(1);
+  }
+
+  if (tenDigits && /^[6-9]\d{9}$/.test(tenDigits)) {
+    return tenDigits;
+  }
+  return null;
+}
+
 export function maskPhoneNumber(phone) {
   if (!phone) return 'unknown';
   const str = String(phone).trim();

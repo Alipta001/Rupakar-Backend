@@ -637,4 +637,175 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
     expect(shipmentDoc.save).toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith({ success: true, duplicate: false });
   });
+
+  // STEP 6: Focused tests for Shiprocket phone payload generation & validation
+  describe('Shiprocket Phone Validation and Payload Normalization (STEP 6)', () => {
+    it('1. Customer phone "9876543210" produces valid Shiprocket phone format', async () => {
+      let adhocBody = null;
+      jest.spyOn(provider, 'request').mockImplementation((path, options) => {
+        if (path.includes('/orders/create/adhoc')) {
+          adhocBody = JSON.parse(options.body);
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ order_id: 101, shipment_id: 202 }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-PHONE-1',
+        pickupAddress: { pickupLocationName: 'Kolkata Hub' },
+        deliveryAddress: { phone: '9876543210' },
+      });
+
+      expect(adhocBody).toBeDefined();
+      expect(adhocBody.billing_phone).toBe('9876543210');
+      expect(adhocBody.billing_customer_phone).toBe('9876543210');
+      expect(adhocBody.shipping_customer_phone).toBe('9876543210');
+    });
+
+    it('2. Customer phone "+919876543210" or "+91 98765 43210" normalized correctly to 10-digit format', async () => {
+      let adhocBody = null;
+      jest.spyOn(provider, 'request').mockImplementation((path, options) => {
+        if (path.includes('/orders/create/adhoc')) {
+          adhocBody = JSON.parse(options.body);
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ order_id: 102, shipment_id: 203 }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-PHONE-2',
+        pickupAddress: { pickupLocationName: 'Kolkata Hub' },
+        deliveryAddress: { phone: '+919876543210' },
+      });
+
+      expect(adhocBody).toBeDefined();
+      expect(adhocBody.billing_phone).toBe('9876543210');
+      expect(adhocBody.billing_customer_phone).toBe('9876543210');
+
+      // Also verify +91 with spaces and dashes
+      await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-PHONE-2B',
+        pickupAddress: { pickupLocationName: 'Kolkata Hub' },
+        deliveryAddress: { phone: '+91 98765 43210' },
+      });
+      expect(adhocBody.billing_phone).toBe('9876543210');
+    });
+
+    it('3. Seller pickup phone "9876543210" or "+919876543210" sends correct pickup_phone in Shiprocket payload', async () => {
+      let adhocBody = null;
+      jest.spyOn(provider, 'request').mockImplementation((path, options) => {
+        if (path.includes('/orders/create/adhoc')) {
+          adhocBody = JSON.parse(options.body);
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ order_id: 103, shipment_id: 204 }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-PHONE-3',
+        pickupAddress: { pickupLocationName: 'Kolkata Hub', phone: '9876543210' },
+        deliveryAddress: { phone: '9812345678' },
+      });
+
+      expect(adhocBody).toBeDefined();
+      expect(adhocBody.pickup_phone).toBe('9876543210');
+
+      // Test with +91 in pickup phone
+      await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-PHONE-3B',
+        pickupAddress: { pickupLocationName: 'Kolkata Hub', phone: '+919876543210' },
+        deliveryAddress: { phone: '9812345678' },
+      });
+      expect(adhocBody.pickup_phone).toBe('9876543210');
+    });
+
+    it('4. Multi-vendor shipment: Seller A uses pickup phone A, Seller B uses pickup phone B, with no global phone fallback', async () => {
+      const capturedPayloads = [];
+      jest.spyOn(provider, 'request').mockImplementation((path, options) => {
+        if (path.includes('/orders/create/adhoc')) {
+          capturedPayloads.push(JSON.parse(options.body));
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ order_id: 104, shipment_id: 205 }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      // Shipment for Seller A
+      await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        vendorOrderId: new mongoose.Types.ObjectId(),
+        pickupAddress: { pickupLocationName: 'Seller A Hub', phone: '9811111111' },
+        deliveryAddress: { phone: '9800000001' },
+      });
+
+      // Shipment for Seller B
+      await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        vendorOrderId: new mongoose.Types.ObjectId(),
+        pickupAddress: { pickupLocationName: 'Seller B Hub', phone: '9822222222' },
+        deliveryAddress: { phone: '9800000001' },
+      });
+
+      expect(capturedPayloads.length).toBe(2);
+      expect(capturedPayloads[0].pickup_location).toBe('Seller A Hub');
+      expect(capturedPayloads[0].pickup_phone).toBe('9811111111');
+      expect(capturedPayloads[1].pickup_location).toBe('Seller B Hub');
+      expect(capturedPayloads[1].pickup_phone).toBe('9822222222');
+      expect(capturedPayloads[0].pickup_phone).not.toBe(capturedPayloads[1].pickup_phone);
+    });
+
+    it('5. Invalid phone fails with a clear validation error before calling Shiprocket', async () => {
+      const requestSpy = jest.spyOn(provider, 'request');
+
+      // Invalid customer phone (short)
+      await expect(
+        provider.createShipment({
+          orderId: new mongoose.Types.ObjectId(),
+          pickupAddress: { pickupLocationName: 'Hub' },
+          deliveryAddress: { phone: '12345' },
+        })
+      ).rejects.toThrow('Customer phone number must be a valid 10-digit Indian mobile number');
+
+      // Invalid customer phone (all zeros / starting with 0)
+      await expect(
+        provider.createShipment({
+          orderId: new mongoose.Types.ObjectId(),
+          pickupAddress: { pickupLocationName: 'Hub' },
+          deliveryAddress: { phone: '0000000000' },
+        })
+      ).rejects.toThrow('Customer phone number must be a valid 10-digit Indian mobile number');
+
+      // Invalid seller pickup phone
+      await expect(
+        provider.createShipment({
+          orderId: new mongoose.Types.ObjectId(),
+          pickupAddress: { pickupLocationName: 'Hub', phone: 'invalid-seller-phone' },
+          deliveryAddress: { phone: '9876543210' },
+        })
+      ).rejects.toThrow('Seller pickup phone number must be a valid 10-digit Indian mobile number');
+
+      // Crucial: Ensure NO network request was made to Shiprocket
+      expect(requestSpy).not.toHaveBeenCalled();
+    });
+  });
 });

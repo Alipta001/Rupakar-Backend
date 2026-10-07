@@ -180,7 +180,7 @@ export const packVendorOrder = async (req, res, next) => {
         carrier: 'mock-carrier',
         packageInfo: packageInfo || {},
         pickupAddress: vendor.pickupAddress || vendor.registeredAddress || {},
-        deliveryAddress: order.shippingAddress || {},
+        deliveryAddress: order.shippingAddressSnapshot || order.shippingAddress || {},
         items: vendorOrder.items,
         cod: order.paymentMethod === 'cod',
       });
@@ -412,7 +412,7 @@ export const readyVendorOrder = async (req, res, next) => {
     const pickupAddress = hasConfiguredPickup ? {
       pickupLocationName: vendor.pickupAddress.pickupLocationName,
       contactPerson: vendor.pickupAddress.contactPerson || vendor.businessName,
-      phone: vendor.pickupAddress.phone || vendor.phone || '9999999999',
+      phone: vendor.pickupAddress.phone || vendor.phone || '',
       street: [vendor.pickupAddress.addressLine1, vendor.pickupAddress.addressLine2].filter(Boolean).join(', ') || vendor.pickupAddress.addressLine1,
       addressLine1: vendor.pickupAddress.addressLine1,
       addressLine2: vendor.pickupAddress.addressLine2 || '',
@@ -423,6 +423,7 @@ export const readyVendorOrder = async (req, res, next) => {
       country: vendor.pickupAddress.country || 'India',
     } : (vendor.registeredAddress || {
       pickupLocationName: vendor.businessName || 'Primary',
+      phone: vendor.phone || '',
       street: vendor.address || 'Vendor Pickup Hub',
       city: vendor.originDistrict || 'Kolkata',
       state: vendor.originState || 'West Bengal',
@@ -430,7 +431,7 @@ export const readyVendorOrder = async (req, res, next) => {
       pincode: '700001',
       country: 'IN',
     });
-    const deliveryAddress = order.shippingAddress || {
+    const deliveryAddress = order.shippingAddressSnapshot || order.shippingAddress || {
       street: 'Customer Delivery Address',
       city: 'Kolkata',
       state: 'West Bengal',

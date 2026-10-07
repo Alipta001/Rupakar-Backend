@@ -5,6 +5,7 @@ import {
   TwilioSmsProvider,
   Msg91SmsProvider,
   normalizePhoneNumber,
+  normalizeIndianPhone10,
   maskPhoneNumber,
 } from '../app/services/sms.service.js';
 
@@ -34,6 +35,20 @@ describe('SmsService and Phone Notifications', () => {
     it('preserves existing + format', () => {
       expect(normalizePhoneNumber('+919876543210')).toBe('+919876543210');
       expect(normalizePhoneNumber('+14155552671')).toBe('+14155552671');
+    });
+
+    it('normalizes various Indian phone formats to 10 digits via normalizeIndianPhone10', () => {
+      expect(normalizeIndianPhone10('9876543210')).toBe('9876543210');
+      expect(normalizeIndianPhone10('+919876543210')).toBe('9876543210');
+      expect(normalizeIndianPhone10('+91 98765 43210')).toBe('9876543210');
+      expect(normalizeIndianPhone10('919876543210')).toBe('9876543210');
+      expect(normalizeIndianPhone10('09876543210')).toBe('9876543210');
+      expect(normalizeIndianPhone10(' 98765-43210 ')).toBe('9876543210');
+      expect(normalizeIndianPhone10('12345')).toBeNull();
+      expect(normalizeIndianPhone10('0000000000')).toBeNull();
+      expect(normalizeIndianPhone10('+14155552671')).toBeNull();
+      expect(normalizeIndianPhone10('')).toBeNull();
+      expect(normalizeIndianPhone10(null)).toBeNull();
     });
 
     it('masks phone numbers safely for logging', () => {

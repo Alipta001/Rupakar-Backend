@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
+import { normalizeIndianPhone10 } from './sms.service.js';
 
 const hasRealDeliveryConfig = (url, token) => {
   const normalizedUrl = String(url ?? '').trim();
@@ -731,19 +732,45 @@ export class ShiprocketProvider extends DeliveryProvider {
       throw new AppError(400, 'PICKUP_LOCATION_REQUIRED', 'Vendor pickup location nickname is required for Shiprocket shipment creation');
     }
 
+    const rawCustomerPhone = deliveryAddress.phone || deliveryAddress.phoneNumber || deliveryAddress.mobile || '';
+    let normalizedCustomerPhone = normalizeIndianPhone10(rawCustomerPhone);
+
+    if (rawCustomerPhone && !normalizedCustomerPhone) {
+      throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Customer phone number must be a valid 10-digit Indian mobile number');
+    }
+
+    if (!normalizedCustomerPhone) {
+      if (this.mode === 'production') {
+        throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Customer phone number is required and must be a valid 10-digit Indian mobile number');
+      }
+      normalizedCustomerPhone = '9876543210';
+    }
+
+    const rawPickupPhone = pickupAddress.phone || pickupAddress.phoneNumber || pickupAddress.mobile || '';
+    let normalizedPickupPhone = null;
+    if (rawPickupPhone) {
+      normalizedPickupPhone = normalizeIndianPhone10(rawPickupPhone);
+      if (!normalizedPickupPhone) {
+        throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Seller pickup phone number must be a valid 10-digit Indian mobile number');
+      }
+    }
+
     const adhocPayload = {
       order_id: srOrderIdCustom,
       order_date: new Date().toISOString().replace('T', ' ').slice(0, 19),
       pickup_location: resolvedPickupLocation,
-      billing_customer_name: deliveryAddress.name || deliveryAddress.fullName || 'Valued Customer',
+      billing_customer_name: deliveryAddress.fullName || deliveryAddress.name || deliveryAddress.recipientName || 'Valued Customer',
       billing_last_name: deliveryAddress.lastName || '',
-      billing_address: [deliveryAddress.line1 || deliveryAddress.street, deliveryAddress.line2].filter(Boolean).join(', ') || 'Customer Address',
+      billing_address: [deliveryAddress.addressLine1 || deliveryAddress.line1 || deliveryAddress.street, deliveryAddress.addressLine2 || deliveryAddress.line2].filter(Boolean).join(', ') || 'Customer Address',
       billing_city: deliveryAddress.city || 'Kolkata',
       billing_pincode: deliveryAddress.postalCode || deliveryAddress.pincode || '700001',
       billing_state: deliveryAddress.state || 'West Bengal',
       billing_country: deliveryAddress.country || 'India',
       billing_email: deliveryAddress.email || 'customer@rupakar.com',
-      billing_phone: deliveryAddress.phone || '9999999999',
+      billing_phone: normalizedCustomerPhone,
+      billing_customer_phone: normalizedCustomerPhone,
+      shipping_customer_phone: normalizedCustomerPhone,
+      ...(normalizedPickupPhone ? { pickup_phone: normalizedPickupPhone } : {}),
       shipping_is_billing: true,
       order_items: orderItems,
       payment_method: cod ? 'COD' : 'Prepaid',
