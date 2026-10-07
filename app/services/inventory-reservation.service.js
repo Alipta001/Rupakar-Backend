@@ -15,7 +15,7 @@ export class InventoryReservationService {
       throw new AppError(400, 'INVALID_QUANTITY', 'Reservation quantity must be a positive integer');
     }
     if (safeRequested > safeAvailable) {
-      throw new AppError(409, 'INSUFFICIENT_STOCK', 'Not enough stock available to reserve');
+      throw new AppError(409, 'INSUFFICIENT_STOCK', safeAvailable > 0 ? `Only ${safeAvailable} items are available.` : 'This item is out of stock.');
     }
     return safeRequested;
   }

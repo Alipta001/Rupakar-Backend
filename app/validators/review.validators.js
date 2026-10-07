@@ -12,3 +12,9 @@ export const listReviewsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 }).passthrough();
+
+export const updateReviewSchema = z.object({
+  rating: z.coerce.number().int().min(1).max(5).optional(),
+  title: z.string().trim().min(3).max(120).optional(),
+  comment: z.string().trim().min(3).max(2000).optional(),
+}).strict();

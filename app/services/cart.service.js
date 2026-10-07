@@ -100,7 +100,7 @@ export class CartService {
 
     const available = await inventoryService.getAvailableStock(variantId);
     if (normalizedQuantity > available) {
-      throw new AppError(409, 'INSUFFICIENT_STOCK', `Only ${available} left in stock`);
+      throw new AppError(409, 'INSUFFICIENT_STOCK', available > 0 ? `Only ${available} items are available.` : 'This item is out of stock.');
     }
 
     return {
@@ -128,6 +128,11 @@ export class CartService {
 
     const existingItem = cart.items.find((item) => String(item.variantId) === String(normalized.variantId));
     if (existingItem) {
+      const available = await inventoryService.getAvailableStock(normalized.variantId);
+      const totalQty = (existingItem.quantity || 0) + normalized.quantity;
+      if (totalQty > available) {
+        throw new AppError(409, 'INSUFFICIENT_STOCK', available > 0 ? `Only ${available} items are available.` : 'This item is out of stock.');
+      }
       throw new AppError(409, 'CART_ITEM_EXISTS', 'This product is already in your cart');
     } else {
       cart.items.push({ productId: normalized.productId, variantId: normalized.variantId, quantity: normalized.quantity });
@@ -153,7 +158,9 @@ export class CartService {
     if (!variant) throw new AppError(404, 'VARIANT_NOT_FOUND', 'Variant not found');
 
     const available = await inventoryService.getAvailableStock(variantId);
-    if (normalized > available) throw new AppError(409, 'INSUFFICIENT_STOCK', 'Requested quantity exceeds available stock');
+    if (normalized > available) {
+      throw new AppError(409, 'INSUFFICIENT_STOCK', available > 0 ? `Only ${available} items are available.` : 'This item is out of stock.');
+    }
 
     item.quantity = normalized;
     await cart.save();

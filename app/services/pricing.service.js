@@ -54,7 +54,7 @@ export class PricingService {
 
       const available = await inventoryService.getAvailableStock(variantId);
       if (quantity > available) {
-        throw new AppError(409, 'INSUFFICIENT_STOCK', `Requested quantity exceeds available stock for variant ${String(variantId)}`);
+        throw new AppError(409, 'INSUFFICIENT_STOCK', available > 0 ? `Only ${available} items are available.` : 'This item is out of stock.');
       }
 
       if (String(product._id) !== String(variant.productId)) {

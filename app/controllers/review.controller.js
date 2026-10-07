@@ -1,5 +1,5 @@
 import { reviewService } from '../services/review.service.js';
-import { createReviewSchema, listReviewsQuerySchema } from '../validators/review.validators.js';
+import { createReviewSchema, listReviewsQuerySchema, updateReviewSchema } from '../validators/review.validators.js';
 import { sendSuccess } from '../utils/response.js';
 import { AppError } from '../utils/app-error.js';
 
@@ -25,6 +25,27 @@ export const createCustomerReview = async (req, res, next) => {
       message: 'Review created',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateCustomerReview = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'customer') {
+      throw new AppError(403, 'FORBIDDEN', 'Only customers can update reviews');
+    }
+
+    const payload = updateReviewSchema.parse(req.body ?? {});
+    const review = await reviewService.updateCustomerReview({
+      customerId: req.user.sub,
+      reviewId: req.params.id,
+      rating: payload.rating,
+      title: payload.title,
+      comment: payload.comment,
+    });
+
+    sendSuccess(res, review, 'Review updated', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }

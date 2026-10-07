@@ -486,7 +486,8 @@ export class OrderService {
 
       const inventory = await Inventory.findOne({ variantId: item.variantId, deletedAt: null });
       if (!inventory || inventory.availableQuantity < item.quantity) {
-        throw new AppError(409, 'INSUFFICIENT_STOCK', 'Insufficient stock available');
+        const available = inventory ? inventory.availableQuantity : 0;
+        throw new AppError(409, 'INSUFFICIENT_STOCK', available > 0 ? `Only ${available} items are available.` : 'This item is out of stock.');
       }
 
       const vendorId = product.vendorId;
@@ -575,15 +576,31 @@ export class OrderService {
     });
 
     const reservationRecords = [];
-    for (const item of orderItems) {
-      const reservation = await inventoryReservationService.createReservation({
-        orderId: orderDoc._id,
-        variantId: item.variantId,
-        productId: item.productId,
-        quantity: item.quantity,
-        createdBy: customerId,
+    try {
+      for (const item of orderItems) {
+        const reservation = await inventoryReservationService.createReservation({
+          orderId: orderDoc._id,
+          variantId: item.variantId,
+          productId: item.productId,
+          quantity: item.quantity,
+          createdBy: customerId,
+        });
+        reservationRecords.push(reservation);
+      }
+    } catch (resError) {
+      await Promise.allSettled(
+        reservationRecords.map((res) =>
+          inventoryReservationService.releaseReservation({
+            orderId: orderDoc._id,
+            variantId: res.variantId,
+            reason: 'Concurrent reservation failure rollback',
+          })
+        )
+      );
+      await Order.findByIdAndUpdate(orderDoc._id, {
+        $set: { status: 'FAILED', paymentStatus: 'FAILED' },
       });
-      reservationRecords.push(reservation);
+      throw resError;
     }
 
     let payment;

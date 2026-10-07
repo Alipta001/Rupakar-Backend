@@ -322,6 +322,31 @@ export class ReviewService {
     return sanitizeReview(review);
   }
 
+  async updateCustomerReview({ customerId, reviewId, rating, title, comment }) {
+    if (!customerId) {
+      throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');
+    }
+    if (!mongoose.isValidObjectId(reviewId)) {
+      throw new AppError(400, 'INVALID_REVIEW_ID', 'Review ID is invalid');
+    }
+
+    const review = await Review.findById(reviewId);
+    if (!review || review.deletedAt) {
+      throw new AppError(404, 'REVIEW_NOT_FOUND', 'Review not found');
+    }
+
+    if (String(review.customerId) !== String(customerId)) {
+      throw new AppError(403, 'FORBIDDEN', 'You can only edit your own reviews');
+    }
+
+    if (rating !== undefined) review.rating = rating;
+    if (title !== undefined) review.title = title;
+    if (comment !== undefined) review.comment = comment;
+
+    await review.save();
+    return sanitizeReview(review);
+  }
+
   async listCustomerReviews(customerId, { page = 1, limit = 20 } = {}) {
     if (!customerId) {
       throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');
