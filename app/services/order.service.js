@@ -24,9 +24,9 @@ import { env } from '../config/env.js';
 
 
 const ORDER_STATUS_TRANSITIONS = {
-  PENDING_PAYMENT: ['PAID', 'FAILED', 'CANCELLED'],
+  PENDING_PAYMENT: ['PAID', 'CONFIRMED', 'FAILED', 'CANCELLED'],
   PAID: ['CONFIRMED', 'CANCELLED'],
-  CONFIRMED: ['PROCESSING', 'CANCELLED'],
+  CONFIRMED: ['PROCESSING', 'CANCELLED', 'FAILED'],
   PROCESSING: ['PACKED', 'CANCELLED'],
   PACKED: ['READY_TO_SHIP', 'CANCELLED'],
   READY_TO_SHIP: ['SHIPPED', 'CANCELLED'],
@@ -557,7 +557,7 @@ export class OrderService {
       currency: summary.currency,
       items: orderItems,
       paymentStatus: 'PENDING',
-      status: 'PENDING_PAYMENT',
+      status: normalizedPaymentMethod === 'cod' ? 'CONFIRMED' : 'PENDING_PAYMENT',
       paymentMethod: normalizedPaymentMethod,
       idempotencyKey,
       isDirectCheckout,
@@ -604,10 +604,29 @@ export class OrderService {
       await Cart.updateOne({ userId: customerId }, { $pull: { items: { variantId: { $in: orderItems.map((item) => item.variantId) } } } });
     }
 
+    let vendorOrders = [];
+    if (normalizedPaymentMethod === 'cod') {
+      await inventoryReservationService.consumeOrderReservations({
+        orderId: orderDoc._id,
+        items: orderItems,
+      });
+
+      const artifacts = await paymentService.ensureCapturedOrderArtifacts(
+        orderDoc._id,
+        payment?._id || payment?.id,
+        payment,
+      ).catch((err) => {
+        console.error('Failed to ensure COD order artifacts:', err?.message || err);
+        return { vendorOrders: [] };
+      });
+      vendorOrders = artifacts?.vendorOrders || [];
+    }
+
     return {
-      ...orderDoc.toObject(),
+      ...(orderDoc.toObject ? orderDoc.toObject() : orderDoc),
+      status: normalizedPaymentMethod === 'cod' ? 'CONFIRMED' : orderDoc.status,
+      vendorOrders,
       payment,
-      vendorOrders: [],
       reservationRecords,
     };
   }

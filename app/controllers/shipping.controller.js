@@ -124,7 +124,8 @@ export const packVendorOrder = async (req, res, next) => {
       }, 'Order packed', String(req.headers['x-request-id'] ?? ''));
     }
 
-    if (!['PAID', 'CAPTURED'].includes(order.paymentStatus) || vendorOrder.status !== 'PROCESSING') {
+    const isOrderPayableOrCod = ['PAID', 'CAPTURED'].includes(order.paymentStatus) || order.paymentMethod === 'cod';
+    if (!isOrderPayableOrCod || vendorOrder.status !== 'PROCESSING') {
       throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order is not ready to be packed');
     }
 
@@ -251,7 +252,8 @@ export const shipVendorOrder = async (req, res, next) => {
 
     const order = await Order.findById(vendorOrder.parentOrderId);
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
-    if (!['PAID', 'CAPTURED'].includes(order.paymentStatus) || vendorOrder.status !== 'READY_TO_SHIP') {
+    const isOrderPayableOrCod = ['PAID', 'CAPTURED'].includes(order.paymentStatus) || order.paymentMethod === 'cod';
+    if (!isOrderPayableOrCod || vendorOrder.status !== 'READY_TO_SHIP') {
       throw new AppError(400, 'INVALID_VENDOR_ORDER_TRANSITION', 'Order must be ready to ship before handoff');
     }
 
