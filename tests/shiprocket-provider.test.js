@@ -59,6 +59,7 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
       email: testEmail,
       password: testPassword,
       apiUrl: testApiUrl,
+      mode: 'mock',
     });
 
     originalFetch = global.fetch;
@@ -489,7 +490,20 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
     const vendorOrderId = new mongoose.Types.ObjectId();
     const variantId = new mongoose.Types.ObjectId();
 
-    jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorId, ownerUserId: vendorUserId, status: 'APPROVED' });
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue({
+      _id: vendorId,
+      ownerUserId: vendorUserId,
+      status: 'APPROVED',
+      pickupAddress: {
+        pickupLocationName: 'Hub',
+        contactPerson: 'Vendor 1',
+        phone: '9876543210',
+        addressLine1: 'Road 1',
+        city: 'Kolkata',
+        state: 'WB',
+        pincode: '700001',
+      },
+    });
     const vo = {
       _id: vendorOrderId,
       vendorId,

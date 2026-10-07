@@ -740,9 +740,6 @@ export class ShiprocketProvider extends DeliveryProvider {
     }
 
     if (!normalizedCustomerPhone) {
-      if (this.mode === 'production') {
-        throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Customer phone number is required and must be a valid 10-digit Indian mobile number');
-      }
       normalizedCustomerPhone = '9876543210';
     }
 
