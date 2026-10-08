@@ -405,8 +405,14 @@ export const readyVendorOrder = async (req, res, next) => {
       vendor.pickupAddress.pickupLocationName
     );
 
-    if (env.DELIVERY_PROVIDER === 'shiprocket' && !hasConfiguredPickup) {
-      throw new AppError(400, 'PICKUP_ADDRESS_REQUIRED', 'Please configure your pickup / dispatch address in Settings before marking this order Ready to Ship.');
+    if (env.DELIVERY_PROVIDER === 'shiprocket') {
+      if (!hasConfiguredPickup) {
+        throw new AppError(400, 'PICKUP_ADDRESS_REQUIRED', 'Please configure your pickup / dispatch address in Settings before marking this order Ready to Ship.');
+      }
+      if (vendor.pickupAddress.registrationStatus !== 'REGISTERED') {
+        const errorDetail = vendor.pickupAddress.registrationError ? `: ${vendor.pickupAddress.registrationError}` : '';
+        throw new AppError(400, 'PICKUP_LOCATION_NOT_REGISTERED', `Pickup location "${vendor.pickupAddress.pickupLocationName}" is not registered with Shiprocket${errorDetail}. Please update your pickup address in Settings to register it.`);
+      }
     }
 
     const pickupAddress = hasConfiguredPickup ? {
@@ -421,6 +427,8 @@ export const readyVendorOrder = async (req, res, next) => {
       postalCode: vendor.pickupAddress.pincode,
       pincode: vendor.pickupAddress.pincode,
       country: vendor.pickupAddress.country || 'India',
+      registrationStatus: vendor.pickupAddress.registrationStatus || 'PENDING',
+      shiprocketPickupId: vendor.pickupAddress.shiprocketPickupId || null,
     } : {
       pickupLocationName: vendor.pickupAddress?.pickupLocationName || vendor.businessName || 'Primary',
       phone: vendor.phone || '',

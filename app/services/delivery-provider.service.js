@@ -41,6 +41,17 @@ export class DeliveryProvider {
   async cancelShipment(_params) {
     throw new Error('cancelShipment must be implemented by provider');
   }
+  async listPickupLocations() {
+    return [];
+  }
+  async registerPickupLocation(_params) {
+    return {
+      success: true,
+      reused: true,
+      pickupLocation: _params?.pickupLocationName || 'Primary',
+      pickupId: null,
+    };
+  }
 }
 
 export class MockDeliveryProvider extends DeliveryProvider {
@@ -201,6 +212,44 @@ export class MockDeliveryProvider extends DeliveryProvider {
       cancelledAt: new Date().toISOString(),
       message: 'Shipment cancelled with mock provider',
       provider: 'mock',
+    };
+  }
+
+  async listPickupLocations() {
+    if (!this._mockLocations) {
+      this._mockLocations = [
+        { id: 'mock-pkp-primary', pickupLocation: 'Primary' },
+      ];
+    }
+    return this._mockLocations;
+  }
+
+  async registerPickupLocation(payload = {}) {
+    const nickname = String(payload.pickupLocationName || payload.pickup_location || 'Primary').trim();
+    if (!this._mockLocations) {
+      this._mockLocations = [
+        { id: 'mock-pkp-primary', pickupLocation: 'Primary' },
+      ];
+    }
+    const match = this._mockLocations.find(
+      (l) => l.pickupLocation === nickname || l.pickupLocation.toLowerCase() === nickname.toLowerCase()
+    );
+    if (match) {
+      return {
+        success: true,
+        reused: true,
+        pickupLocation: match.pickupLocation,
+        pickupId: match.id,
+      };
+    }
+    const createdId = `mock-pkp-${Date.now()}`;
+    const newLoc = { id: createdId, pickupLocation: nickname };
+    this._mockLocations.push(newLoc);
+    return {
+      success: true,
+      reused: false,
+      pickupLocation: nickname,
+      pickupId: createdId,
     };
   }
 }
@@ -845,6 +894,9 @@ export class ShiprocketProvider extends DeliveryProvider {
     if (!resolvedPickupLocation) {
       throw new AppError(400, 'PICKUP_LOCATION_REQUIRED', 'Vendor pickup location nickname is required for Shiprocket shipment creation');
     }
+    if (pickupAddress.registrationStatus && pickupAddress.registrationStatus !== 'REGISTERED') {
+      throw new AppError(400, 'PICKUP_LOCATION_NOT_REGISTERED', `Pickup location "${resolvedPickupLocation}" has registration status ${pickupAddress.registrationStatus} and is not registered with Shiprocket`);
+    }
 
     const rawCustomerPhone = deliveryAddress.phone || deliveryAddress.phoneNumber || deliveryAddress.mobile || '';
     let normalizedCustomerPhone = normalizeIndianPhone10(rawCustomerPhone);
@@ -1161,6 +1213,149 @@ export class ShiprocketProvider extends DeliveryProvider {
       reason,
       cancelledAt: new Date().toISOString(),
       provider: 'shiprocket',
+    };
+  }
+
+  async listPickupLocations() {
+    const res = await this.request('/v1/external/settings/company/pickup', {
+      method: 'GET',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const safeMsg = extractSafeShiprocketErrorMessage(err, res.status);
+      throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_PICKUP_LIST_FAILED', safeMsg);
+    }
+    const data = await res.json().catch(() => ({}));
+    const rawList =
+      data?.data?.shipping_address ??
+      data?.shipping_address ??
+      data?.data ??
+      [];
+    const list = Array.isArray(rawList)
+      ? rawList
+      : (rawList && typeof rawList === 'object' ? Object.values(rawList) : []);
+
+    return list.map((loc) => ({
+      id: String(loc.id ?? loc.pickup_id ?? loc.pickup_location_id ?? ''),
+      pickupLocation: String(loc.pickup_location ?? loc.pickup_location_name ?? loc.nickname ?? loc.name ?? '').trim(),
+      name: loc.name || '',
+      email: loc.email || '',
+      phone: loc.phone || '',
+      address: loc.address || '',
+      city: loc.city || '',
+      state: loc.state || '',
+      pincode: String(loc.pin_code || loc.pincode || ''),
+      raw: loc,
+    }));
+  }
+
+  async registerPickupLocation(pickupData = {}) {
+    const nickname = String(pickupData.pickupLocationName || pickupData.pickup_location || '').trim();
+    if (!nickname) {
+      throw new AppError(400, 'PICKUP_LOCATION_REQUIRED', 'Vendor pickup location nickname is required');
+    }
+
+    // Step 1: Fetch existing Shiprocket pickup locations
+    const existingLocations = await this.listPickupLocations().catch((err) => {
+      if (this.mode !== 'production' && !this.hasConfig()) return [];
+      throw err;
+    });
+
+    // Step 2: Match by exact pickup nickname
+    const exactMatch = existingLocations.find(
+      (loc) => loc.pickupLocation === nickname || loc.pickupLocation.toLowerCase() === nickname.toLowerCase()
+    );
+
+    if (exactMatch) {
+      return {
+        success: true,
+        reused: true,
+        pickupLocation: exactMatch.pickupLocation,
+        pickupId: exactMatch.id || null,
+        message: `Pickup location "${exactMatch.pickupLocation}" is already registered in Shiprocket and was reused`,
+      };
+    }
+
+    // Step 3: Create pickup location through Shiprocket API
+    const rawPhone = pickupData.phone || pickupData.phoneNumber || pickupData.mobile || '';
+    const cleanPhone = normalizeIndianPhone10(rawPhone) || rawPhone;
+
+    const addPayload = {
+      pickup_location: nickname,
+      name: pickupData.contactPerson || pickupData.name || 'Vendor Hub',
+      email: pickupData.email || 'seller@rupakar.in',
+      phone: cleanPhone,
+      address: pickupData.addressLine1 || pickupData.street || pickupData.address || '',
+      address_2: pickupData.addressLine2 || '',
+      city: pickupData.city || '',
+      state: pickupData.state || '',
+      country: pickupData.country || 'India',
+      pin_code: String(pickupData.pincode || pickupData.postalCode || ''),
+    };
+
+    const addRes = await this.request('/v1/external/settings/company/addpickup', {
+      method: 'POST',
+      body: JSON.stringify(addPayload),
+    });
+
+    const addData = await addRes.json().catch(() => ({}));
+
+    if (!addRes.ok || addData.success === false || isShiprocketResponseRejection(addData)) {
+      const safeError = extractSafeShiprocketErrorMessage(addData, addRes.status);
+      const isAlreadyExists =
+        /already\s+(?:been\s+)?(?:taken|exist)/i.test(safeError) ||
+        /already\s+registered/i.test(safeError) ||
+        /duplicate/i.test(safeError) ||
+        addRes.status === 409;
+
+      if (isAlreadyExists) {
+        try {
+          const recheck = await this.listPickupLocations();
+          const recovered = recheck.find(
+            (loc) => loc.pickupLocation === nickname || loc.pickupLocation.toLowerCase() === nickname.toLowerCase()
+          );
+          if (recovered) {
+            return {
+              success: true,
+              reused: true,
+              pickupLocation: recovered.pickupLocation,
+              pickupId: recovered.id || null,
+              message: `Pickup location "${recovered.pickupLocation}" already exists in Shiprocket and was recovered`,
+            };
+          }
+        } catch {
+          // Re-fetch failed, fall through to error
+        }
+      }
+
+      const statusCode = addRes.status >= 400
+        ? addRes.status
+        : (Number(addData?.status_code) >= 400 && Number(addData?.status_code) < 600
+          ? Number(addData.status_code)
+          : 422);
+
+      throw new AppError(
+        statusCode,
+        'SHIPROCKET_PICKUP_REGISTRATION_FAILED',
+        `Failed to register pickup location "${nickname}" with Shiprocket: ${safeError}`
+      );
+    }
+
+    const createdId = String(
+      addData.pickup_id ??
+      addData.address?.id ??
+      addData.data?.id ??
+      addData.data?.pickup_id ??
+      addData.id ??
+      ''
+    );
+
+    return {
+      success: true,
+      reused: false,
+      pickupLocation: nickname,
+      pickupId: createdId || null,
+      message: `Pickup location "${nickname}" registered successfully with Shiprocket`,
     };
   }
 }

@@ -34,6 +34,14 @@ const vendorSchema = new Schema(
       state: { type: String, trim: true, default: '' },
       pincode: { type: String, trim: true, default: '' },
       country: { type: String, trim: true, default: 'India' },
+      shiprocketPickupId: { type: String, trim: true, default: null },
+      registrationStatus: {
+        type: String,
+        enum: ['PENDING', 'REGISTERED', 'FAILED'],
+        default: 'PENDING',
+      },
+      registeredAt: { type: Date, default: null },
+      registrationError: { type: String, trim: true, default: null },
     },
     shippingSettings: {
       enabled: { type: Boolean, default: false },

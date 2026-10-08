@@ -616,6 +616,7 @@ describe('Vendor Pickup / Dispatch Address Feature & Multi-Vendor Marketplace', 
           businessName: 'Dhokra Art Hub',
           pickupAddress: {
             pickupLocationName: 'Dhokra Art Hub Warehouse',
+            registrationStatus: 'REGISTERED',
             contactPerson: 'Arun Das',
             phone: '9876543210',
             addressLine1: '45 Craft Village',

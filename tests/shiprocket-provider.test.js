@@ -15,6 +15,7 @@ import { settlementService } from '../app/services/settlement.service.js';
 import { shipmentStateService } from '../app/services/shipment-state.service.js';
 import { ShipmentTrackingEvent } from '../app/models/shipment-tracking-event.model.js';
 import { User } from '../app/models/user.model.js';
+import { vendorService } from '../app/services/vendor.service.js';
 import { env } from '../app/config/env.js';
 
 jest.unstable_mockModule('../app/jobs/queues.js', () => ({
@@ -496,6 +497,7 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
       status: 'APPROVED',
       pickupAddress: {
         pickupLocationName: 'Hub',
+        registrationStatus: 'REGISTERED',
         contactPerson: 'Vendor 1',
         phone: '9876543210',
         addressLine1: 'Road 1',
@@ -1101,6 +1103,485 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
       expect(adhocCallCount).toBe(1);
       expect(res.providerShipmentId).toBe('888222');
       expect(res.metadata.shiprocketOrderId).toBe(999111);
+    });
+  });
+
+  describe('Automatic Shiprocket Pickup-Location Registration', () => {
+    it('reuses existing Shiprocket pickup location when nickname matches and does not create duplicate', async () => {
+      let addPickupCalled = false;
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/settings/company/pickup')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: {
+                shipping_address: [
+                  {
+                    id: 501,
+                    pickup_location: 'Kolkata Central Hub',
+                    phone: '9876543210',
+                    address: '10 College Street',
+                    city: 'Kolkata',
+                    state: 'West Bengal',
+                    pin_code: '700073',
+                  },
+                ],
+              },
+            }),
+          });
+        }
+        if (path.includes('/settings/company/addpickup')) {
+          addPickupCalled = true;
+          return Promise.resolve({ ok: true, status: 200, json: async () => ({ success: true }) });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.registerPickupLocation({
+        pickupLocationName: 'Kolkata Central Hub',
+        phone: '9876543210',
+        city: 'Kolkata',
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.reused).toBe(true);
+      expect(res.pickupLocation).toBe('Kolkata Central Hub');
+      expect(res.pickupId).toBe('501');
+      expect(addPickupCalled).toBe(false);
+    });
+
+    it('automatically creates a new pickup location in Shiprocket when nickname does not exist', async () => {
+      let addPayload = null;
+      jest.spyOn(provider, 'request').mockImplementation((path, options = {}) => {
+        if (path.includes('/settings/company/pickup')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: {
+                shipping_address: [
+                  { id: 501, pickup_location: 'Existing Hub' },
+                ],
+              },
+            }),
+          });
+        }
+        if (path.includes('/settings/company/addpickup')) {
+          addPayload = JSON.parse(options.body);
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              success: true,
+              pickup_id: 602,
+              message: 'Pickup address added successfully',
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.registerPickupLocation({
+        pickupLocationName: 'Bankura Terracotta Workshop',
+        contactPerson: 'Biren Das',
+        phone: '+91 98765 43210',
+        addressLine1: 'Station Road',
+        city: 'Bankura',
+        state: 'West Bengal',
+        pincode: '722101',
+        email: 'artisan@rupakar.in',
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.reused).toBe(false);
+      expect(res.pickupLocation).toBe('Bankura Terracotta Workshop');
+      expect(res.pickupId).toBe('602');
+      expect(addPayload).toEqual(expect.objectContaining({
+        pickup_location: 'Bankura Terracotta Workshop',
+        name: 'Biren Das',
+        phone: '9876543210',
+        address: 'Station Road',
+        city: 'Bankura',
+        state: 'West Bengal',
+        pin_code: '722101',
+      }));
+    });
+
+    it('stores verified registration status, pickup ID, and timestamp on vendor record upon pickup address update', async () => {
+      const vendorUserId = new mongoose.Types.ObjectId().toHexString();
+      const vendorId = new mongoose.Types.ObjectId();
+
+      const mockVendor = {
+        _id: vendorId,
+        ownerUserId: vendorUserId,
+        email: 'seller@rupakar.in',
+        status: 'APPROVED',
+        pickupAddress: null,
+        save: jest.fn().mockResolvedValue(true),
+        toObject() { return { ...this }; },
+      };
+
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue(mockVendor);
+
+      jest.spyOn(ShiprocketProvider.prototype, 'registerPickupLocation').mockResolvedValue({
+        success: true,
+        reused: false,
+        pickupLocation: 'Shantiniketan Leather Studio',
+        pickupId: '703',
+      });
+
+      const updated = await vendorService.updatePickupAddress(vendorUserId, {
+        pickupLocationName: 'Shantiniketan Leather Studio',
+        contactPerson: 'Kanai Mondal',
+        phone: '9876543210',
+        addressLine1: 'Ratan Pally',
+        city: 'Bolpur',
+        state: 'West Bengal',
+        pincode: '731204',
+      });
+
+      expect(mockVendor.save).toHaveBeenCalled();
+      expect(mockVendor.pickupAddress).toEqual(expect.objectContaining({
+        pickupLocationName: 'Shantiniketan Leather Studio',
+        shiprocketPickupId: '703',
+        registrationStatus: 'REGISTERED',
+        registrationError: null,
+      }));
+      expect(mockVendor.pickupAddress.registeredAt).toBeInstanceOf(Date);
+      expect(updated.pickupAddress.registrationStatus).toBe('REGISTERED');
+    });
+
+    it('marks registrationStatus as FAILED and retains error message without marking registered if Shiprocket rejects creation', async () => {
+      const vendorUserId = new mongoose.Types.ObjectId().toHexString();
+      const vendorId = new mongoose.Types.ObjectId();
+
+      const mockVendor = {
+        _id: vendorId,
+        ownerUserId: vendorUserId,
+        email: 'seller@rupakar.in',
+        status: 'APPROVED',
+        pickupAddress: null,
+        save: jest.fn().mockResolvedValue(true),
+        toObject() { return { ...this }; },
+      };
+
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue(mockVendor);
+
+      jest.spyOn(ShiprocketProvider.prototype, 'registerPickupLocation').mockRejectedValue(
+        new Error('Failed to register pickup location "Bad Pin Hub" with Shiprocket: Invalid pin code for state West Bengal')
+      );
+
+      await expect(
+        vendorService.updatePickupAddress(vendorUserId, {
+          pickupLocationName: 'Bad Pin Hub',
+          contactPerson: 'Seller',
+          phone: '9876543210',
+          addressLine1: 'Road 1',
+          city: 'Kolkata',
+          state: 'West Bengal',
+          pincode: '999999',
+        })
+      ).rejects.toThrow('Failed to register pickup location "Bad Pin Hub" with Shiprocket');
+
+      expect(mockVendor.save).toHaveBeenCalled();
+      expect(mockVendor.pickupAddress).toEqual(expect.objectContaining({
+        pickupLocationName: 'Bad Pin Hub',
+        shiprocketPickupId: null,
+        registrationStatus: 'FAILED',
+        registeredAt: null,
+        registrationError: expect.stringContaining('Invalid pin code for state West Bengal'),
+      }));
+    });
+
+    it('re-fetches and recovers existing location without creating duplicates when Shiprocket rejects creation with duplicate error', async () => {
+      let getCallCount = 0;
+      let addCallCount = 0;
+
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/settings/company/pickup')) {
+          getCallCount++;
+          if (getCallCount === 1) {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({ data: { shipping_address: [] } }),
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: {
+                shipping_address: [
+                  {
+                    id: 999,
+                    pickup_location: 'Handloom Depot Phulia',
+                    phone: '9876543210',
+                  },
+                ],
+              },
+            }),
+          });
+        }
+        if (path.includes('/settings/company/addpickup')) {
+          addCallCount++;
+          return Promise.resolve({
+            ok: false,
+            status: 422,
+            json: async () => ({
+              message: 'The pickup_location has already been taken.',
+              errors: { pickup_location: ['The pickup_location has already been taken.'] },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.registerPickupLocation({
+        pickupLocationName: 'Handloom Depot Phulia',
+        contactPerson: 'Weaver Ghosh',
+        phone: '9876543210',
+        addressLine1: 'Weavers Lane',
+        city: 'Phulia',
+        state: 'West Bengal',
+        pincode: '741402',
+      });
+
+      expect(addCallCount).toBe(1);
+      expect(getCallCount).toBe(2);
+      expect(res.success).toBe(true);
+      expect(res.reused).toBe(true);
+      expect(res.pickupLocation).toBe('Handloom Depot Phulia');
+      expect(res.pickupId).toBe('999');
+    });
+
+    it('isolates pickup locations so Seller A cannot use Seller B\'s registered pickup location or dispatch Seller B\'s order', async () => {
+      const userA = new mongoose.Types.ObjectId().toHexString();
+      const userB = new mongoose.Types.ObjectId().toHexString();
+      const vendorA = new mongoose.Types.ObjectId();
+      const vendorB = new mongoose.Types.ObjectId();
+      const voB = new mongoose.Types.ObjectId();
+
+      jest.spyOn(Vendor, 'findOne').mockImplementation(({ ownerUserId }) => {
+        if (ownerUserId === userA) {
+          return Promise.resolve({
+            _id: vendorA,
+            ownerUserId: userA,
+            status: 'APPROVED',
+            pickupAddress: {
+              pickupLocationName: 'Location A',
+              registrationStatus: 'REGISTERED',
+            },
+          });
+        }
+        if (ownerUserId === userB) {
+          return Promise.resolve({
+            _id: vendorB,
+            ownerUserId: userB,
+            status: 'APPROVED',
+            pickupAddress: {
+              pickupLocationName: 'Location B',
+              registrationStatus: 'REGISTERED',
+            },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      jest.spyOn(VendorOrder, 'findOne').mockImplementation(({ _id, vendorId }) => {
+        if (String(_id) === String(voB) && String(vendorId) === String(vendorB)) {
+          return Promise.resolve({
+            _id: voB,
+            vendorId: vendorB,
+            status: 'PACKED',
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const res = mockResponse();
+      await expect(
+        readyVendorOrder(
+          { params: { id: String(voB) }, user: { sub: userA }, body: {}, headers: {} },
+          res,
+          (err) => { if (err) throw err; }
+        )
+      ).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'VENDOR_ORDER_NOT_FOUND',
+      });
+    });
+
+    it('rejects Ready-to-Ship with PICKUP_LOCATION_NOT_REGISTERED if seller pickup location registrationStatus is PENDING or FAILED', async () => {
+      const vendorUserId = new mongoose.Types.ObjectId().toHexString();
+      const vendorId = new mongoose.Types.ObjectId();
+      const voId = new mongoose.Types.ObjectId();
+      const parentOrderId = new mongoose.Types.ObjectId();
+
+      const mockVendor = {
+        _id: vendorId,
+        ownerUserId: vendorUserId,
+        status: 'APPROVED',
+        pickupAddress: {
+          pickupLocationName: 'Unverified Hub',
+          registrationStatus: 'PENDING',
+          contactPerson: 'Vendor 1',
+          phone: '9876543210',
+          addressLine1: 'Road 1',
+          city: 'Kolkata',
+          state: 'WB',
+          pincode: '700001',
+        },
+      };
+
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue(mockVendor);
+      jest.spyOn(VendorOrder, 'findOne').mockResolvedValue({
+        _id: voId,
+        vendorId,
+        parentOrderId,
+        status: 'PACKED',
+      });
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue(null);
+      jest.spyOn(InventoryReservation, 'findOne').mockResolvedValue(null);
+      jest.spyOn(Order, 'findById').mockReturnValue({
+        lean: jest.fn().mockResolvedValue({ _id: parentOrderId, paymentStatus: 'PAID' }),
+      });
+
+      const adhocSpy = jest.spyOn(provider, 'request');
+
+      const res = mockResponse();
+      await expect(
+        readyVendorOrder(
+          { params: { id: String(voId) }, user: { sub: vendorUserId }, body: {}, headers: {} },
+          res,
+          (err) => { if (err) throw err; }
+        )
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        code: 'PICKUP_LOCATION_NOT_REGISTERED',
+      });
+
+      expect(adhocSpy).not.toHaveBeenCalledWith(expect.stringContaining('/orders/create/adhoc'), expect.anything());
+
+      mockVendor.pickupAddress.registrationStatus = 'FAILED';
+      mockVendor.pickupAddress.registrationError = 'Pin code serviceability failed';
+
+      await expect(
+        readyVendorOrder(
+          { params: { id: String(voId) }, user: { sub: vendorUserId }, body: {}, headers: {} },
+          res,
+          (err) => { if (err) throw err; }
+        )
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        code: 'PICKUP_LOCATION_NOT_REGISTERED',
+      });
+    });
+
+    it('Ready-to-Ship uses verified registered pickup location and sends exact nickname to Shiprocket adhoc payload', async () => {
+      const vendorUserId = new mongoose.Types.ObjectId().toHexString();
+      const vendorId = new mongoose.Types.ObjectId();
+      const voId = new mongoose.Types.ObjectId();
+      const parentOrderId = new mongoose.Types.ObjectId();
+
+      jest.spyOn(Vendor, 'findOne').mockResolvedValue({
+        _id: vendorId,
+        ownerUserId: vendorUserId,
+        status: 'APPROVED',
+        pickupAddress: {
+          pickupLocationName: 'Dokra Hub Bikna',
+          shiprocketPickupId: '88812',
+          registrationStatus: 'REGISTERED',
+          contactPerson: 'Subhash Karmakar',
+          phone: '9876543210',
+          addressLine1: 'Bikna Artisan Cluster',
+          city: 'Bankura',
+          state: 'West Bengal',
+          pincode: '722155',
+        },
+      });
+
+      const vo = {
+        _id: voId,
+        vendorId,
+        parentOrderId,
+        status: 'PACKED',
+        inventoryDecremented: true,
+        items: [{ variantId: new mongoose.Types.ObjectId(), quantity: 1, unitPrice: 1200 }],
+        save: jest.fn().mockResolvedValue(true),
+      };
+      jest.spyOn(VendorOrder, 'findOne').mockResolvedValue(vo);
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue(null);
+      jest.spyOn(InventoryReservation, 'findOne').mockResolvedValue(null);
+      jest.spyOn(Order, 'findById').mockReturnValue({
+        lean: jest.fn().mockResolvedValue({
+          _id: parentOrderId,
+          orderNumber: 'RUP-SR-REG-101',
+          paymentStatus: 'PAID',
+          customerId: new mongoose.Types.ObjectId(),
+          shippingAddressSnapshot: {
+            fullName: 'Rituparna Sengupta',
+            phone: '9876543210',
+            addressLine1: 'Salt Lake Sector 1',
+            city: 'Kolkata',
+            state: 'West Bengal',
+            postalCode: '700064',
+          },
+        }),
+      });
+
+      const { shippingService } = await import('../app/services/shipping.service.js');
+      const createShipmentSpy = jest.spyOn(shippingService, 'createShipment').mockResolvedValue({
+        _id: new mongoose.Types.ObjectId(),
+        shipmentNumber: 'SHIP-SR-REG-1',
+        trackingNumber: 'AWB-REG-101',
+        providerShipmentId: 'SR-SHP-999',
+        carrier: 'Shiprocket Surface',
+        shippingMethod: 'surface',
+        shippingCost: 65,
+        estimatedDeliveryAt: new Date(),
+        trackingUrl: 'https://shiprocket.co/track/AWB-REG-101',
+        labelUrl: '/api/v1/vendors/orders/lab-1/label',
+        provider: 'shiprocket',
+        status: 'READY_TO_SHIP',
+        metadata: {},
+        save: jest.fn().mockResolvedValue(true),
+        toObject() { return { ...this }; },
+      });
+
+      jest.spyOn(Shipment, 'create').mockImplementation((doc) => {
+        const item = Array.isArray(doc) ? doc[0] : doc;
+        return Promise.resolve({
+          ...item,
+          _id: new mongoose.Types.ObjectId(),
+          status: 'PENDING',
+          save: jest.fn().mockResolvedValue(true),
+          toObject() { return { ...this }; },
+        });
+      });
+      jest.spyOn(ShipmentTrackingEvent, 'create').mockResolvedValue({});
+
+      const res = mockResponse();
+      await readyVendorOrder(
+        { params: { id: String(voId) }, user: { sub: vendorUserId }, body: { weight: 0.8, length: 15, width: 10, height: 5 }, headers: {} },
+        res,
+        (err) => { if (err) throw err; }
+      );
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({
+          shipment: expect.objectContaining({ trackingNumber: 'AWB-REG-101' }),
+        }),
+      }));
+
+      expect(createShipmentSpy).toHaveBeenCalledWith(expect.objectContaining({
+        pickupAddress: expect.objectContaining({
+          pickupLocationName: 'Dokra Hub Bikna',
+          registrationStatus: 'REGISTERED',
+        }),
+      }));
     });
   });
 });

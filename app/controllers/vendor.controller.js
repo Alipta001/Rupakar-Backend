@@ -60,6 +60,10 @@ const sanitizeVendor = (vendor) => {
       state: vendor.pickupAddress.state || '',
       pincode: vendor.pickupAddress.pincode || '',
       country: vendor.pickupAddress.country || 'India',
+      registrationStatus: vendor.pickupAddress.registrationStatus || 'PENDING',
+      shiprocketPickupId: vendor.pickupAddress.shiprocketPickupId || null,
+      registeredAt: vendor.pickupAddress.registeredAt || null,
+      registrationError: vendor.pickupAddress.registrationError || null,
     } : null,
     shippingSettings: {
       enabled: Boolean(vendor.shippingSettings?.enabled),

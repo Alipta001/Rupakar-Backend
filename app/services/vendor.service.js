@@ -4,6 +4,7 @@ import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { VendorDocument } from '../models/vendor-document.model.js';
 import { notificationService } from './notification.service.js';
+import { deliveryProvider } from './delivery-provider.service.js';
 
 export const VENDOR_VALID_TRANSITIONS = {
   PENDING: ['UNDER_REVIEW', 'APPROVED', 'REJECTED'],
@@ -102,19 +103,46 @@ export class VendorService {
     if (!vendor) {
       throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor record not found');
     }
-    vendor.pickupAddress = {
-      pickupLocationName: payload.pickupLocationName,
-      contactPerson: payload.contactPerson,
-      phone: payload.phone,
-      addressLine1: payload.addressLine1,
-      addressLine2: payload.addressLine2 || '',
-      city: payload.city,
-      state: payload.state,
-      pincode: payload.pincode,
-      country: payload.country || 'India',
+
+    const addressFields = {
+      pickupLocationName: (payload.pickupLocationName || '').trim(),
+      contactPerson: (payload.contactPerson || '').trim(),
+      phone: (payload.phone || '').trim(),
+      addressLine1: (payload.addressLine1 || '').trim(),
+      addressLine2: (payload.addressLine2 || '').trim(),
+      city: (payload.city || '').trim(),
+      state: (payload.state || '').trim(),
+      pincode: (payload.pincode || '').trim(),
+      country: (payload.country || 'India').trim(),
     };
-    await vendor.save();
-    return vendor.toObject();
+
+    try {
+      const regResult = await deliveryProvider.registerPickupLocation({
+        ...addressFields,
+        email: vendor.email || '',
+      });
+
+      vendor.pickupAddress = {
+        ...addressFields,
+        pickupLocationName: regResult?.pickupLocation || addressFields.pickupLocationName,
+        shiprocketPickupId: regResult?.pickupId ? String(regResult.pickupId) : null,
+        registrationStatus: 'REGISTERED',
+        registeredAt: new Date(),
+        registrationError: null,
+      };
+      await vendor.save();
+      return typeof vendor.toObject === 'function' ? vendor.toObject() : vendor;
+    } catch (regError) {
+      vendor.pickupAddress = {
+        ...addressFields,
+        shiprocketPickupId: null,
+        registrationStatus: 'FAILED',
+        registeredAt: null,
+        registrationError: regError.message || 'Pickup location registration failed',
+      };
+      await vendor.save().catch(() => null);
+      throw regError;
+    }
   }
 
   async transitionStatus(vendorId, nextStatus, actorUserId, reason = '', options = {}) {
