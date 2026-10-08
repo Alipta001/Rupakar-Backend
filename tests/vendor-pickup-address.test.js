@@ -15,6 +15,7 @@ import { ShiprocketProvider } from '../app/services/delivery-provider.service.js
 import { getOrder, getAdminOrder } from '../app/controllers/order.controller.js';
 
 import { ShipmentTrackingEvent } from '../app/models/shipment-tracking-event.model.js';
+import { AppError } from '../app/utils/app-error.js';
 
 jest.unstable_mockModule('../app/jobs/queues.js', () => ({
   scheduleNotification: jest.fn().mockResolvedValue('notif-1'),
@@ -328,6 +329,87 @@ describe('Vendor Pickup / Dispatch Address Feature & Multi-Vendor Marketplace', 
         env.DELIVERY_PROVIDER = originalProvider;
       }
     });
+
+    it('seller A cannot use seller B\'s pickup location or mark seller B\'s order as Ready to Ship', async () => {
+      const vendorUserIdA = new mongoose.Types.ObjectId().toHexString();
+      const vendorIdA = new mongoose.Types.ObjectId();
+      const vendorUserIdB = new mongoose.Types.ObjectId().toHexString();
+      const vendorIdB = new mongoose.Types.ObjectId();
+
+      const parentOrderId = new mongoose.Types.ObjectId();
+      const vendorOrderIdB = new mongoose.Types.ObjectId();
+
+      const vendorA = {
+        _id: vendorIdA,
+        ownerUserId: vendorUserIdA,
+        status: 'APPROVED',
+        pickupAddress: {
+          pickupLocationName: 'Vendor A Kolkata Hub',
+          contactPerson: 'Vendor A',
+          phone: '9811111111',
+          addressLine1: '1 Park Sarani',
+          city: 'Kolkata',
+          state: 'West Bengal',
+          pincode: '700001',
+        },
+      };
+
+      const vendorB = {
+        _id: vendorIdB,
+        ownerUserId: vendorUserIdB,
+        status: 'APPROVED',
+        pickupAddress: {
+          pickupLocationName: 'Vendor B Delhi Warehouse',
+          contactPerson: 'Vendor B',
+          phone: '9822222222',
+          addressLine1: '10 Chandni Chowk',
+          city: 'New Delhi',
+          state: 'Delhi',
+          pincode: '110006',
+        },
+      };
+
+      const voB = {
+        _id: vendorOrderIdB,
+        vendorId: vendorIdB,
+        parentOrderId,
+        status: 'PACKED',
+        inventoryDecremented: true,
+        items: [{ variantId: new mongoose.Types.ObjectId(), quantity: 1, unitPrice: 200 }],
+        save: jest.fn().mockResolvedValue(true),
+      };
+
+      jest.spyOn(Vendor, 'findOne').mockImplementation((q) => {
+        if (q.ownerUserId === vendorUserIdA) return Promise.resolve(vendorA);
+        if (q.ownerUserId === vendorUserIdB) return Promise.resolve(vendorB);
+        return Promise.resolve(null);
+      });
+
+      jest.spyOn(VendorOrder, 'findOne').mockImplementation((q) => {
+        if (String(q._id) === String(vendorOrderIdB) && String(q.vendorId) === String(vendorIdB)) {
+          return Promise.resolve(voB);
+        }
+        return Promise.resolve(null);
+      });
+
+      const res = mockResponse();
+      // Seller A attempts to mark Seller B's order as Ready to Ship
+      await expect(
+        readyVendorOrder(
+          {
+            params: { id: vendorOrderIdB.toHexString() },
+            user: { sub: vendorUserIdA },
+            body: { weight: 0.5, length: 15, width: 10, height: 5 },
+            headers: {},
+          },
+          res,
+          (err) => { throw err; }
+        )
+      ).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'VENDOR_ORDER_NOT_FOUND',
+      });
+    });
   });
 
   describe('4. Address Change & Snapshot Safety', () => {
@@ -515,6 +597,94 @@ describe('Vendor Pickup / Dispatch Address Feature & Multi-Vendor Marketplace', 
         statusCode: 400,
         code: 'PICKUP_LOCATION_REQUIRED',
       });
+    });
+
+    it('readyVendorOrder flow with Shiprocket provider surfaces clear error on "Wrong Pickup location entered"', async () => {
+      const originalProvider = env.DELIVERY_PROVIDER;
+      try {
+        env.DELIVERY_PROVIDER = 'shiprocket';
+
+        const vendorUserId = new mongoose.Types.ObjectId().toHexString();
+        const vendorId = new mongoose.Types.ObjectId();
+        const parentOrderId = new mongoose.Types.ObjectId();
+        const vendorOrderId = new mongoose.Types.ObjectId();
+
+        const vendor = {
+          _id: vendorId,
+          ownerUserId: vendorUserId,
+          status: 'APPROVED',
+          businessName: 'Dhokra Art Hub',
+          pickupAddress: {
+            pickupLocationName: 'Dhokra Art Hub Warehouse',
+            contactPerson: 'Arun Das',
+            phone: '9876543210',
+            addressLine1: '45 Craft Village',
+            city: 'Bankura',
+            state: 'West Bengal',
+            pincode: '722101',
+          },
+        };
+
+        const vo = {
+          _id: vendorOrderId,
+          vendorId,
+          parentOrderId,
+          status: 'PACKED',
+          inventoryDecremented: true,
+          items: [{ variantId: new mongoose.Types.ObjectId(), quantity: 1, unitPrice: 500 }],
+          save: jest.fn().mockResolvedValue(true),
+        };
+
+        jest.spyOn(Vendor, 'findOne').mockResolvedValue(vendor);
+        jest.spyOn(VendorOrder, 'findOne').mockResolvedValue(vo);
+        jest.spyOn(Shipment, 'findOne').mockResolvedValue(null);
+        jest.spyOn(InventoryReservation, 'findOne').mockResolvedValue(null);
+        jest.spyOn(Order, 'findById').mockReturnValue({
+          lean: jest.fn().mockResolvedValue({
+            _id: parentOrderId,
+            orderNumber: 'RUP2026-SR-01',
+            paymentStatus: 'PAID',
+            customerId: new mongoose.Types.ObjectId(),
+            shippingAddressSnapshot: {
+              fullName: 'Customer Banerjee',
+              phone: '9876543210',
+              addressLine1: '5 Park Street',
+              city: 'Kolkata',
+              state: 'West Bengal',
+              postalCode: '700016',
+            },
+          }),
+        });
+
+        const { shippingService } = await import('../app/services/shipping.service.js');
+        jest.spyOn(shippingService, 'createShipment').mockRejectedValue(
+          new AppError(
+            422,
+            'SHIPROCKET_ORDER_FAILED',
+            'Pickup location "Dhokra Art Hub Warehouse" is not registered in Shiprocket: Wrong Pickup location entered. Please choose one location from the data given. Please ensure the pickup location nickname in Settings matches a registered pickup address nickname in your Shiprocket panel (Settings > Pickup Address).'
+          )
+        );
+
+        const res = mockResponse();
+        await expect(
+          readyVendorOrder(
+            {
+              params: { id: vendorOrderId.toHexString() },
+              user: { sub: vendorUserId },
+              body: { weight: 1.0, length: 15, width: 10, height: 5 },
+              headers: {},
+            },
+            res,
+            (err) => { throw err; }
+          )
+        ).rejects.toMatchObject({
+          statusCode: 422,
+          code: 'SHIPROCKET_ORDER_FAILED',
+          message: expect.stringMatching(/Pickup location "Dhokra Art Hub Warehouse" is not registered in Shiprocket/i),
+        });
+      } finally {
+        env.DELIVERY_PROVIDER = originalProvider;
+      }
     });
   });
 

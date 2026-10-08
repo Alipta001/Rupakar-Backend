@@ -841,7 +841,7 @@ export class ShiprocketProvider extends DeliveryProvider {
     const orderIdStr = String(orderNumber || orderId || Date.now());
     const srOrderIdCustom = vendorOrderId ? `${orderIdStr}-VO-${String(vendorOrderId).slice(-6)}` : orderIdStr;
 
-    const resolvedPickupLocation = (pickupAddress.pickupLocationName || '').trim() || (pickupAddress.city || '').trim() || (this.mode === 'production' ? '' : 'Primary');
+    const resolvedPickupLocation = (pickupAddress.pickupLocationName || '').trim() || (this.mode === 'production' ? '' : ((pickupAddress.city || '').trim() || 'Primary'));
     if (!resolvedPickupLocation) {
       throw new AppError(400, 'PICKUP_LOCATION_REQUIRED', 'Vendor pickup location nickname is required for Shiprocket shipment creation');
     }
@@ -934,7 +934,20 @@ export class ShiprocketProvider extends DeliveryProvider {
           : (Number(createData?.status_code) >= 400 && Number(createData?.status_code) < 600
             ? Number(createData.status_code)
             : 422);
-        throw new AppError(errorStatusCode, 'SHIPROCKET_ORDER_FAILED', safeError);
+
+        const isPickupLocationRejection =
+          /wrong pickup location/i.test(safeError) ||
+          /pickup location.*not registered/i.test(safeError) ||
+          /choose one location from the data given/i.test(safeError) ||
+          Boolean(createData?.errors?.pickup_location) ||
+          /pickup_location/i.test(safeError);
+
+        let finalErrorMessage = safeError;
+        if (isPickupLocationRejection) {
+          finalErrorMessage = `Pickup location "${resolvedPickupLocation}" is not registered in Shiprocket: ${safeError}. Please ensure the pickup location nickname in Settings matches a registered pickup address nickname in your Shiprocket panel (Settings > Pickup Address).`;
+        }
+
+        throw new AppError(errorStatusCode, 'SHIPROCKET_ORDER_FAILED', finalErrorMessage);
       }
     }
 

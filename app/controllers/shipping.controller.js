@@ -421,8 +421,8 @@ export const readyVendorOrder = async (req, res, next) => {
       postalCode: vendor.pickupAddress.pincode,
       pincode: vendor.pickupAddress.pincode,
       country: vendor.pickupAddress.country || 'India',
-    } : (vendor.registeredAddress || {
-      pickupLocationName: vendor.businessName || 'Primary',
+    } : {
+      pickupLocationName: vendor.pickupAddress?.pickupLocationName || vendor.businessName || 'Primary',
       phone: vendor.phone || '',
       street: vendor.address || 'Vendor Pickup Hub',
       city: vendor.originDistrict || 'Kolkata',
@@ -430,7 +430,8 @@ export const readyVendorOrder = async (req, res, next) => {
       postalCode: '700001',
       pincode: '700001',
       country: 'IN',
-    });
+      ...(vendor.registeredAddress || {}),
+    };
     const deliveryAddress = order.shippingAddressSnapshot || order.shippingAddress || {
       street: 'Customer Delivery Address',
       city: 'Kolkata',
@@ -455,7 +456,9 @@ export const readyVendorOrder = async (req, res, next) => {
         });
       } else {
         shipment.packageInfo = packageInfo;
-        shipment.pickupAddress = shipment.pickupAddress && Object.keys(shipment.pickupAddress).length > 0 ? shipment.pickupAddress : pickupAddress;
+        shipment.pickupAddress = (shipment.pickupAddress && Object.keys(shipment.pickupAddress).length > 0 && shipment.pickupAddress.pickupLocationName)
+          ? shipment.pickupAddress
+          : pickupAddress;
         shipment.deliveryAddress = shipment.deliveryAddress && Object.keys(shipment.deliveryAddress).length > 0 ? shipment.deliveryAddress : deliveryAddress;
 
         const bestOption = await shippingService.determineBestShippingOption({

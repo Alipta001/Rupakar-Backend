@@ -931,6 +931,99 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
       });
     });
 
+    it('forwards registered pickup nickname unchanged in Shiprocket adhoc payload', async () => {
+      let adhocPayload = null;
+      jest.spyOn(provider, 'request').mockImplementation((path, options) => {
+        if (path.includes('/orders/create/adhoc')) {
+          adhocPayload = JSON.parse(options.body);
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              order_id: 998811,
+              shipment_id: 887711,
+              status_code: 1,
+            }),
+          });
+        }
+        if (path.includes('/courier/assign/awb') || path.includes('/couriers/generate/pickup') || path.includes('/courier/generate/label')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ awb_code: 'SR-TEST-AWB' }),
+          });
+        }
+        return Promise.reject(new Error(`Unhandled path ${path}`));
+      });
+
+      const registeredNickname = 'Bengal Artisan Warehouse #4 - Salt Lake';
+      const result = await provider.createShipment({
+        orderId: new mongoose.Types.ObjectId(),
+        orderNumber: 'RUP-SR-NICK-1',
+        pickupAddress: {
+          pickupLocationName: registeredNickname,
+          city: 'Kolkata',
+          postalCode: '700091',
+        },
+        deliveryAddress: { phone: '9876543210' },
+      });
+
+      expect(adhocPayload).toBeDefined();
+      expect(adhocPayload.pickup_location).toBe(registeredNickname);
+      expect(result.providerShipmentId).toBe('887711');
+    });
+
+    it('provides clear actionable error when Shiprocket returns "Wrong Pickup location entered"', async () => {
+      jest.spyOn(provider, 'request').mockImplementation((path) => {
+        if (path.includes('/orders/create/adhoc')) {
+          return Promise.resolve({
+            ok: false,
+            status: 422,
+            json: async () => ({
+              message: 'Wrong Pickup location entered. Please choose one location from the data given',
+              status_code: 422,
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      await expect(
+        provider.createShipment({
+          orderId: new mongoose.Types.ObjectId(),
+          orderNumber: 'RUP-SR-WRONG-LOC',
+          pickupAddress: { pickupLocationName: 'Dhokra Crafts Warehouse' },
+          deliveryAddress: { phone: '9876543210' },
+        })
+      ).rejects.toMatchObject({
+        code: 'SHIPROCKET_ORDER_FAILED',
+        statusCode: 422,
+        message: expect.stringMatching(/Pickup location "Dhokra Crafts Warehouse" is not registered in Shiprocket: Wrong Pickup location entered.*Please ensure the pickup location nickname in Settings matches a registered pickup address nickname in your Shiprocket panel/i),
+      });
+    });
+
+    it('in production mode, rejects with PICKUP_LOCATION_REQUIRED without falling back to raw city name', async () => {
+      const prodProvider = new ShiprocketProvider({
+        email: testEmail,
+        password: testPassword,
+        apiUrl: testApiUrl,
+        mode: 'production',
+      });
+
+      await expect(
+        prodProvider.createShipment({
+          orderId: new mongoose.Types.ObjectId(),
+          orderNumber: 'RUP-SR-PROD-NOPICKUP',
+          pickupAddress: { pickupLocationName: '', city: 'Kolkata' },
+          deliveryAddress: { phone: '9876543210' },
+        })
+      ).rejects.toMatchObject({
+        code: 'PICKUP_LOCATION_REQUIRED',
+        statusCode: 400,
+        message: expect.stringContaining('Vendor pickup location nickname is required'),
+      });
+    });
+
     it('exposes field-level error messages and redacts PII like phone numbers and tokens', async () => {
       jest.spyOn(provider, 'request').mockImplementation((path) => {
         if (path.includes('/orders/create/adhoc')) {
