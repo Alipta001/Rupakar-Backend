@@ -75,7 +75,12 @@ export const publicProductQuerySchema = z.object({
   minPrice: z.coerce.number().min(0).optional(),
   maxPrice: z.coerce.number().min(0).optional(),
   status: z.enum(['PUBLISHED', 'APPROVED']).optional(),
-  sort: z.enum(['newest', 'oldest', 'price_asc', 'price_desc', 'name_asc', 'name_desc', 'relevance']).optional(),
+  sort: z.enum(['newest', 'oldest', 'price_asc', 'price_desc', 'name_asc', 'name_desc', 'relevance', 'best_sellers', 'most_loved', 'featured', 'rating']).optional(),
+  featured: z.preprocess((val) => {
+    if (val === 'true' || val === true || val === 1 || val === '1') return true;
+    if (val === 'false' || val === false || val === 0 || val === '0') return false;
+    return val;
+  }, z.boolean().optional()),
   limit: z.coerce.number().int().min(1).max(50).optional(),
   cursor: z.string().trim().max(64).optional(),
 }).strict();

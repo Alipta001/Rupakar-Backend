@@ -672,8 +672,12 @@ export class ProductService {
     return product.toObject();
   }
 
-  async listPublicCatalog({ q, category, brand, vendor, minPrice, maxPrice, status = 'PUBLISHED', sort = 'newest', limit = 20, cursor = null } = {}) {
+  async listPublicCatalog({ q, category, brand, vendor, minPrice, maxPrice, status = 'PUBLISHED', sort = 'newest', featured, limit = 20, cursor = null } = {}) {
     const query = { status: status || 'PUBLISHED', deletedAt: null };
+
+    if (featured !== undefined) {
+      query.featured = Boolean(featured);
+    }
 
     if (category) {
       const trimmed = String(category).trim();
@@ -828,6 +832,12 @@ export class ProductService {
         scored.sort((a, b) => String(a.item.name ?? '').localeCompare(String(b.item.name ?? '')));
       } else if (sort === 'name_desc') {
         scored.sort((a, b) => String(b.item.name ?? '').localeCompare(String(a.item.name ?? '')));
+      } else if (sort === 'best_sellers') {
+        scored.sort((a, b) => (b.item.reviews ?? 0) - (a.item.reviews ?? 0) || (b.item.rating ?? 0) - (a.item.rating ?? 0));
+      } else if (sort === 'most_loved' || sort === 'rating') {
+        scored.sort((a, b) => (b.item.rating ?? 0) - (a.item.rating ?? 0) || (b.item.reviews ?? 0) - (a.item.reviews ?? 0));
+      } else if (sort === 'featured') {
+        scored.sort((a, b) => (b.item.featured ? 1 : 0) - (a.item.featured ? 1 : 0));
       } else if (sort === 'oldest') {
         scored.sort((a, b) => new Date(a.item.createdAt ?? 0) - new Date(b.item.createdAt ?? 0));
       } else {
@@ -868,6 +878,11 @@ export class ProductService {
       price_desc: { createdAt: -1, _id: -1 },
       name_asc: { name: 1, _id: 1 },
       name_desc: { name: -1, _id: -1 },
+      best_sellers: { reviews: -1, rating: -1, createdAt: -1 },
+      most_loved: { rating: -1, reviews: -1, createdAt: -1 },
+      rating: { rating: -1, reviews: -1, createdAt: -1 },
+      featured: { featured: -1, createdAt: -1, _id: -1 },
+      relevance: { createdAt: -1, _id: -1 },
     };
 
     const filter = cursor && String(cursor).trim() ? { ...query, _id: { $lt: cursor } } : query;
