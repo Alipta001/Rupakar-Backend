@@ -468,7 +468,7 @@ export const readyVendorOrder = async (req, res, next) => {
         orderNumber: order.orderNumber,
         vendorOrderId: vendorOrder._id,
         vendorId: vendor._id,
-        customerId: order.customerId || order.userId || order.user?._id || order.user,
+        customerId: order.customerId || order.userId || order.user?._id || order.user || vendorOrder.customerId || vendorOrder.userId || order._id,
         pickupAddress,
         deliveryAddress,
         packageInfo,

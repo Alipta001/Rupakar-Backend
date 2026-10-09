@@ -101,6 +101,9 @@ export class DeliveryProvider {
   async cancelShipment(_params) {
     throw new Error('cancelShipment must be implemented by provider');
   }
+  async getShipmentDetails(_params) {
+    return null;
+  }
   async listPickupLocations() {
     return [];
   }
@@ -808,6 +811,20 @@ const isShiprocketResponseRejection = (data) => {
   return false;
 };
 
+export const isAuthenticAwb = (val, shipmentId = null) => {
+  if (!val || typeof val !== 'string') return false;
+  const s = val.trim();
+  if (!s) return false;
+  if (s.startsWith('TRK-')) return false;
+  if (s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') return false;
+  if (shipmentId) {
+    const rawShipmentId = String(shipmentId).trim();
+    if (s === `SR${rawShipmentId}` || s === rawShipmentId) return false;
+  }
+  if (/^SR\d+$/i.test(s)) return false;
+  return true;
+};
+
 export class ShiprocketProvider extends DeliveryProvider {
   constructor(options = {}) {
     super();
@@ -1014,7 +1031,12 @@ export class ShiprocketProvider extends DeliveryProvider {
       throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_AWB_FAILED', safeError || 'Shiprocket AWB assignment failed');
     }
 
-    const awbCode = data?.response?.data?.awb_code || data?.awb_code || null;
+    const rawAwb = data?.response?.data?.awb_code || data?.awb_code || null;
+    const awbCode = (rawAwb && isAuthenticAwb(rawAwb, shipmentId)) ? rawAwb : null;
+    if (!awbCode) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status) || 'Shiprocket did not return a valid AWB';
+      throw new AppError(502, 'SHIPROCKET_AWB_FAILED', safeError);
+    }
     const courierName = data?.response?.data?.courier_name || null;
     const courierCompanyId = data?.response?.data?.courier_company_id || courierId || null;
 
@@ -1051,6 +1073,35 @@ export class ShiprocketProvider extends DeliveryProvider {
       labelCreated: Boolean(data?.label_created ?? true),
       raw: data,
     };
+  }
+
+  async getShipmentDetails(shipmentId) {
+    if (!shipmentId) return null;
+    try {
+      const res = await this.request(`/v1/external/shipments/${encodeURIComponent(shipmentId)}`, {
+        method: 'GET',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return null;
+      }
+      const shipmentData = data?.data || data?.shipment || data;
+      const rawAwb = shipmentData?.awb !== undefined ? shipmentData?.awb : (shipmentData?.awb_code !== undefined ? shipmentData?.awb_code : (data?.awb !== undefined ? data?.awb : null));
+      const awb = (rawAwb && isAuthenticAwb(String(rawAwb), shipmentId)) ? String(rawAwb) : null;
+      return {
+        id: shipmentData?.id || shipmentId,
+        orderId: shipmentData?.order_id || null,
+        awb,
+        rawAwb,
+        courierName: shipmentData?.courier_name || null,
+        courierCompanyId: shipmentData?.courier_company_id || shipmentData?.courier_id || null,
+        status: shipmentData?.status || null,
+        statusCode: shipmentData?.status_code || null,
+        raw: data,
+      };
+    } catch {
+      return null;
+    }
   }
 
   async createShipment(payload = {}) {
@@ -1269,10 +1320,27 @@ export class ShiprocketProvider extends DeliveryProvider {
     }
 
     // Stage 3: Automatic AWB Assignment
-    let awbCode = existingAwb || null;
+    let awbCode = isAuthenticAwb(existingAwb, srShipmentId) ? existingAwb : null;
     let awbError = null;
 
-    if (existingAwb) {
+    if (existingShipmentId && !awbCode) {
+      try {
+        const remote = await this.getShipmentDetails(srShipmentId);
+        if (remote) {
+          if (remote.rawAwb === null || remote.awb === null) {
+            awbCode = null;
+          } else if (remote.awb && isAuthenticAwb(remote.awb, srShipmentId)) {
+            awbCode = remote.awb;
+            if (remote.courierName) courierName = remote.courierName;
+            if (remote.courierCompanyId) courierCompanyId = remote.courierCompanyId;
+          }
+        }
+      } catch {
+        // Fallback to awbCode if lookup fails
+      }
+    }
+
+    if (awbCode) {
       stagesCompleted.push('AWB_GENERATED');
     } else {
       try {
@@ -1280,13 +1348,17 @@ export class ShiprocketProvider extends DeliveryProvider {
           shipmentId: srShipmentId,
           courierId: courierCompanyId,
         });
-        if (awbResult?.awbCode) {
+        if (awbResult?.awbCode && isAuthenticAwb(awbResult.awbCode, srShipmentId)) {
           awbCode = awbResult.awbCode;
           courierName = awbResult.courierName || courierName;
           if (awbResult.courierCompanyId) courierCompanyId = awbResult.courierCompanyId;
           stagesCompleted.push('AWB_GENERATED');
+        } else {
+          awbCode = null;
+          awbError = 'AWB assignment did not return a valid AWB';
         }
       } catch (awbErr) {
+        awbCode = null;
         awbError = awbErr.message || 'AWB assignment failed';
       }
     }
@@ -1295,7 +1367,7 @@ export class ShiprocketProvider extends DeliveryProvider {
     let labelUrl = existingLabelUrl && !existingLabelUrl.includes('/api/v1/vendors/orders/') ? existingLabelUrl : null;
     let labelError = null;
 
-    if (labelUrl) {
+    if (labelUrl && awbCode) {
       stagesCompleted.push('LABEL_GENERATED');
     } else if (awbCode) {
       try {
@@ -1319,7 +1391,7 @@ export class ShiprocketProvider extends DeliveryProvider {
     let pickupScheduledAt = null;
     let pickupError = null;
 
-    if (pickupStatus === 'SCHEDULED') {
+    if (pickupStatus === 'SCHEDULED' && awbCode) {
       stagesCompleted.push('PICKUP_REQUESTED');
     } else if (awbCode) {
       try {
@@ -1336,13 +1408,13 @@ export class ShiprocketProvider extends DeliveryProvider {
         }
       } catch (pkpErr) {
         pickupStatus = 'FAILED';
-        pickupError = pkpErr.message || 'Pickup scheduling failed';
+        pickupError = pkpErr.message || 'Pickup request failed';
       }
     }
 
     return {
       shipmentNumber: finalShipmentNumber,
-      trackingNumber: awbCode || `SR${srShipmentId}`,
+      trackingNumber: awbCode || null,
       providerShipmentId: String(srShipmentId),
       shipmentId: srShipmentId,
       providerOrderId: srOrderId,
@@ -1378,7 +1450,7 @@ export class ShiprocketProvider extends DeliveryProvider {
   }
 
   async requestPickup({ shipmentNumber, trackingNumber, shipmentId, pickupAddress = {}, expectedPackageCount = 1, pickupDate = null } = {}) {
-    const targetShipmentId = shipmentId || (trackingNumber && trackingNumber.startsWith('SR') ? trackingNumber.replace(/^SR/, '') : null);
+    const targetShipmentId = shipmentId;
     if (!targetShipmentId) {
       return {
         scheduled: false,
@@ -1403,7 +1475,7 @@ export class ShiprocketProvider extends DeliveryProvider {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || isShiprocketResponseRejection(data)) {
       const safeError = extractSafeShiprocketErrorMessage(data, res.status);
-      throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_PICKUP_FAILED', safeError || 'Shiprocket pickup request failed');
+      throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_PICKUP_FAILED', safeError || 'Pickup request failed');
     }
 
     const pickupToken = String(data?.response?.pickup_token_number || data?.pickup_token_number || `PKP-SR-${targetShipmentId}`);

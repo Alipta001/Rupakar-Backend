@@ -7,6 +7,7 @@ import {
   selectDeterministicCourier,
   getDeliveryProvider,
   deliveryProvider,
+  isAuthenticAwb,
 } from '../app/services/delivery-provider.service.js';
 import { ShippingService, shippingService } from '../app/services/shipping.service.js';
 import { Shipment } from '../app/models/shipment.model.js';
@@ -1248,5 +1249,428 @@ describe('Shiprocket Automatic Fulfillment Workflow (Section 18)', () => {
         success: true,
       })
     );
+  });
+
+  // Section 21: Focused Pickup Failure & Stage-Resuming Retry
+  describe('Focused Pickup Failure & Stage-Resuming Retry', () => {
+    const fixedAwb = 'AWB-LIVE-TEST-7788';
+    const fixedShipmentId = 998877;
+    const fixedLabelUrl = 'https://shiprocket.co/pdf/label-998877.pdf';
+
+    it('A. AWB + label successful, pickup fails -> stages preserved without fake pickup', async () => {
+      global.fetch = jest.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ token: 'mock-jwt-token' }),
+        })
+        // 1. adhoc order creation
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            shipment_id: fixedShipmentId,
+            order_id: 112233,
+            status: 'NEW',
+          }),
+        })
+        // 2. serviceability
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: {
+              available_courier_companies: [
+                { id: 196, courier_company_id: 196, courier_name: 'DTDC Air 500gm', rate: 133, etd: 3 },
+              ],
+            },
+          }),
+        })
+        // 3. AWB assignment
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            response: {
+              data: {
+                awb_code: fixedAwb,
+                courier_name: 'DTDC Air 500gm',
+                courier_company_id: 196,
+              },
+            },
+          }),
+        })
+        // 4. Label generation
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            label_url: fixedLabelUrl,
+            label_created: true,
+          }),
+        })
+        // 5. Pickup request fails
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 400,
+          json: async () => ({
+            message: 'Courier pickup slots currently full',
+            status_code: 400,
+          }),
+        });
+
+      const shipmentResult = await provider.createShipment({
+        shipmentNumber: 'SHIP-TEST-PICKUP-FAIL-1',
+        pickupAddress: { pickupLocationName: 'Barrackpore Warehouse', pincode: '700122' },
+        deliveryAddress: { postalCode: '700122' },
+        packageInfo: { weight: 0.5 },
+      });
+
+      expect(shipmentResult.stagesCompleted).toContain('ORDER_CREATED');
+      expect(shipmentResult.stagesCompleted).toContain('COURIER_ASSIGNED');
+      expect(shipmentResult.stagesCompleted).toContain('AWB_GENERATED');
+      expect(shipmentResult.stagesCompleted).toContain('LABEL_GENERATED');
+      expect(shipmentResult.stagesCompleted).not.toContain('PICKUP_REQUESTED');
+
+      expect(shipmentResult.trackingNumber).toBe(fixedAwb);
+      expect(shipmentResult.labelUrl).toBe(fixedLabelUrl);
+      expect(shipmentResult.pickupStatus).toBe('FAILED');
+      expect(shipmentResult.pickupError).toBe('Courier pickup slots currently full');
+    });
+
+    it('B, C, D, E. Retry after pickup failure calls only pickup, preserving existing AWB and label without second AWB call', async () => {
+      const fetchCalls = [];
+      global.fetch = jest.fn((url, opts) => {
+        fetchCalls.push({ url, body: opts?.body ? JSON.parse(opts.body) : null });
+        if (url.includes('/auth/login')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ token: 'mock-jwt-token' }),
+          });
+        }
+        if (url.includes('/courier/generate/pickup')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              response: {
+                pickup_token_number: 'PKP-RETRY-SUCCESS-99',
+                pickup_scheduled_date: '2026-10-18',
+              },
+            }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+        });
+      });
+
+      const retryResult = await provider.createShipment({
+        shipmentNumber: 'SHIP-TEST-PICKUP-FAIL-1',
+        existingShipmentId: fixedShipmentId,
+        existingAwb: fixedAwb,
+        existingLabelUrl: fixedLabelUrl,
+        existingPickupStatus: 'FAILED',
+        existingCourierCompanyId: 196,
+        existingCourierName: 'DTDC Air 500gm',
+        pickupAddress: { pickupLocationName: 'Barrackpore Warehouse', pincode: '700122' },
+        deliveryAddress: { postalCode: '700122' },
+        packageInfo: { weight: 0.5 },
+      });
+
+      const awbCall = fetchCalls.find((c) => c.url.includes('/courier/assign/awb'));
+      expect(awbCall).toBeUndefined();
+
+      const labelCall = fetchCalls.find((c) => c.url.includes('/courier/generate/label'));
+      expect(labelCall).toBeUndefined();
+
+      const pickupCall = fetchCalls.find((c) => c.url.includes('/courier/generate/pickup'));
+      expect(pickupCall).toBeDefined();
+      expect(pickupCall.body).toEqual({ shipment_id: [fixedShipmentId] });
+
+      expect(retryResult.trackingNumber).toBe(fixedAwb);
+      expect(retryResult.labelUrl).toBe(fixedLabelUrl);
+      expect(retryResult.pickupStatus).toBe('SCHEDULED');
+      expect(retryResult.pickupToken).toBe('PKP-RETRY-SUCCESS-99');
+      expect(retryResult.stagesCompleted).toContain('PICKUP_REQUESTED');
+    });
+  });
+
+  // Section 22: Authentic AWB Verification & Safe State Transitions (Cases A - E)
+  describe('Section 22: Authentic AWB Verification & Safe State Transitions (Cases A - E)', () => {
+    const srShipmentId = 1637532193;
+    const realAwb = '143400987654';
+
+    // CASE A:
+    // AWB assignment returns wallet/balance error
+    // -> stagesCompleted does NOT contain AWB_GENERATED
+    // -> no pickup request
+    // -> no fake AWB.
+    it('CASE A: AWB assignment returns wallet/balance error -> stagesCompleted does NOT contain AWB_GENERATED, no pickup request, no fake AWB', async () => {
+      const fetchCalls = [];
+      global.fetch = jest.fn((url, opts) => {
+        fetchCalls.push({ url, opts, body: opts?.body ? JSON.parse(opts.body) : null });
+        if (url.includes('/auth/login')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ token: 'mock-jwt-token' }),
+          });
+        }
+        if (url.includes('/orders/create/adhoc')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ shipment_id: srShipmentId, order_id: 887766, status: 'NEW' }),
+          });
+        }
+        if (url.includes('/courier/serviceability')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: {
+                available_courier_companies: [
+                  { id: 196, courier_company_id: 196, courier_name: 'DTDC Air 500gm', rate: 120, etd: 3 },
+                ],
+              },
+            }),
+          });
+        }
+        if (url.includes('/courier/assign/awb')) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            json: async () => ({
+              status_code: 350,
+              message: 'Please recharge your ShipRocket wallet. The minimum required balance is Rs 100',
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.createShipment({
+        shipmentNumber: 'SHIP-TEST-WALLET-ERR',
+        pickupAddress: { pickupLocationName: 'Vendor_Wh_1', pincode: '700001' },
+        deliveryAddress: { postalCode: '560001' },
+        packageInfo: { weight: 0.5 },
+      });
+
+      expect(res.stagesCompleted).not.toContain('AWB_GENERATED');
+      expect(res.stagesCompleted).toContain('ORDER_CREATED');
+      expect(res.stagesCompleted).toContain('COURIER_ASSIGNED');
+
+      const pickupCall = fetchCalls.find((c) => c.url.includes('/courier/generate/pickup'));
+      expect(pickupCall).toBeUndefined();
+      expect(res.stagesCompleted).not.toContain('PICKUP_REQUESTED');
+
+      expect(res.trackingNumber).toBeNull();
+      expect(res.trackingNumber).not.toBe(`SR${srShipmentId}`);
+
+      expect(res.metadata?.awbError).toBe('Please recharge your ShipRocket wallet. The minimum required balance is Rs 100');
+    });
+
+    // CASE B:
+    // Shiprocket shipment lookup returns awb=null
+    // -> AWB is considered unassigned.
+    it('CASE B: Shiprocket shipment lookup returns awb=null -> AWB is considered unassigned', async () => {
+      global.fetch = jest.fn((url) => {
+        if (url.includes('/auth/login')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ token: 'mock-jwt-token' }),
+          });
+        }
+        if (url.includes(`/shipments/${srShipmentId}`)) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: {
+                id: srShipmentId,
+                order_id: 887766,
+                awb: null,
+                status: 'NEW',
+              },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const shipmentDetails = await provider.getShipmentDetails(srShipmentId);
+      expect(shipmentDetails.awb).toBeNull();
+      expect(shipmentDetails.rawAwb).toBeNull();
+
+      expect(isAuthenticAwb(shipmentDetails.awb, srShipmentId)).toBe(false);
+      expect(isAuthenticAwb(`SR${srShipmentId}`, srShipmentId)).toBe(false);
+      expect(isAuthenticAwb('TRK-12345', srShipmentId)).toBe(false);
+    });
+
+    // CASE C:
+    // Shiprocket returns real AWB
+    // -> AWB_GENERATED is recorded.
+    it('CASE C: Shiprocket returns real AWB -> AWB_GENERATED is recorded', async () => {
+      global.fetch = jest.fn((url) => {
+        if (url.includes('/auth/login')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ token: 'mock-jwt-token' }),
+          });
+        }
+        if (url.includes('/courier/assign/awb')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              response: {
+                data: {
+                  awb_code: realAwb,
+                  courier_name: 'Delhivery Surface',
+                  courier_company_id: 10,
+                },
+              },
+            }),
+          });
+        }
+        if (url.includes('/courier/generate/label')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ label_url: 'https://shiprocket.co/label/123.pdf', label_created: true }),
+          });
+        }
+        if (url.includes('/courier/generate/pickup')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              response: { pickup_token_number: 'PKP-1234', pickup_scheduled_date: '2026-10-15' },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.createShipment({
+        shipmentNumber: 'SHIP-TEST-REAL-AWB',
+        existingShipmentId: srShipmentId,
+        existingCourierCompanyId: 10,
+        pickupAddress: { pickupLocationName: 'Vendor_Wh_1', pincode: '700001' },
+        deliveryAddress: { postalCode: '560001' },
+        packageInfo: { weight: 0.5 },
+      });
+
+      expect(res.stagesCompleted).toContain('AWB_GENERATED');
+      expect(res.trackingNumber).toBe(realAwb);
+      expect(res.metadata.awbError).toBeNull();
+    });
+
+    // CASE D:
+    // Real AWB exists + pickup fails
+    // -> only pickup is retried.
+    it('CASE D: Real AWB exists + pickup fails -> only pickup is retried', async () => {
+      const fetchCalls = [];
+      global.fetch = jest.fn((url, opts) => {
+        fetchCalls.push({ url, opts });
+        if (url.includes('/auth/login')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ token: 'mock-jwt-token' }),
+          });
+        }
+        if (url.includes('/courier/generate/pickup')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              response: { pickup_token_number: 'PKP-RETRY-OK', pickup_scheduled_date: '2026-10-16' },
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.createShipment({
+        shipmentNumber: 'SHIP-TEST-RETRY-PICKUP',
+        existingShipmentId: srShipmentId,
+        existingAwb: realAwb,
+        existingLabelUrl: 'https://shiprocket.co/label/123.pdf',
+        existingPickupStatus: 'FAILED',
+        existingCourierCompanyId: 10,
+        pickupAddress: { pickupLocationName: 'Vendor_Wh_1', pincode: '700001' },
+        deliveryAddress: { postalCode: '560001' },
+        packageInfo: { weight: 0.5 },
+      });
+
+      expect(fetchCalls.some((c) => c.url.includes('/orders/create/adhoc'))).toBe(false);
+      expect(fetchCalls.some((c) => c.url.includes('/courier/assign/awb'))).toBe(false);
+      expect(fetchCalls.some((c) => c.url.includes('/courier/generate/label'))).toBe(false);
+
+      expect(fetchCalls.some((c) => c.url.includes('/courier/generate/pickup'))).toBe(true);
+      expect(res.trackingNumber).toBe(realAwb);
+      expect(res.pickupStatus).toBe('SCHEDULED');
+      expect(res.stagesCompleted).toContain('PICKUP_REQUESTED');
+    });
+
+    // CASE E:
+    // Retry after AWB assignment failure
+    // -> calls AWB assignment again
+    // -> does not call pickup before AWB exists.
+    it('CASE E: Retry after AWB assignment failure -> calls AWB assignment again, does not call pickup before AWB exists', async () => {
+      const fetchCalls = [];
+      global.fetch = jest.fn((url, opts) => {
+        fetchCalls.push({ url, opts });
+        if (url.includes('/auth/login')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ token: 'mock-jwt-token' }),
+          });
+        }
+        if (url.includes(`/shipments/${srShipmentId}`)) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ data: { id: srShipmentId, awb: null } }),
+          });
+        }
+        if (url.includes('/courier/assign/awb')) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            json: async () => ({
+              status_code: 350,
+              message: 'Please recharge your ShipRocket wallet. The minimum required balance is Rs 100',
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const res = await provider.createShipment({
+        shipmentNumber: 'SHIP-TEST-RETRY-AWB',
+        existingShipmentId: srShipmentId,
+        existingAwb: null,
+        existingCourierCompanyId: 10,
+        pickupAddress: { pickupLocationName: 'Vendor_Wh_1', pincode: '700001' },
+        deliveryAddress: { postalCode: '560001' },
+        packageInfo: { weight: 0.5 },
+      });
+
+      expect(fetchCalls.some((c) => c.url.includes('/courier/assign/awb'))).toBe(true);
+      expect(fetchCalls.some((c) => c.url.includes('/courier/generate/pickup'))).toBe(false);
+      expect(res.stagesCompleted).not.toContain('AWB_GENERATED');
+      expect(res.stagesCompleted).not.toContain('PICKUP_REQUESTED');
+      expect(res.trackingNumber).toBeNull();
+      expect(res.metadata.awbError).toBe('Please recharge your ShipRocket wallet. The minimum required balance is Rs 100');
+    });
   });
 });

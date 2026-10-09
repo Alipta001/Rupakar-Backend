@@ -1,7 +1,7 @@
 import { Shipment } from '../models/shipment.model.js';
 import { AppError } from '../utils/app-error.js';
 import { env } from '../config/env.js';
-import { deliveryProvider } from './delivery-provider.service.js';
+import { deliveryProvider, getDeliveryProvider, isAuthenticAwb } from './delivery-provider.service.js';
 
 export class ShippingService {
   calculateShipping({ subtotal = 0, items = [], shippingAddress = null, vendors = [] } = {}) {
@@ -206,7 +206,7 @@ export class ShippingService {
       },
     });
 
-    const hasValidAwb = Boolean(existing?.trackingNumber && !existing.trackingNumber.startsWith('TRK-'));
+    const hasValidAwb = isAuthenticAwb(existing?.trackingNumber, existing?.providerShipmentId);
     const isFullyFulfilled = Boolean(
       existing &&
       existing.providerShipmentId &&
@@ -228,7 +228,7 @@ export class ShippingService {
     });
 
     const activeCarrier = carrier || existing?.carrier || selectedOption.carrier;
-    const activeProvider = provider || existing?.provider || env.DELIVERY_PROVIDER || selectedOption.provider;
+    const activeProvider = provider || (activeCarrier && activeCarrier.includes('mock') ? 'mock' : null) || existing?.provider || env.DELIVERY_PROVIDER || selectedOption.provider;
     const activeMethod = shippingMethod || existing?.shippingMethod || selectedOption.serviceCode;
     const activeCost = selectedOption.cost || existing?.shippingCost || 0;
 
@@ -244,7 +244,8 @@ export class ShippingService {
       ? existing.packageInfo
       : packageInfo;
 
-    const providerShipment = await deliveryProvider.createShipment({
+    const activeDeliveryProvider = activeProvider ? getDeliveryProvider(activeProvider) : deliveryProvider;
+    const providerShipment = await activeDeliveryProvider.createShipment({
       shipmentNumber,
       orderId,
       orderNumber,
@@ -263,18 +264,21 @@ export class ShippingService {
       existingCourierName: existing?.carrier || null,
     });
 
-    const trackingNumber = providerShipment.trackingNumber || providerShipment.awb || (existing?.trackingNumber && !existing.trackingNumber.startsWith('TRK-') ? existing.trackingNumber : `TRK-${Date.now().toString(36).toUpperCase()}`);
-    const trackingUrl = providerShipment.trackingUrl || existing?.trackingUrl || null;
     const providerShipmentId = providerShipment.providerShipmentId || providerShipment.shipmentId || existing?.providerShipmentId || null;
+    const trackingNumber = isAuthenticAwb(providerShipment.trackingNumber, providerShipmentId)
+      ? providerShipment.trackingNumber
+      : (hasValidAwb ? existing.trackingNumber : null);
+    const trackingUrl = providerShipment.trackingUrl || (trackingNumber ? `https://shiprocket.co/tracking/${trackingNumber}` : null);
     const labelUrl = providerShipment.labelUrl || existing?.labelUrl || `/api/v1/vendors/orders/${vendorOrderId}/shipping-label`;
 
     let pickupStatus = providerShipment.pickupStatus || existing?.pickupStatus || 'PENDING';
     let pickupToken = providerShipment.pickupToken || existing?.pickupToken || null;
     let pickupScheduledAt = providerShipment.pickupScheduledAt || existing?.pickupScheduledAt || null;
 
-    if (pickupStatus === 'PENDING' && providerShipmentId && hasValidAwb) {
+    const currentAwbValid = isAuthenticAwb(trackingNumber, providerShipmentId);
+    if (pickupStatus === 'PENDING' && providerShipmentId && currentAwbValid) {
       try {
-        const pickupResult = await deliveryProvider.requestPickup({
+        const pickupResult = await activeDeliveryProvider.requestPickup({
           shipmentNumber,
           trackingNumber,
           shipmentId: providerShipmentId,
@@ -354,6 +358,11 @@ export class ShippingService {
     const shipment = await Shipment.findById(shipmentId);
     if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
 
+    const hasAwb = isAuthenticAwb(shipment.trackingNumber, shipment.providerShipmentId);
+    if (!hasAwb) {
+      throw new AppError(400, 'AWB_NOT_ASSIGNED', 'Cannot request pickup: AWB has not been assigned by carrier');
+    }
+
     const pickupResult = await deliveryProvider.requestPickup({
       shipmentNumber: shipment.shipmentNumber,
       trackingNumber: shipment.trackingNumber,
@@ -368,9 +377,10 @@ export class ShippingService {
     shipment.pickupStatus = isSuccess ? 'SCHEDULED' : (pickupResult?.status === 'FAILED' ? 'FAILED' : 'REQUESTED');
     if (pickupResult?.pickupToken) shipment.pickupToken = pickupResult.pickupToken;
     if (pickupResult?.pickupDate) shipment.pickupScheduledAt = new Date(pickupResult.pickupDate);
+    const rawPickupErr = isSuccess ? null : (pickupResult?.message || 'Pickup request failed');
     shipment.metadata = {
       ...shipment.metadata,
-      pickupError: isSuccess ? null : (pickupResult?.message || 'Pickup request failed'),
+      pickupError: rawPickupErr,
       pickupRequestedAt: new Date().toISOString(),
     };
     await shipment.save();
