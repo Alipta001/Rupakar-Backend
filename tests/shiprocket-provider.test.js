@@ -262,7 +262,7 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
           }),
         });
       }
-      if (url.includes('/couriers/generate/pickup')) {
+      if (url.includes('/courier/generate/pickup') || url.includes('/couriers/generate/pickup')) {
         return Promise.resolve({
           ok: true,
           status: 200,
@@ -340,7 +340,7 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
           json: async () => ({ token: 'mock_token' }),
         });
       }
-      if (url.includes('/couriers/generate/pickup')) {
+      if (url.includes('/courier/generate/pickup') || url.includes('/couriers/generate/pickup')) {
         return Promise.resolve({
           ok: true,
           status: 200,
@@ -948,7 +948,7 @@ describe('ShiprocketProvider & Multi-Provider Delivery System', () => {
             }),
           });
         }
-        if (path.includes('/courier/assign/awb') || path.includes('/couriers/generate/pickup') || path.includes('/courier/generate/label')) {
+        if (path.includes('/courier/assign/awb') || path.includes('/courier/generate/pickup') || path.includes('/couriers/generate/pickup') || path.includes('/courier/generate/label')) {
           return Promise.resolve({
             ok: true,
             status: 200,

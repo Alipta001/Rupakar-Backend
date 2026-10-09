@@ -523,7 +523,7 @@ describe('Professional Multi-Vendor Seller-Aware Delivery Pricing', () => {
           json: async () => ({ label_url: 'https://shiprocket.in/labels/11223344.pdf' }),
         });
       }
-      if (path.includes('/couriers/generate/pickup')) {
+      if (path.includes('/courier/generate/pickup') || path.includes('/couriers/generate/pickup')) {
         return Promise.resolve({
           ok: true,
           status: 200,

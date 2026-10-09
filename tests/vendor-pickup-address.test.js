@@ -544,7 +544,7 @@ describe('Vendor Pickup / Dispatch Address Feature & Multi-Vendor Marketplace', 
             json: async () => ({ order_id: 112233, shipment_id: 445566 }),
           });
         }
-        if (path.includes('/courier/assign/awb') || path.includes('/couriers/generate/pickup') || path.includes('/courier/generate/label')) {
+        if (path.includes('/courier/assign/awb') || path.includes('/courier/generate/pickup') || path.includes('/couriers/generate/pickup') || path.includes('/courier/generate/label')) {
           return Promise.resolve({
             ok: true,
             status: 200,

@@ -52,7 +52,7 @@ const handleDocumentUpload = (req, res, next) => {
 };
 import { listVendorOrders, getVendorOrder } from '../controllers/order.controller.js';
 import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
-import { packVendorOrder, processVendorOrder, readyVendorOrder, shipVendorOrder, downloadVendorShippingLabel } from '../controllers/shipping.controller.js';
+import { packVendorOrder, processVendorOrder, readyVendorOrder, retryVendorShipment, shipVendorOrder, downloadVendorShippingLabel } from '../controllers/shipping.controller.js';
 import { listVendorInvoices, downloadVendorOrderInvoice, downloadVendorPackingSlip } from '../controllers/invoice.controller.js';
 import {
   listVendorCancellationRequests,
@@ -84,6 +84,7 @@ router.get('/orders/:orderId/shipping-label', downloadVendorShippingLabel);
 router.post('/orders/:id/pack', packVendorOrder);
 router.post('/orders/:id/process', processVendorOrder);
 router.post('/orders/:id/ready-to-ship', readyVendorOrder);
+router.post('/orders/:id/retry-shipment', retryVendorShipment);
 router.post('/orders/:id/ship', shipVendorOrder);
 router.get('/returns', listVendorReturns);
 router.get('/returns/:id', getVendorReturn);

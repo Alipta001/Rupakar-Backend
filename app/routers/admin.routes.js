@@ -8,6 +8,9 @@ import {
   downloadAdminShippingLabel,
   retryAdminPickup,
   resyncAdminTracking,
+  retryAdminFulfillment,
+  assignAdminAwb,
+  generateAdminLabel,
 } from '../controllers/shipping.controller.js';
 import { listAdminReturns, getAdminReturn, approveReturn, rejectReturn } from '../controllers/return.controller.js';
 import { listAdminInvoices, getAdminInvoiceDetail } from '../controllers/invoice.controller.js';
@@ -32,12 +35,26 @@ import {
   getAdminAnalytics,
   listAdminAuditLogs,
   getAdminSettings,
+  listAdminVendorPickupLocations,
+  getAdminVendorPickupLocation,
+  approveAdminVendorPickupLocation,
+  deactivateAdminVendorPickupLocation,
+  archiveAdminVendorPickupLocation,
+  reactivateAdminVendorPickupLocation,
 } from '../controllers/admin.controller.js';
 
 const router = Router();
 
 router.use(requireAuth);
 router.use(requireRole('admin'));
+
+// Vendor Pickup Locations
+router.get('/vendors/pickup-locations', listAdminVendorPickupLocations);
+router.get('/vendors/:vendorId/pickup-location', getAdminVendorPickupLocation);
+router.patch('/vendors/:vendorId/pickup-location/approve', approveAdminVendorPickupLocation);
+router.patch('/vendors/:vendorId/pickup-location/deactivate', deactivateAdminVendorPickupLocation);
+router.patch('/vendors/:vendorId/pickup-location/archive', archiveAdminVendorPickupLocation);
+router.patch('/vendors/:vendorId/pickup-location/reactivate', reactivateAdminVendorPickupLocation);
 
 // Dashboard
 router.get('/dashboard', getAdminDashboardMetrics);
@@ -85,6 +102,9 @@ router.get('/shipments/:id', getAdminShipment);
 router.get('/shipments/:id/label', downloadAdminShippingLabel);
 router.post('/shipments/:id/retry-pickup', retryAdminPickup);
 router.post('/shipments/:id/resync-tracking', resyncAdminTracking);
+router.post('/shipments/:id/retry-fulfillment', retryAdminFulfillment);
+router.post('/shipments/:id/assign-awb', assignAdminAwb);
+router.post('/shipments/:id/generate-label', generateAdminLabel);
 router.patch('/shipments/:id/status', updateAdminShipmentStatus);
 
 // Returns (existing)

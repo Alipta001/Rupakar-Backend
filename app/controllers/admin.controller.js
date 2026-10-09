@@ -757,3 +757,297 @@ export const getAdminSettings = async (req, res, next) => {
     next(error);
   }
 };
+
+export const listAdminVendorPickupLocations = async (req, res, next) => {
+  try {
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const { status, search } = req.query;
+
+    const query = {
+      deletedAt: null,
+      'pickupAddress.pincode': { $exists: true, $ne: '' },
+    };
+
+    if (search) {
+      const searchRegex = new RegExp(String(search).trim(), 'i');
+      query.$or = [
+        { businessName: searchRegex },
+        { legalName: searchRegex },
+        { email: searchRegex },
+        { 'pickupAddress.pickupLocationName': searchRegex },
+        { 'pickupAddress.city': searchRegex },
+        { 'pickupAddress.state': searchRegex },
+        { 'pickupAddress.pincode': searchRegex },
+        { 'pickupAddress.contactPerson': searchRegex },
+      ];
+    }
+
+    const vendors = await Vendor.find(query)
+      .populate('ownerUserId', 'name email phone')
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const formattedLocations = vendors
+      .map((vendor) => {
+        const pk = vendor.pickupAddress;
+        if (!pk || !pk.pincode) return null;
+
+        const effectiveAdminStatus =
+          pk.adminStatus ||
+          (pk.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING');
+
+        const user = vendor.ownerUserId && typeof vendor.ownerUserId === 'object' ? vendor.ownerUserId : null;
+
+        return {
+          vendorId: String(vendor._id),
+          businessName: vendor.businessName,
+          sellerName: user?.name || pk.contactPerson || vendor.legalName || vendor.businessName,
+          sellerEmail: user?.email || vendor.email,
+          sellerPhone: user?.phone || vendor.phone || pk.phone,
+          pickupLocationName: pk.pickupLocationName || '',
+          contactPerson: pk.contactPerson || '',
+          phone: pk.phone || '',
+          addressLine1: pk.addressLine1 || '',
+          addressLine2: pk.addressLine2 || '',
+          city: pk.city || '',
+          state: pk.state || '',
+          pincode: pk.pincode || '',
+          country: pk.country || 'India',
+          shiprocketPickupId: pk.shiprocketPickupId || null,
+          registrationStatus: pk.registrationStatus || 'PENDING',
+          adminStatus: effectiveAdminStatus,
+          registeredAt: pk.registeredAt || null,
+          registrationError: pk.registrationError || null,
+          updatedAt: vendor.updatedAt,
+        };
+      })
+      .filter(Boolean);
+
+    let filtered = formattedLocations;
+    if (status) {
+      const targetStatus = String(status).toUpperCase().trim();
+      filtered = formattedLocations.filter(
+        (loc) => loc.adminStatus === targetStatus || loc.registrationStatus === targetStatus
+      );
+    }
+
+    const total = filtered.length;
+    const paginatedItems = filtered.slice((page - 1) * limit, page * limit);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        items: paginatedItems,
+        data: paginatedItems,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+      message: 'Vendor pickup locations loaded',
+      requestId: String(req.headers['x-request-id'] ?? ''),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAdminVendorPickupLocation = async (req, res, next) => {
+  try {
+    const { vendorId } = req.params;
+    const vendor = await Vendor.findById(vendorId)
+      .populate('ownerUserId', 'name email phone')
+      .lean();
+
+    if (!vendor || vendor.deletedAt) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
+    }
+
+    const pk = vendor.pickupAddress;
+    if (!pk || !pk.pincode) {
+      throw new AppError(404, 'PICKUP_LOCATION_NOT_FOUND', 'Vendor has no configured pickup location');
+    }
+
+    const effectiveAdminStatus =
+      pk.adminStatus ||
+      (pk.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING');
+
+    const user = vendor.ownerUserId && typeof vendor.ownerUserId === 'object' ? vendor.ownerUserId : null;
+
+    const data = {
+      vendorId: String(vendor._id),
+      businessName: vendor.businessName,
+      sellerName: user?.name || pk.contactPerson || vendor.legalName || vendor.businessName,
+      sellerEmail: user?.email || vendor.email,
+      sellerPhone: user?.phone || vendor.phone || pk.phone,
+      pickupLocationName: pk.pickupLocationName || '',
+      contactPerson: pk.contactPerson || '',
+      phone: pk.phone || '',
+      addressLine1: pk.addressLine1 || '',
+      addressLine2: pk.addressLine2 || '',
+      city: pk.city || '',
+      state: pk.state || '',
+      pincode: pk.pincode || '',
+      country: pk.country || 'India',
+      shiprocketPickupId: pk.shiprocketPickupId || null,
+      registrationStatus: pk.registrationStatus || 'PENDING',
+      adminStatus: effectiveAdminStatus,
+      registeredAt: pk.registeredAt || null,
+      registrationError: pk.registrationError || null,
+    };
+
+    sendSuccess(res, data, 'Pickup location details loaded', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const approveAdminVendorPickupLocation = async (req, res, next) => {
+  try {
+    const { vendorId } = req.params;
+    const vendor = await Vendor.findById(vendorId);
+
+    if (!vendor || vendor.deletedAt) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
+    }
+    if (!vendor.pickupAddress || !vendor.pickupAddress.pincode) {
+      throw new AppError(400, 'NO_PICKUP_LOCATION', 'Vendor does not have a configured pickup address');
+    }
+
+    const previousStatus =
+      vendor.pickupAddress.adminStatus ||
+      (vendor.pickupAddress.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING');
+
+    vendor.pickupAddress.adminStatus = 'APPROVED';
+    await vendor.save();
+
+    auditService.log('VENDOR_PICKUP_LOCATION_ADMIN_ACTION', {
+      action: 'APPROVE',
+      vendorId: String(vendor._id),
+      adminId: req.user?.sub,
+      pickupLocation: vendor.pickupAddress.pickupLocationName,
+      previousStatus,
+      newStatus: 'APPROVED',
+      timestamp: new Date().toISOString(),
+    });
+
+    sendSuccess(res, vendor.pickupAddress, 'Pickup location approved successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deactivateAdminVendorPickupLocation = async (req, res, next) => {
+  try {
+    const { vendorId } = req.params;
+    const vendor = await Vendor.findById(vendorId);
+
+    if (!vendor || vendor.deletedAt) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
+    }
+    if (!vendor.pickupAddress || !vendor.pickupAddress.pincode) {
+      throw new AppError(400, 'NO_PICKUP_LOCATION', 'Vendor does not have a configured pickup address');
+    }
+
+    const previousStatus =
+      vendor.pickupAddress.adminStatus ||
+      (vendor.pickupAddress.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING');
+
+    vendor.pickupAddress.adminStatus = 'DEACTIVATED';
+    await vendor.save();
+
+    auditService.log('VENDOR_PICKUP_LOCATION_ADMIN_ACTION', {
+      action: 'DEACTIVATE',
+      vendorId: String(vendor._id),
+      adminId: req.user?.sub,
+      pickupLocation: vendor.pickupAddress.pickupLocationName,
+      previousStatus,
+      newStatus: 'DEACTIVATED',
+      timestamp: new Date().toISOString(),
+    });
+
+    sendSuccess(res, vendor.pickupAddress, 'Pickup location deactivated successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const archiveAdminVendorPickupLocation = async (req, res, next) => {
+  try {
+    const { vendorId } = req.params;
+    const vendor = await Vendor.findById(vendorId);
+
+    if (!vendor || vendor.deletedAt) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
+    }
+    if (!vendor.pickupAddress || !vendor.pickupAddress.pincode) {
+      throw new AppError(400, 'NO_PICKUP_LOCATION', 'Vendor does not have a configured pickup address');
+    }
+
+    const previousStatus =
+      vendor.pickupAddress.adminStatus ||
+      (vendor.pickupAddress.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING');
+
+    vendor.pickupAddress.adminStatus = 'ARCHIVED';
+    await vendor.save();
+
+    auditService.log('VENDOR_PICKUP_LOCATION_ADMIN_ACTION', {
+      action: 'ARCHIVE',
+      vendorId: String(vendor._id),
+      adminId: req.user?.sub,
+      pickupLocation: vendor.pickupAddress.pickupLocationName,
+      previousStatus,
+      newStatus: 'ARCHIVED',
+      timestamp: new Date().toISOString(),
+    });
+
+    sendSuccess(res, vendor.pickupAddress, 'Pickup location archived successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const reactivateAdminVendorPickupLocation = async (req, res, next) => {
+  try {
+    const { vendorId } = req.params;
+    const vendor = await Vendor.findById(vendorId);
+
+    if (!vendor || vendor.deletedAt) {
+      throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor not found');
+    }
+    if (!vendor.pickupAddress || !vendor.pickupAddress.pincode) {
+      throw new AppError(400, 'NO_PICKUP_LOCATION', 'Vendor does not have a configured pickup address');
+    }
+
+    const currentStatus =
+      vendor.pickupAddress.adminStatus ||
+      (vendor.pickupAddress.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING');
+
+    if (currentStatus === 'ARCHIVED') {
+      throw new AppError(400, 'CANNOT_REACTIVATE_ARCHIVED_LOCATION', 'Archived pickup locations cannot be reactivated directly. Seller must submit a new pickup address.');
+    }
+
+    if (currentStatus !== 'DEACTIVATED') {
+      throw new AppError(400, 'INVALID_STATUS_TRANSITION', `Only deactivated pickup locations can be reactivated. Current status is ${currentStatus}.`);
+    }
+
+    vendor.pickupAddress.adminStatus = 'APPROVED';
+    await vendor.save();
+
+    auditService.log('VENDOR_PICKUP_LOCATION_ADMIN_ACTION', {
+      action: 'REACTIVATE',
+      vendorId: String(vendor._id),
+      adminId: req.user?.sub,
+      pickupLocation: vendor.pickupAddress.pickupLocationName,
+      previousStatus: currentStatus,
+      newStatus: 'APPROVED',
+      timestamp: new Date().toISOString(),
+    });
+
+    sendSuccess(res, vendor.pickupAddress, 'Pickup location reactivated successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+

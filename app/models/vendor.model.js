@@ -42,6 +42,11 @@ const vendorSchema = new Schema(
       },
       registeredAt: { type: Date, default: null },
       registrationError: { type: String, trim: true, default: null },
+      adminStatus: {
+        type: String,
+        enum: ['PENDING', 'APPROVED', 'DEACTIVATED', 'ARCHIVED'],
+        default: 'PENDING',
+      },
     },
     shippingSettings: {
       enabled: { type: Boolean, default: false },

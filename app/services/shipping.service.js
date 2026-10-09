@@ -206,60 +206,84 @@ export class ShippingService {
       },
     });
 
-    if (existing) {
+    const hasValidAwb = Boolean(existing?.trackingNumber && !existing.trackingNumber.startsWith('TRK-'));
+    const isFullyFulfilled = Boolean(
+      existing &&
+      existing.providerShipmentId &&
+      hasValidAwb &&
+      (existing.pickupStatus === 'SCHEDULED' || existing.pickupStatus === 'REQUESTED') &&
+      existing.labelUrl &&
+      !existing.labelUrl.includes('/api/v1/vendors/orders/')
+    );
+
+    if (existing && isFullyFulfilled) {
       return existing;
     }
 
     const selectedOption = await this.determineBestShippingOption({
-      pickupAddress,
-      deliveryAddress,
-      packageInfo,
+      pickupAddress: existing?.pickupAddress && Object.keys(existing.pickupAddress).length > 0 ? existing.pickupAddress : pickupAddress,
+      deliveryAddress: existing?.deliveryAddress && Object.keys(existing.deliveryAddress).length > 0 ? existing.deliveryAddress : deliveryAddress,
+      packageInfo: existing?.packageInfo && Object.keys(existing.packageInfo).length > 0 ? existing.packageInfo : packageInfo,
       cod,
     });
 
-    const activeCarrier = carrier || selectedOption.carrier;
-    const activeProvider = provider || env.DELIVERY_PROVIDER || selectedOption.provider;
-    const activeMethod = shippingMethod || selectedOption.serviceCode;
-    const activeCost = selectedOption.cost || 0;
+    const activeCarrier = carrier || existing?.carrier || selectedOption.carrier;
+    const activeProvider = provider || existing?.provider || env.DELIVERY_PROVIDER || selectedOption.provider;
+    const activeMethod = shippingMethod || existing?.shippingMethod || selectedOption.serviceCode;
+    const activeCost = selectedOption.cost || existing?.shippingCost || 0;
 
-    const shipmentNumber = `SHIP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const shipmentNumber = existing?.shipmentNumber || `SHIP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+    const effectivePickup = (existing?.pickupAddress && Object.keys(existing.pickupAddress).length > 0 && existing.pickupAddress.pickupLocationName)
+      ? existing.pickupAddress
+      : pickupAddress;
+    const effectiveDelivery = (existing?.deliveryAddress && Object.keys(existing.deliveryAddress).length > 0)
+      ? existing.deliveryAddress
+      : deliveryAddress;
+    const effectivePackageInfo = (existing?.packageInfo && Object.keys(existing.packageInfo).length > 0)
+      ? existing.packageInfo
+      : packageInfo;
 
     const providerShipment = await deliveryProvider.createShipment({
       shipmentNumber,
       orderId,
       orderNumber,
       vendorOrderId,
-      pickupAddress,
-      deliveryAddress,
-      packageInfo,
+      pickupAddress: effectivePickup,
+      deliveryAddress: effectiveDelivery,
+      packageInfo: effectivePackageInfo,
       items,
       cod,
       serviceOption: selectedOption,
+      existingShipmentId: existing?.providerShipmentId || null,
+      existingAwb: hasValidAwb ? existing.trackingNumber : null,
+      existingLabelUrl: existing?.labelUrl && !existing.labelUrl.includes('/api/v1/vendors/orders/') ? existing.labelUrl : null,
+      existingPickupStatus: existing?.pickupStatus || null,
+      existingCourierCompanyId: existing?.metadata?.courierCompanyId || null,
+      existingCourierName: existing?.carrier || null,
     });
 
-    const trackingNumber = providerShipment.trackingNumber || providerShipment.awb || `TRK-${Date.now().toString(36).toUpperCase()}`;
-    const trackingUrl = providerShipment.trackingUrl || null;
-    const providerShipmentId = providerShipment.providerShipmentId || providerShipment.shipmentId || providerShipment.id || providerShipment.orderId || null;
+    const trackingNumber = providerShipment.trackingNumber || providerShipment.awb || (existing?.trackingNumber && !existing.trackingNumber.startsWith('TRK-') ? existing.trackingNumber : `TRK-${Date.now().toString(36).toUpperCase()}`);
+    const trackingUrl = providerShipment.trackingUrl || existing?.trackingUrl || null;
+    const providerShipmentId = providerShipment.providerShipmentId || providerShipment.shipmentId || existing?.providerShipmentId || null;
+    const labelUrl = providerShipment.labelUrl || existing?.labelUrl || `/api/v1/vendors/orders/${vendorOrderId}/shipping-label`;
 
-    // Prefer provider label URL if returned, otherwise fallback to internal 4x6 PDF label endpoint
-    const labelUrl = providerShipment.labelUrl || `/api/v1/vendors/orders/${vendorOrderId}/shipping-label`;
+    let pickupStatus = providerShipment.pickupStatus || existing?.pickupStatus || 'PENDING';
+    let pickupToken = providerShipment.pickupToken || existing?.pickupToken || null;
+    let pickupScheduledAt = providerShipment.pickupScheduledAt || existing?.pickupScheduledAt || null;
 
-    let pickupStatus = providerShipment.pickupStatus || 'PENDING';
-    let pickupToken = providerShipment.pickupToken || null;
-    let pickupScheduledAt = providerShipment.pickupScheduledAt || null;
-
-    if (pickupStatus === 'PENDING') {
+    if (pickupStatus === 'PENDING' && providerShipmentId && hasValidAwb) {
       try {
         const pickupResult = await deliveryProvider.requestPickup({
           shipmentNumber,
           trackingNumber,
           shipmentId: providerShipmentId,
-          pickupAddress,
+          pickupAddress: effectivePickup,
           packageCount: 1,
-          totalWeight: packageInfo.weight || 0.5,
+          totalWeight: effectivePackageInfo.weight || 0.5,
         });
         if (pickupResult?.status === 'SUCCESS' || pickupResult?.status === 'SCHEDULED' || pickupResult?.pickupToken) {
-          pickupStatus = 'REQUESTED';
+          pickupStatus = 'SCHEDULED';
           pickupToken = pickupResult.pickupToken;
           pickupScheduledAt = pickupResult.pickupDate ? new Date(pickupResult.pickupDate) : new Date(Date.now() + 24 * 60 * 60 * 1000);
         }
@@ -268,7 +292,30 @@ export class ShippingService {
       }
     }
 
-    const estimatedDeliveryAt = new Date(Date.now() + (selectedOption.estimatedDays || 3) * 24 * 60 * 60 * 1000);
+    const estimatedDeliveryAt = providerShipment.estimatedDeliveryAt || new Date(Date.now() + (selectedOption.estimatedDays || 3) * 24 * 60 * 60 * 1000);
+
+    if (existing) {
+      existing.carrier = providerShipment.carrier || activeCarrier;
+      existing.provider = providerShipment.provider || activeProvider;
+      existing.shippingMethod = providerShipment.shippingMethod || activeMethod;
+      existing.shippingCost = providerShipment.shippingCost ?? activeCost;
+      existing.trackingNumber = trackingNumber;
+      existing.trackingUrl = trackingUrl;
+      existing.providerShipmentId = providerShipmentId;
+      existing.labelUrl = labelUrl;
+      existing.pickupStatus = pickupStatus;
+      if (pickupToken) existing.pickupToken = pickupToken;
+      if (pickupScheduledAt) existing.pickupScheduledAt = pickupScheduledAt;
+      if (estimatedDeliveryAt) existing.estimatedDeliveryAt = estimatedDeliveryAt;
+      existing.metadata = {
+        ...existing.metadata,
+        ...providerShipment.metadata,
+        serviceName: selectedOption.serviceName,
+        carrierOption: selectedOption,
+      };
+      await existing.save();
+      return existing;
+    }
 
     const shipment = await Shipment.create({
       orderId,
@@ -276,16 +323,16 @@ export class ShippingService {
       vendorId,
       customerId,
       shipmentNumber,
-      carrier: activeCarrier,
-      provider: activeProvider,
+      carrier: providerShipment.carrier || activeCarrier,
+      provider: providerShipment.provider || activeProvider,
       trackingNumber,
       trackingUrl,
-      shippingMethod: activeMethod,
-      shippingCost: activeCost,
+      shippingMethod: providerShipment.shippingMethod || activeMethod,
+      shippingCost: providerShipment.shippingCost ?? activeCost,
       status: 'PENDING',
-      pickupAddress,
-      deliveryAddress,
-      packageInfo,
+      pickupAddress: effectivePickup,
+      deliveryAddress: effectiveDelivery,
+      packageInfo: effectivePackageInfo,
       providerShipmentId,
       labelUrl,
       pickupStatus,
@@ -294,6 +341,7 @@ export class ShippingService {
       estimatedDeliveryAt,
       metadata: {
         ...metadata,
+        ...providerShipment.metadata,
         serviceName: selectedOption.serviceName,
         carrierOption: selectedOption,
       },
@@ -302,24 +350,97 @@ export class ShippingService {
     return shipment;
   }
 
-  async requestPickup({ shipmentId }) {
+  async requestPickup({ shipmentId, pickupDate = null }) {
     const shipment = await Shipment.findById(shipmentId);
     if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
 
     const pickupResult = await deliveryProvider.requestPickup({
       shipmentNumber: shipment.shipmentNumber,
       trackingNumber: shipment.trackingNumber,
+      shipmentId: shipment.providerShipmentId,
       pickupAddress: shipment.pickupAddress,
       packageCount: 1,
       totalWeight: shipment.packageInfo?.weight || 0.5,
+      pickupDate,
     });
 
-    shipment.pickupStatus = pickupResult?.status === 'SUCCESS' || pickupResult?.pickupToken ? 'REQUESTED' : 'PENDING';
+    const isSuccess = pickupResult?.status === 'SUCCESS' || pickupResult?.status === 'SCHEDULED' || pickupResult?.pickupToken;
+    shipment.pickupStatus = isSuccess ? 'SCHEDULED' : (pickupResult?.status === 'FAILED' ? 'FAILED' : 'REQUESTED');
     if (pickupResult?.pickupToken) shipment.pickupToken = pickupResult.pickupToken;
     if (pickupResult?.pickupDate) shipment.pickupScheduledAt = new Date(pickupResult.pickupDate);
+    shipment.metadata = {
+      ...shipment.metadata,
+      pickupError: isSuccess ? null : (pickupResult?.message || 'Pickup request failed'),
+      pickupRequestedAt: new Date().toISOString(),
+    };
     await shipment.save();
 
     return shipment.toObject ? shipment.toObject() : shipment;
+  }
+
+  async assignAwb({ shipmentId, courierId = null }) {
+    const shipment = await Shipment.findById(shipmentId);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+    if (!shipment.providerShipmentId) throw new AppError(400, 'PROVIDER_SHIPMENT_ID_REQUIRED', 'Shipment ID not found on provider');
+
+    const result = await deliveryProvider.assignAwb({
+      shipmentId: shipment.providerShipmentId,
+      courierId: courierId || shipment.metadata?.courierCompanyId || null,
+    });
+
+    if (result?.awbCode) {
+      shipment.trackingNumber = result.awbCode;
+      shipment.trackingUrl = `https://shiprocket.co/tracking/${result.awbCode}`;
+      if (result.courierName) shipment.carrier = result.courierName;
+      shipment.metadata = {
+        ...shipment.metadata,
+        courierCompanyId: result.courierCompanyId || shipment.metadata?.courierCompanyId,
+        awbError: null,
+        awbAssignedAt: new Date().toISOString(),
+      };
+      await shipment.save();
+    }
+    return shipment.toObject ? shipment.toObject() : shipment;
+  }
+
+  async generateLabel({ shipmentId }) {
+    const shipment = await Shipment.findById(shipmentId);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+    if (!shipment.providerShipmentId) throw new AppError(400, 'PROVIDER_SHIPMENT_ID_REQUIRED', 'Shipment ID not found on provider');
+
+    const result = await deliveryProvider.generateLabel({
+      shipmentId: shipment.providerShipmentId,
+    });
+
+    if (result?.labelUrl) {
+      shipment.labelUrl = result.labelUrl;
+      shipment.metadata = {
+        ...shipment.metadata,
+        labelError: null,
+        labelGeneratedAt: new Date().toISOString(),
+      };
+      await shipment.save();
+    }
+    return shipment.toObject ? shipment.toObject() : shipment;
+  }
+
+  async fulfillShipment({ shipmentId }) {
+    const shipment = await Shipment.findById(shipmentId);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+
+    return this.createShipment({
+      orderId: shipment.orderId,
+      vendorOrderId: shipment.vendorOrderId,
+      vendorId: shipment.vendorId,
+      customerId: shipment.customerId,
+      pickupAddress: shipment.pickupAddress,
+      deliveryAddress: shipment.deliveryAddress,
+      packageInfo: shipment.packageInfo,
+      shippingMethod: shipment.shippingMethod,
+      carrier: shipment.carrier,
+      provider: shipment.provider,
+      metadata: shipment.metadata,
+    });
   }
 
   async getTracking(shipmentId) {

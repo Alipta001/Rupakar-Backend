@@ -61,6 +61,7 @@ const sanitizeVendor = (vendor) => {
       pincode: vendor.pickupAddress.pincode || '',
       country: vendor.pickupAddress.country || 'India',
       registrationStatus: vendor.pickupAddress.registrationStatus || 'PENDING',
+      adminStatus: vendor.pickupAddress.adminStatus || (vendor.pickupAddress.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING'),
       shiprocketPickupId: vendor.pickupAddress.shiprocketPickupId || null,
       registeredAt: vendor.pickupAddress.registeredAt || null,
       registrationError: vendor.pickupAddress.registrationError || null,

@@ -16,6 +16,57 @@ const hasRealDeliveryConfig = (url, token) => {
   );
 };
 
+export const selectDeterministicCourier = (availableCouriers, { cod = false, recommendedCourierId = null } = {}) => {
+  if (!Array.isArray(availableCouriers) || availableCouriers.length === 0) return null;
+
+  let viable = cod
+    ? availableCouriers.filter((c) => Boolean(c.cod === 1 || c.codSupported))
+    : availableCouriers;
+
+  if (viable.length === 0) {
+    viable = availableCouriers;
+  }
+
+  const scored = viable.map((c) => {
+    const courierId = Number(c.courier_company_id ?? c.id ?? 0);
+    const isRecommended = Boolean(
+      (recommendedCourierId && Number(courierId) === Number(recommendedCourierId)) ||
+      c.recommended === true
+    );
+    const rating = Math.max(0, Math.min(5, Number(c.rating) || 3.5));
+    const etd = Math.max(1, Number(c.estimated_delivery_days ?? c.etd ?? 3));
+    const rate = Math.max(0, Number(c.rate ?? c.cost ?? 50));
+
+    // Scoring components:
+    // 1. Recommendation bonus: 100 points
+    // 2. Courier rating (0-5): up to 50 points
+    // 3. Fast ETA (lower is better): up to 45 points
+    // 4. Reasonable cost (lower is better): up to 150 points
+    const recScore = isRecommended ? 100 : 0;
+    const ratingScore = rating * 10;
+    const etaScore = Math.max(0, 10 - etd) * 5;
+    const costScore = Math.max(0, 200 - rate);
+
+    const totalScore = recScore + ratingScore + etaScore + costScore;
+
+    return {
+      courier: c,
+      courierCompanyId: courierId,
+      courierName: c.courier_name || 'Standard Courier',
+      rate,
+      totalScore,
+    };
+  });
+
+  scored.sort((a, b) => {
+    if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+    if (a.rate !== b.rate) return a.rate - b.rate;
+    return a.courierCompanyId - b.courierCompanyId;
+  });
+
+  return scored[0]?.courier || null;
+};
+
 export class DeliveryProvider {
   async checkServiceability(_params) {
     throw new Error('checkServiceability must be implemented by provider');
@@ -23,11 +74,20 @@ export class DeliveryProvider {
   async getShippingRates(_params) {
     throw new Error('getShippingRates must be implemented by provider');
   }
+  async getAvailableCouriers(_params) {
+    return { availableCouriers: [], recommendedCourierId: null };
+  }
   async createShipment(_params) {
     throw new Error('createShipment must be implemented by provider');
   }
+  async assignAwb(_params) {
+    throw new Error('assignAwb must be implemented by provider');
+  }
   async generateAwb(_params) {
     throw new Error('generateAwb must be implemented by provider');
+  }
+  async generateLabel(_params) {
+    throw new Error('generateLabel must be implemented by provider');
   }
   async getShippingLabel(_params) {
     throw new Error('getShippingLabel must be implemented by provider');
@@ -109,6 +169,43 @@ export class MockDeliveryProvider extends DeliveryProvider {
     ];
   }
 
+  async getAvailableCouriers({ pickupPincode, deliveryPincode, weight = 0.5, dimensions = null, cod = false } = {}) {
+    const rates = await this.getShippingRates({ pickupPincode, deliveryPincode, weight, dimensions, cod });
+    const available = rates.map((r, idx) => ({
+      courier_company_id: idx === 0 ? 101 : 102,
+      courier_name: r.carrier,
+      rate: r.cost,
+      estimated_delivery_days: r.estimatedDays,
+      rating: idx === 0 ? 4.5 : 4.0,
+      cod: r.codSupported ? 1 : 0,
+      codSupported: r.codSupported,
+      recommended: Boolean(r.recommended),
+    }));
+    return {
+      availableCouriers: available,
+      recommendedCourierId: 101,
+      raw: { data: { available_courier_companies: available, recommended_courier_company_id: 101 } },
+    };
+  }
+
+  async assignAwb({ shipmentId, courierId = null } = {}) {
+    const awbCode = await this.generateAwb({ count: 1 });
+    return {
+      awbCode,
+      courierName: courierId === 102 ? 'Rupakar Air Priority' : 'Rupakar Express Logistics',
+      courierCompanyId: courierId || 101,
+      reused: false,
+    };
+  }
+
+  async generateLabel({ shipmentId } = {}) {
+    return {
+      labelUrl: `/api/v1/vendors/orders/mock/shipping-label?shipmentId=${shipmentId || ''}`,
+      labelCreated: true,
+      raw: {},
+    };
+  }
+
   async generateAwb({ count = 1 } = {}) {
     const awbs = [];
     for (let i = 0; i < count; i++) {
@@ -117,30 +214,50 @@ export class MockDeliveryProvider extends DeliveryProvider {
     return count === 1 ? awbs[0] : awbs;
   }
 
-  async createShipment({ shipmentNumber, order = {}, vendorOrder = {}, packageInfo = {}, serviceOption = null } = {}) {
+  async createShipment(payload = {}) {
+    const {
+      shipmentNumber,
+      order = {},
+      vendorOrder = {},
+      packageInfo = {},
+      serviceOption = null,
+      existingShipmentId = null,
+      existingAwb = null,
+      existingLabelUrl = null,
+      existingPickupStatus = null,
+    } = payload;
+
     const finalShipmentNumber = shipmentNumber || `SHIP-${Date.now().toString(36).toUpperCase()}`;
-    const trackingNumber = await this.generateAwb({ count: 1 });
+    const providerShipmentId = existingShipmentId || `MSHP-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const trackingNumber = existingAwb || (await this.generateAwb({ count: 1 }));
     const carrier = serviceOption?.carrier || 'Rupakar Express Logistics';
     const shippingMethod = serviceOption?.serviceCode || 'standard_surface';
     const shippingCost = serviceOption?.cost ?? (env.SHIPPING_BASE_FEE || 50);
     const estimatedDays = serviceOption?.estimatedDays || 3;
     const estimatedDeliveryAt = new Date(Date.now() + estimatedDays * 24 * 60 * 60 * 1000);
+    const labelUrl = existingLabelUrl || `/api/v1/vendors/orders/${vendorOrder?._id || ''}/shipping-label`;
+    const pickupStatus = existingPickupStatus === 'SCHEDULED' ? 'SCHEDULED' : 'SCHEDULED';
+    const pickupToken = `PKP-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
 
     return {
       shipmentNumber: finalShipmentNumber,
       trackingNumber,
-      providerShipmentId: `MSHP-${crypto.randomBytes(4).toString('hex').toUpperCase()}`,
+      providerShipmentId,
       carrier,
       shippingMethod,
       shippingCost,
       estimatedDeliveryAt,
       trackingUrl: `${env.FRONTEND_URL || 'http://localhost:3000'}/account/orders/${order?._id || ''}`,
-      labelUrl: `/api/v1/vendors/orders/${vendorOrder?._id || ''}/shipping-label`,
+      labelUrl,
       provider: 'mock',
       status: 'READY_TO_SHIP',
+      pickupStatus,
+      pickupToken,
+      pickupScheduledAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       metadata: {
         packageInfo,
         simulatedAt: new Date().toISOString(),
+        stagesCompleted: ['ORDER_CREATED', 'COURIER_SELECTED', 'AWB_ASSIGNED', 'LABEL_GENERATED', 'PICKUP_SCHEDULED'],
       },
     };
   }
@@ -839,36 +956,124 @@ export class ShiprocketProvider extends DeliveryProvider {
     }));
   }
 
-  async generateAwb({ shipmentId, courierId = null } = {}) {
-    if (!shipmentId) throw new AppError(400, 'SHIPMENT_ID_REQUIRED', 'Shipment ID required to generate Shiprocket AWB');
+  async getAvailableCouriers({ pickupPincode, deliveryPincode, weight = 0.5, dimensions = null, cod = false, shipmentId = null } = {}) {
+    const cleanPickup = String(pickupPincode ?? '').trim();
+    const cleanDelivery = String(deliveryPincode ?? '').trim();
+    const params = new URLSearchParams({
+      pickup_postcode: cleanPickup,
+      delivery_postcode: cleanDelivery,
+      weight: String(weight || 0.5),
+      cod: cod ? '1' : '0',
+    });
+    if (dimensions?.length) params.set('length', String(dimensions.length));
+    if (dimensions?.width || dimensions?.breadth) params.set('breadth', String(dimensions.width || dimensions.breadth));
+    if (dimensions?.height) params.set('height', String(dimensions.height));
+    if (shipmentId) params.set('shipment_id', String(shipmentId));
+
+    const res = await this.request(`/v1/external/courier/serviceability/?${params.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const safeError = extractSafeShiprocketErrorMessage(err, res.status);
+      throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_SERVICEABILITY_FAILED', safeError || 'Shiprocket serviceability lookup failed');
+    }
+
+    const data = await res.json().catch(() => ({}));
+    const companies = data?.data?.available_courier_companies || [];
+    const recommendedId = data?.data?.recommended_courier_company_id || data?.data?.recommended_by?.id || null;
+
+    return {
+      availableCouriers: companies,
+      recommendedCourierId: recommendedId,
+      raw: data,
+    };
+  }
+
+  async assignAwb({ shipmentId, courierId = null } = {}) {
+    if (!shipmentId) throw new AppError(400, 'SHIPMENT_ID_REQUIRED', 'Shipment ID required to assign Shiprocket AWB');
     const res = await this.request('/v1/external/courier/assign/awb', {
       method: 'POST',
       body: JSON.stringify({
         shipment_id: shipmentId,
-        ...(courierId ? { courier_id: courierId } : {}),
+        ...(courierId ? { courier_id: Number(courierId) } : {}),
       }),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new AppError(res.status, 'SHIPROCKET_AWB_FAILED', err?.message || 'Shiprocket AWB assignment failed');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || isShiprocketResponseRejection(data)) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status);
+      const alreadyAssigned = /already\s+(?:been\s+)?(?:assigned|generated)/i.test(safeError);
+      const extractedAwb = data?.response?.data?.awb_code || data?.awb_code || null;
+      if (alreadyAssigned && extractedAwb) {
+        return {
+          awbCode: extractedAwb,
+          courierName: data?.response?.data?.courier_name || null,
+          courierCompanyId: data?.response?.data?.courier_company_id || courierId || null,
+          reused: true,
+          raw: data,
+        };
+      }
+      throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_AWB_FAILED', safeError || 'Shiprocket AWB assignment failed');
     }
-    const data = await res.json();
-    return data?.response?.data?.awb_code || data?.awb_code || null;
+
+    const awbCode = data?.response?.data?.awb_code || data?.awb_code || null;
+    const courierName = data?.response?.data?.courier_name || null;
+    const courierCompanyId = data?.response?.data?.courier_company_id || courierId || null;
+
+    return {
+      awb: awbCode,
+      awbCode,
+      courierName,
+      courierCompanyId,
+      reused: false,
+      raw: data,
+    };
+  }
+
+  async generateAwb({ shipmentId, courierId = null } = {}) {
+    const result = await this.assignAwb({ shipmentId, courierId });
+    return result.awbCode;
+  }
+
+  async generateLabel({ shipmentId } = {}) {
+    if (!shipmentId) throw new AppError(400, 'SHIPMENT_ID_REQUIRED', 'Shipment ID required to generate Shiprocket label');
+    const numericId = Number(shipmentId);
+    const idToSend = !isNaN(numericId) ? numericId : String(shipmentId);
+    const res = await this.request('/v1/external/courier/generate/label', {
+      method: 'POST',
+      body: JSON.stringify({ shipment_id: [idToSend] }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || isShiprocketResponseRejection(data)) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status);
+      throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_LABEL_FAILED', safeError || 'Shiprocket label generation failed');
+    }
+    return {
+      labelUrl: data?.label_url || null,
+      labelCreated: Boolean(data?.label_created ?? true),
+      raw: data,
+    };
   }
 
   async createShipment(payload = {}) {
-    const {
-      shipmentNumber,
-      orderId,
-      orderNumber,
-      vendorOrderId,
-      pickupAddress = {},
-      deliveryAddress = {},
-      packageInfo = {},
-      items = [],
-      cod = false,
-      serviceOption = null,
-    } = payload;
+    const shipmentNumber = payload.shipmentNumber;
+    const orderId = payload.orderId;
+    const orderNumber = payload.orderNumber;
+    const vendorOrderId = payload.vendorOrderId;
+    const pickupAddress = payload.pickupAddress || {};
+    const deliveryAddress = payload.deliveryAddress || payload.customer || {};
+    const packageInfo = payload.packageInfo || payload.packageDetails || {};
+    const items = payload.items || [];
+    const cod = Boolean(payload.cod || payload.payment?.method === 'COD');
+    const serviceOption = payload.serviceOption || null;
+    let existingShipmentId = payload.existingShipmentId || null;
+    let existingAwb = payload.existingAwb || null;
+    let existingLabelUrl = payload.existingLabelUrl || null;
+    let existingPickupStatus = payload.existingPickupStatus || null;
+    let existingCourierCompanyId = payload.existingCourierCompanyId || payload.existingCourierId || null;
+    let existingCourierName = payload.existingCourierName || payload.existingCourier || null;
+
+    const stagesCompleted = [];
+    let srShipmentId = existingShipmentId ? Number(existingShipmentId) || existingShipmentId : null;
+    let srOrderId = null;
 
     const finalShipmentNumber = shipmentNumber || `SHIP-${Date.now().toString(36).toUpperCase()}`;
     const weightKg = Math.max(0.1, Number(packageInfo?.weight) || 0.5);
@@ -876,221 +1081,303 @@ export class ShiprocketProvider extends DeliveryProvider {
     const widthCm = Math.max(1, Number(packageInfo?.width) || 10);
     const heightCm = Math.max(1, Number(packageInfo?.height) || 5);
 
-    const orderItems = (Array.isArray(items) && items.length > 0
-      ? items
-      : [{ productName: 'Artisan Handicraft', quantity: 1, unitPrice: 500 }]
-    ).map((it, idx) => ({
-      name: it.productName || it.title || it.name || `Item ${idx + 1}`,
-      sku: it.sku || `SKU-${it.variantId || idx + 1}`,
-      units: Number(it.quantity) || 1,
-      selling_price: Number(it.unitPrice || it.price) || 100,
-    }));
+    // Stage 1: Order Creation & Shipment Recovery
+    if (srShipmentId) {
+      stagesCompleted.push('ORDER_CREATED');
+    } else {
+      const orderItems = (Array.isArray(items) && items.length > 0
+        ? items
+        : [{ productName: 'Artisan Handicraft', quantity: 1, unitPrice: 500 }]
+      ).map((it, idx) => ({
+        name: it.productName || it.title || it.name || `Item ${idx + 1}`,
+        sku: it.sku || `SKU-${it.variantId || idx + 1}`,
+        units: Number(it.quantity || it.units) || 1,
+        selling_price: Number(it.unitPrice || it.price || it.sellingPrice || it.selling_price) || 100,
+      }));
 
-    const subTotal = orderItems.reduce((acc, it) => acc + (it.units * it.selling_price), 0);
-    const orderIdStr = String(orderNumber || orderId || Date.now());
-    const srOrderIdCustom = vendorOrderId ? `${orderIdStr}-VO-${String(vendorOrderId).slice(-6)}` : orderIdStr;
+      const subTotal = orderItems.reduce((acc, it) => acc + (it.units * it.selling_price), 0);
+      const orderIdStr = String(orderNumber || orderId || Date.now());
+      const srOrderIdCustom = vendorOrderId ? `${orderIdStr}-VO-${String(vendorOrderId).slice(-6)}` : orderIdStr;
 
-    const resolvedPickupLocation = (pickupAddress.pickupLocationName || '').trim() || (this.mode === 'production' ? '' : ((pickupAddress.city || '').trim() || 'Primary'));
-    if (!resolvedPickupLocation) {
-      throw new AppError(400, 'PICKUP_LOCATION_REQUIRED', 'Vendor pickup location nickname is required for Shiprocket shipment creation');
-    }
-    if (pickupAddress.registrationStatus && pickupAddress.registrationStatus !== 'REGISTERED') {
-      throw new AppError(400, 'PICKUP_LOCATION_NOT_REGISTERED', `Pickup location "${resolvedPickupLocation}" has registration status ${pickupAddress.registrationStatus} and is not registered with Shiprocket`);
-    }
-
-    const rawCustomerPhone = deliveryAddress.phone || deliveryAddress.phoneNumber || deliveryAddress.mobile || '';
-    let normalizedCustomerPhone = normalizeIndianPhone10(rawCustomerPhone);
-
-    if (rawCustomerPhone && !normalizedCustomerPhone) {
-      throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Customer phone number must be a valid 10-digit Indian mobile number');
-    }
-
-    if (!normalizedCustomerPhone) {
-      normalizedCustomerPhone = '9876543210';
-    }
-
-    const rawPickupPhone = pickupAddress.phone || pickupAddress.phoneNumber || pickupAddress.mobile || '';
-    let normalizedPickupPhone = null;
-    if (rawPickupPhone) {
-      normalizedPickupPhone = normalizeIndianPhone10(rawPickupPhone);
-      if (!normalizedPickupPhone) {
-        throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Seller pickup phone number must be a valid 10-digit Indian mobile number');
+      const resolvedPickupLocation = (pickupAddress.pickupLocationName || '').trim() || (this.mode === 'production' ? '' : ((pickupAddress.city || '').trim() || 'Primary'));
+      if (!resolvedPickupLocation) {
+        throw new AppError(400, 'PICKUP_LOCATION_REQUIRED', 'Vendor pickup location nickname is required for Shiprocket shipment creation');
       }
-    }
+      if (pickupAddress.registrationStatus && pickupAddress.registrationStatus !== 'REGISTERED') {
+        throw new AppError(400, 'PICKUP_LOCATION_NOT_REGISTERED', `Pickup location "${resolvedPickupLocation}" has registration status ${pickupAddress.registrationStatus} and is not registered with Shiprocket`);
+      }
+      if (pickupAddress.adminStatus && pickupAddress.adminStatus !== 'APPROVED') {
+        let msg = 'Pickup location is awaiting admin approval.';
+        if (pickupAddress.adminStatus === 'DEACTIVATED') msg = 'Pickup location is deactivated by admin.';
+        if (pickupAddress.adminStatus === 'ARCHIVED') msg = 'Pickup location has been archived.';
+        throw new AppError(400, 'PICKUP_LOCATION_NOT_APPROVED', msg);
+      }
 
-    const adhocPayload = {
-      order_id: srOrderIdCustom,
-      order_date: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      pickup_location: resolvedPickupLocation,
-      billing_customer_name: deliveryAddress.fullName || deliveryAddress.name || deliveryAddress.recipientName || 'Valued Customer',
-      billing_last_name: deliveryAddress.lastName || '',
-      billing_address: [deliveryAddress.addressLine1 || deliveryAddress.line1 || deliveryAddress.street, deliveryAddress.addressLine2 || deliveryAddress.line2].filter(Boolean).join(', ') || 'Customer Address',
-      billing_city: deliveryAddress.city || 'Kolkata',
-      billing_pincode: deliveryAddress.postalCode || deliveryAddress.pincode || '700001',
-      billing_state: deliveryAddress.state || 'West Bengal',
-      billing_country: deliveryAddress.country || 'India',
-      billing_email: deliveryAddress.email || 'customer@rupakar.com',
-      billing_phone: normalizedCustomerPhone,
-      billing_customer_phone: normalizedCustomerPhone,
-      shipping_customer_phone: normalizedCustomerPhone,
-      ...(normalizedPickupPhone ? { pickup_phone: normalizedPickupPhone } : {}),
-      shipping_is_billing: true,
-      order_items: orderItems,
-      payment_method: cod ? 'COD' : 'Prepaid',
-      sub_total: subTotal,
-      length: lengthCm,
-      breadth: widthCm,
-      height: heightCm,
-      weight: weightKg,
-    };
+      const rawCustomerPhone = deliveryAddress.phone || deliveryAddress.phoneNumber || deliveryAddress.mobile || '';
+      let normalizedCustomerPhone = normalizeIndianPhone10(rawCustomerPhone);
 
-    const createRes = await this.request('/v1/external/orders/create/adhoc', {
-      method: 'POST',
-      body: JSON.stringify(adhocPayload),
-    });
+      if (rawCustomerPhone && !normalizedCustomerPhone) {
+        throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Customer phone number must be a valid 10-digit Indian mobile number');
+      }
 
-    const createData = await createRes.json().catch(() => ({}));
+      if (!normalizedCustomerPhone) {
+        normalizedCustomerPhone = '9876543210';
+      }
 
-    let srShipmentId = extractShiprocketShipmentId(createData);
-    let srOrderId = extractShiprocketOrderId(createData);
+      const rawPickupPhone = pickupAddress.phone || pickupAddress.phoneNumber || pickupAddress.mobile || '';
+      let normalizedPickupPhone = null;
+      if (rawPickupPhone) {
+        normalizedPickupPhone = normalizeIndianPhone10(rawPickupPhone);
+        if (!normalizedPickupPhone) {
+          throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Seller pickup phone number must be a valid 10-digit Indian mobile number');
+        }
+      }
 
-    if (!createRes.ok || isShiprocketResponseRejection(createData) || (!srShipmentId && (createData.message || createData.error || createData.errors))) {
-      const safeError = extractSafeShiprocketErrorMessage(createData, createRes.status);
-      const isDuplicateOrder =
-        createRes.status === 409 ||
-        /already\s+(?:been\s+)?(?:taken|exist)/i.test(safeError) ||
-        /order\s+id\s+already/i.test(safeError);
+      const adhocPayload = {
+        order_id: srOrderIdCustom,
+        order_date: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        pickup_location: resolvedPickupLocation,
+        billing_customer_name: deliveryAddress.fullName || deliveryAddress.name || deliveryAddress.recipientName || 'Valued Customer',
+        billing_last_name: deliveryAddress.lastName || '',
+        billing_address: [deliveryAddress.addressLine1 || deliveryAddress.line1 || deliveryAddress.street, deliveryAddress.addressLine2 || deliveryAddress.line2].filter(Boolean).join(', ') || 'Customer Address',
+        billing_city: deliveryAddress.city || 'Kolkata',
+        billing_pincode: deliveryAddress.postalCode || deliveryAddress.pincode || '700001',
+        billing_state: deliveryAddress.state || 'West Bengal',
+        billing_country: deliveryAddress.country || 'India',
+        billing_email: deliveryAddress.email || 'customer@rupakar.com',
+        billing_phone: normalizedCustomerPhone,
+        billing_customer_phone: normalizedCustomerPhone,
+        shipping_customer_phone: normalizedCustomerPhone,
+        ...(normalizedPickupPhone ? { pickup_phone: normalizedPickupPhone } : {}),
+        shipping_is_billing: true,
+        order_items: orderItems,
+        payment_method: cod ? 'COD' : 'Prepaid',
+        sub_total: subTotal,
+        length: lengthCm,
+        breadth: widthCm,
+        height: heightCm,
+        weight: weightKg,
+      };
 
-      if (isDuplicateOrder) {
-        try {
-          const listRes = await this.request(`/v1/external/orders?channel_order_id=${encodeURIComponent(srOrderIdCustom)}`);
-          if (listRes.ok) {
-            const listData = await listRes.json().catch(() => ({}));
-            const existingOrder = Array.isArray(listData?.data)
-              ? listData.data.find((o) => o.channel_order_id === srOrderIdCustom || String(o.order_id) === srOrderIdCustom)
-              : null;
-            const existingShipmentId = extractShiprocketShipmentId(existingOrder);
-            if (existingShipmentId) {
-              srShipmentId = existingShipmentId;
-              srOrderId = extractShiprocketOrderId(existingOrder) || existingOrder?.id || srOrderId;
+      const createRes = await this.request('/v1/external/orders/create/adhoc', {
+        method: 'POST',
+        body: JSON.stringify(adhocPayload),
+      });
+
+      const createData = await createRes.json().catch(() => ({}));
+
+      srShipmentId = extractShiprocketShipmentId(createData);
+      srOrderId = extractShiprocketOrderId(createData);
+
+      if (!createRes.ok || isShiprocketResponseRejection(createData) || (!srShipmentId && (createData.message || createData.error || createData.errors))) {
+        const safeError = extractSafeShiprocketErrorMessage(createData, createRes.status);
+        const isDuplicateOrder =
+          createRes.status === 409 ||
+          /already\s+(?:been\s+)?(?:taken|exist)/i.test(safeError) ||
+          /order\s+id\s+already/i.test(safeError);
+
+        if (isDuplicateOrder) {
+          try {
+            const listRes = await this.request(`/v1/external/orders?channel_order_id=${encodeURIComponent(srOrderIdCustom)}`);
+            if (listRes.ok) {
+              const listData = await listRes.json().catch(() => ({}));
+              const existingOrder = Array.isArray(listData?.data)
+                ? listData.data.find((o) => o.channel_order_id === srOrderIdCustom || String(o.order_id) === srOrderIdCustom)
+                : null;
+              const foundShipmentId = extractShiprocketShipmentId(existingOrder);
+              if (foundShipmentId) {
+                srShipmentId = foundShipmentId;
+                srOrderId = extractShiprocketOrderId(existingOrder) || existingOrder?.id || srOrderId;
+                const recoveredAwb = existingOrder?.shipments?.[0]?.awb || existingOrder?.awb_code || existingOrder?.awb || null;
+                if (recoveredAwb && !existingAwb) {
+                  existingAwb = recoveredAwb;
+                }
+              }
             }
+          } catch {
+            // Fall through to error
           }
-        } catch {
-          // Fall through to error
+        }
+
+        if (!srShipmentId) {
+          const errorStatusCode = createRes.status >= 400
+            ? createRes.status
+            : (Number(createData?.status_code) >= 400 && Number(createData?.status_code) < 600
+              ? Number(createData.status_code)
+              : 422);
+
+          const isPickupLocationRejection =
+            /wrong pickup location/i.test(safeError) ||
+            /pickup location.*not registered/i.test(safeError) ||
+            /choose one location from the data given/i.test(safeError) ||
+            Boolean(createData?.errors?.pickup_location) ||
+            /pickup_location/i.test(safeError);
+
+          let finalErrorMessage = safeError;
+          if (isPickupLocationRejection) {
+            finalErrorMessage = `Pickup location "${resolvedPickupLocation}" is not registered in Shiprocket: ${safeError}. Please ensure the pickup location nickname in Settings matches a registered pickup address nickname in your Shiprocket panel (Settings > Pickup Address).`;
+          }
+
+          throw new AppError(errorStatusCode, 'SHIPROCKET_ORDER_FAILED', finalErrorMessage);
         }
       }
 
       if (!srShipmentId) {
-        const errorStatusCode = createRes.status >= 400
-          ? createRes.status
-          : (Number(createData?.status_code) >= 400 && Number(createData?.status_code) < 600
-            ? Number(createData.status_code)
-            : 422);
+        throw new AppError(502, 'SHIPROCKET_SHIPMENT_ID_MISSING', 'Shiprocket response did not include shipment_id');
+      }
 
-        const isPickupLocationRejection =
-          /wrong pickup location/i.test(safeError) ||
-          /pickup location.*not registered/i.test(safeError) ||
-          /choose one location from the data given/i.test(safeError) ||
-          Boolean(createData?.errors?.pickup_location) ||
-          /pickup_location/i.test(safeError);
+      stagesCompleted.push('ORDER_CREATED');
+    }
 
-        let finalErrorMessage = safeError;
-        if (isPickupLocationRejection) {
-          finalErrorMessage = `Pickup location "${resolvedPickupLocation}" is not registered in Shiprocket: ${safeError}. Please ensure the pickup location nickname in Settings matches a registered pickup address nickname in your Shiprocket panel (Settings > Pickup Address).`;
+    // Stage 2: Automatic Courier Selection
+    let courierCompanyId = existingCourierCompanyId || serviceOption?.courierCompanyId || (serviceOption?.serviceCode && !isNaN(Number(serviceOption.serviceCode)) ? Number(serviceOption.serviceCode) : null);
+    let courierName = existingCourierName || serviceOption?.carrier || null;
+    let courierRate = serviceOption?.cost || 50;
+    let courierEtd = serviceOption?.estimatedDays || 3;
+
+    if (!existingAwb) {
+      try {
+        const serviceabilityResult = await this.getAvailableCouriers({
+          pickupPincode: pickupAddress.pincode || pickupAddress.postalCode,
+          deliveryPincode: deliveryAddress.postalCode || deliveryAddress.pincode,
+          weight: weightKg,
+          dimensions: { length: lengthCm, width: widthCm, height: heightCm },
+          cod,
+          shipmentId: srShipmentId,
+        });
+
+        if (Array.isArray(serviceabilityResult?.availableCouriers) && serviceabilityResult.availableCouriers.length > 0) {
+          const chosen = selectDeterministicCourier(serviceabilityResult.availableCouriers, {
+            cod,
+            recommendedCourierId: serviceabilityResult.recommendedCourierId,
+          });
+          if (chosen) {
+            courierCompanyId = Number(chosen.courier_company_id ?? chosen.id) || courierCompanyId;
+            courierName = chosen.courier_name || courierName;
+            courierRate = Math.round(Number(chosen.rate) || courierRate);
+            courierEtd = Number(chosen.estimated_delivery_days || chosen.etd) || courierEtd;
+            stagesCompleted.push('COURIER_ASSIGNED');
+          }
         }
-
-        throw new AppError(errorStatusCode, 'SHIPROCKET_ORDER_FAILED', finalErrorMessage);
+      } catch {
+        // Continue with serviceOption fallback
       }
     }
 
-    if (!srShipmentId) {
-      throw new AppError(502, 'SHIPROCKET_SHIPMENT_ID_MISSING', 'Shiprocket response did not include shipment_id');
+    if (!stagesCompleted.includes('COURIER_ASSIGNED') && (courierCompanyId || courierName)) {
+      stagesCompleted.push('COURIER_ASSIGNED');
     }
 
-    // Step 2: Assign Courier & AWB
-    let awbCode = null;
-    let courierName = serviceOption?.carrier || null;
-    const courierCompanyId = serviceOption?.courierCompanyId || (serviceOption?.serviceCode && !isNaN(Number(serviceOption.serviceCode)) ? Number(serviceOption.serviceCode) : null);
+    // Stage 3: Automatic AWB Assignment
+    let awbCode = existingAwb || null;
+    let awbError = null;
 
-    try {
-      const awbRes = await this.request('/v1/external/courier/assign/awb', {
-        method: 'POST',
-        body: JSON.stringify({
-          shipment_id: srShipmentId,
-          ...(courierCompanyId ? { courier_id: courierCompanyId } : {}),
-        }),
-      });
-
-      if (awbRes.ok) {
-        const awbData = await awbRes.json();
-        awbCode = awbData?.response?.data?.awb_code || awbData?.awb_code || null;
-        courierName = awbData?.response?.data?.courier_name || courierName;
+    if (existingAwb) {
+      stagesCompleted.push('AWB_GENERATED');
+    } else {
+      try {
+        const awbResult = await this.assignAwb({
+          shipmentId: srShipmentId,
+          courierId: courierCompanyId,
+        });
+        if (awbResult?.awbCode) {
+          awbCode = awbResult.awbCode;
+          courierName = awbResult.courierName || courierName;
+          if (awbResult.courierCompanyId) courierCompanyId = awbResult.courierCompanyId;
+          stagesCompleted.push('AWB_GENERATED');
+        }
+      } catch (awbErr) {
+        awbError = awbErr.message || 'AWB assignment failed';
       }
-    } catch {
-      // Continue if AWB assignment is async/pending
     }
 
-    // Step 3: Fetch label if available
-    let labelUrl = null;
-    try {
-      const labelRes = await this.request('/v1/external/courier/generate/label', {
-        method: 'POST',
-        body: JSON.stringify({ shipment_id: [srShipmentId] }),
-      });
-      if (labelRes.ok) {
-        const labelData = await labelRes.json();
-        labelUrl = labelData?.label_url || null;
+    // Stage 4: Automatic Label Generation
+    let labelUrl = existingLabelUrl && !existingLabelUrl.includes('/api/v1/vendors/orders/') ? existingLabelUrl : null;
+    let labelError = null;
+
+    if (labelUrl) {
+      stagesCompleted.push('LABEL_GENERATED');
+    } else if (awbCode) {
+      try {
+        const labelResult = await this.generateLabel({ shipmentId: srShipmentId });
+        if (labelResult?.labelUrl) {
+          labelUrl = labelResult.labelUrl;
+          stagesCompleted.push('LABEL_GENERATED');
+        }
+      } catch (lblErr) {
+        labelError = lblErr.message || 'Label generation failed';
       }
-    } catch {
-      // Fallback to internal PDF
     }
 
-    // Step 4: Request pickup
-    let pickupStatus = 'PENDING';
+    if (!labelUrl) {
+      labelUrl = `/api/v1/vendors/orders/${vendorOrderId}/shipping-label`;
+    }
+
+    // Stage 5: Automatic Pickup Scheduling
+    let pickupStatus = existingPickupStatus === 'SCHEDULED' ? 'SCHEDULED' : 'PENDING';
     let pickupToken = null;
     let pickupScheduledAt = null;
-    try {
-      const pickupRes = await this.request('/v1/external/couriers/generate/pickup', {
-        method: 'POST',
-        body: JSON.stringify({ shipment_id: [srShipmentId] }),
-      });
-      if (pickupRes.ok) {
-        const pickupData = await pickupRes.json();
-        if (pickupData?.pickup_status === 1 || pickupData?.response?.pickup_token_number) {
+    let pickupError = null;
+
+    if (pickupStatus === 'SCHEDULED') {
+      stagesCompleted.push('PICKUP_REQUESTED');
+    } else if (awbCode) {
+      try {
+        const pickupResult = await this.requestPickup({
+          shipmentId: srShipmentId,
+          trackingNumber: awbCode,
+          expectedPackageCount: 1,
+        });
+        if (pickupResult?.scheduled || pickupResult?.status === 'SCHEDULED' || pickupResult?.pickupToken) {
           pickupStatus = 'SCHEDULED';
-          pickupToken = String(pickupData.response?.pickup_token_number || `PKP-SR-${srShipmentId}`);
-          pickupScheduledAt = pickupData.response?.pickup_scheduled_date ? new Date(pickupData.response.pickup_scheduled_date) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+          pickupToken = pickupResult.pickupToken;
+          pickupScheduledAt = pickupResult.pickupDate ? new Date(pickupResult.pickupDate) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+          stagesCompleted.push('PICKUP_REQUESTED');
         }
+      } catch (pkpErr) {
+        pickupStatus = 'FAILED';
+        pickupError = pkpErr.message || 'Pickup scheduling failed';
       }
-    } catch {
-      // Pickup remains pending for retry
     }
 
     return {
       shipmentNumber: finalShipmentNumber,
       trackingNumber: awbCode || `SR${srShipmentId}`,
       providerShipmentId: String(srShipmentId),
+      shipmentId: srShipmentId,
+      providerOrderId: srOrderId,
       carrier: courierName || 'Shiprocket Courier',
-      shippingMethod: serviceOption?.serviceCode || 'standard',
-      shippingCost: serviceOption?.cost || 50,
-      estimatedDeliveryAt: new Date(Date.now() + (serviceOption?.estimatedDays || 3) * 24 * 60 * 60 * 1000),
+      shippingMethod: serviceOption?.serviceCode || String(courierCompanyId || 'standard'),
+      shippingCost: courierRate,
+      estimatedDeliveryAt: new Date(Date.now() + (Number(courierEtd) || 3) * 24 * 60 * 60 * 1000),
       trackingUrl: awbCode ? `https://shiprocket.co/tracking/${awbCode}` : null,
-      labelUrl: labelUrl || `/api/v1/vendors/orders/${vendorOrderId}/shipping-label`,
+      labelUrl,
       provider: 'shiprocket',
       status: 'READY_TO_SHIP',
       pickupStatus,
       pickupToken,
       pickupScheduledAt,
+      labelError,
+      pickupError,
+      stagesCompleted,
       metadata: {
         shiprocketOrderId: srOrderId,
         shiprocketShipmentId: srShipmentId,
         courierCompanyId,
+        courierName: courierName || 'Shiprocket Courier',
         packageInfo,
+        stagesCompleted,
+        awbError,
+        labelError,
+        pickupError,
+        awbAssignedAt: awbCode ? new Date().toISOString() : null,
+        labelGeneratedAt: labelUrl && !labelUrl.includes('/api/v1/vendors/orders/') ? new Date().toISOString() : null,
+        pickupRequestedAt: pickupStatus === 'SCHEDULED' ? new Date().toISOString() : null,
       },
     };
   }
 
-  async requestPickup({ shipmentNumber, trackingNumber, shipmentId, pickupAddress = {}, expectedPackageCount = 1 } = {}) {
+  async requestPickup({ shipmentNumber, trackingNumber, shipmentId, pickupAddress = {}, expectedPackageCount = 1, pickupDate = null } = {}) {
     const targetShipmentId = shipmentId || (trackingNumber && trackingNumber.startsWith('SR') ? trackingNumber.replace(/^SR/, '') : null);
     if (!targetShipmentId) {
       return {
@@ -1101,29 +1388,38 @@ export class ShiprocketProvider extends DeliveryProvider {
       };
     }
 
-    const res = await this.request('/v1/external/couriers/generate/pickup', {
-      method: 'POST',
-      body: JSON.stringify({ shipment_id: [Number(targetShipmentId)] }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new AppError(res.status, 'SHIPROCKET_PICKUP_FAILED', err?.message || 'Shiprocket pickup request failed');
+    const numericId = Number(targetShipmentId);
+    const idToSend = !isNaN(numericId) ? numericId : String(targetShipmentId);
+    const payload = { shipment_id: [idToSend] };
+    if (pickupDate) {
+      payload.pickup_date = typeof pickupDate === 'string' ? pickupDate.slice(0, 10) : new Date(pickupDate).toISOString().slice(0, 10);
     }
 
-    const data = await res.json();
-    const pickupToken = String(data?.response?.pickup_token_number || `PKP-SR-${targetShipmentId}`);
-    const pickupDate = data?.response?.pickup_scheduled_date || new Date().toISOString();
+    const res = await this.request('/v1/external/courier/generate/pickup', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || isShiprocketResponseRejection(data)) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status);
+      throw new AppError(res.status >= 400 && res.status < 600 ? res.status : 502, 'SHIPROCKET_PICKUP_FAILED', safeError || 'Shiprocket pickup request failed');
+    }
+
+    const pickupToken = String(data?.response?.pickup_token_number || data?.pickup_token_number || `PKP-SR-${targetShipmentId}`);
+    const scheduledDate = data?.response?.pickup_scheduled_date || data?.pickup_scheduled_date || (pickupDate ? new Date(pickupDate).toISOString() : new Date().toISOString());
 
     return {
       scheduled: true,
       pickupToken,
-      pickupDate,
+      pickupDate: scheduledDate,
+      scheduledDate,
       expectedPackageCount,
       trackingNumber,
       status: 'SCHEDULED',
       message: 'Shiprocket pickup scheduled successfully',
       provider: 'shiprocket',
+      raw: data,
     };
   }
 

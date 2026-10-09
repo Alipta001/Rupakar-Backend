@@ -415,6 +415,19 @@ export const readyVendorOrder = async (req, res, next) => {
       }
     }
 
+    if (hasConfiguredPickup) {
+      const adminStatus = vendor.pickupAddress.adminStatus || 'APPROVED';
+      if (adminStatus !== 'APPROVED') {
+        let msg = 'Pickup location is awaiting admin approval.';
+        if (adminStatus === 'DEACTIVATED') {
+          msg = 'Pickup location is deactivated by admin.';
+        } else if (adminStatus === 'ARCHIVED') {
+          msg = 'Pickup location has been archived.';
+        }
+        throw new AppError(400, 'PICKUP_LOCATION_NOT_APPROVED', msg);
+      }
+    }
+
     const pickupAddress = hasConfiguredPickup ? {
       pickupLocationName: vendor.pickupAddress.pickupLocationName,
       contactPerson: vendor.pickupAddress.contactPerson || vendor.businessName,
@@ -428,6 +441,7 @@ export const readyVendorOrder = async (req, res, next) => {
       pincode: vendor.pickupAddress.pincode,
       country: vendor.pickupAddress.country || 'India',
       registrationStatus: vendor.pickupAddress.registrationStatus || 'PENDING',
+      adminStatus: vendor.pickupAddress.adminStatus || (vendor.pickupAddress.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING'),
       shiprocketPickupId: vendor.pickupAddress.shiprocketPickupId || null,
     } : {
       pickupLocationName: vendor.pickupAddress?.pickupLocationName || vendor.businessName || 'Primary',
@@ -449,61 +463,18 @@ export const readyVendorOrder = async (req, res, next) => {
     };
 
     try {
-      if (!shipment) {
-        shipment = await shippingService.createShipment({
-          orderId: order._id,
-          orderNumber: order.orderNumber,
-          vendorOrderId: vendorOrder._id,
-          vendorId: vendor._id,
-          customerId: order.customerId,
-          pickupAddress,
-          deliveryAddress,
-          packageInfo,
-          items: vendorOrder.items,
-          cod: order.paymentMethod === 'cod',
-        });
-      } else {
-        shipment.packageInfo = packageInfo;
-        shipment.pickupAddress = (shipment.pickupAddress && Object.keys(shipment.pickupAddress).length > 0 && shipment.pickupAddress.pickupLocationName)
-          ? shipment.pickupAddress
-          : pickupAddress;
-        shipment.deliveryAddress = shipment.deliveryAddress && Object.keys(shipment.deliveryAddress).length > 0 ? shipment.deliveryAddress : deliveryAddress;
-
-        const bestOption = await shippingService.determineBestShippingOption({
-          pickupAddress,
-          deliveryAddress,
-          packageInfo,
-          cod: order.paymentMethod === 'cod',
-        });
-        shipment.carrier = bestOption.carrier;
-        shipment.shippingMethod = bestOption.serviceCode;
-        shipment.shippingCost = bestOption.cost;
-
-        if (!shipment.trackingNumber) {
-          shipment.trackingNumber = `TRK-${Date.now().toString(36).toUpperCase()}`;
-        }
-        if (!shipment.labelUrl) {
-          shipment.labelUrl = `/api/v1/vendors/orders/${vendorOrder._id}/shipping-label`;
-        }
-
-        try {
-          const pickupResult = await deliveryProvider.requestPickup({
-            shipmentNumber: shipment.shipmentNumber,
-            trackingNumber: shipment.trackingNumber,
-            pickupAddress,
-            packageCount: 1,
-            totalWeight: packageInfo.weight || 0.5,
-          });
-          if (pickupResult?.status === 'SUCCESS' || pickupResult?.pickupToken) {
-            shipment.pickupStatus = 'REQUESTED';
-            shipment.pickupToken = pickupResult.pickupToken;
-            shipment.pickupScheduledAt = pickupResult.pickupDate ? new Date(pickupResult.pickupDate) : new Date(Date.now() + 24 * 60 * 60 * 1000);
-          }
-        } catch {
-          shipment.pickupStatus = 'PENDING';
-        }
-        await shipment.save();
-      }
+      shipment = await shippingService.createShipment({
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        vendorOrderId: vendorOrder._id,
+        vendorId: vendor._id,
+        customerId: order.customerId || order.userId || order.user?._id || order.user,
+        pickupAddress,
+        deliveryAddress,
+        packageInfo,
+        items: vendorOrder.items,
+        cod: order.paymentMethod === 'cod',
+      });
     } catch (shipmentCreationErr) {
       if (newlyDecrementedItems.length > 0) {
         for (const rolledItem of newlyDecrementedItems) {
@@ -520,14 +491,16 @@ export const readyVendorOrder = async (req, res, next) => {
       throw shipmentCreationErr;
     }
 
-    await shipmentStateService.transitionShipmentStatus(shipment.status, 'READY_TO_SHIP', {
-      shipmentId: shipment._id,
-      actorType: 'VENDOR',
-      actorId: req.user.sub,
-      reason: 'Ready for carrier handoff',
-    });
-    shipment.status = 'READY_TO_SHIP';
-    await shipment.save();
+    if (shipment.status !== 'READY_TO_SHIP' && !['SHIPPED', 'PICKUP_REQUESTED', 'IN_TRANSIT', 'DELIVERED'].includes(shipment.status)) {
+      await shipmentStateService.transitionShipmentStatus(shipment.status, 'READY_TO_SHIP', {
+        shipmentId: shipment._id,
+        actorType: 'VENDOR',
+        actorId: req.user.sub,
+        reason: 'Ready for carrier handoff',
+      });
+      shipment.status = 'READY_TO_SHIP';
+      await shipment.save();
+    }
 
     await ShipmentTrackingEvent.create({
       shipmentId: shipment._id,
@@ -784,6 +757,10 @@ export const downloadVendorShippingLabel = async (req, res, next) => {
     const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
     if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found for this order');
 
+    if (shipment.labelUrl && /^https?:\/\//i.test(shipment.labelUrl)) {
+      return res.redirect(shipment.labelUrl);
+    }
+
     const order = await Order.findById(vendorOrder.parentOrderId).lean();
     if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Parent order not found');
 
@@ -807,6 +784,10 @@ export const downloadAdminShippingLabel = async (req, res, next) => {
     const shipment = await Shipment.findById(req.params.id);
     if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
 
+    if (shipment.labelUrl && /^https?:\/\//i.test(shipment.labelUrl)) {
+      return res.redirect(shipment.labelUrl);
+    }
+
     const vendorOrder = await VendorOrder.findById(shipment.vendorOrderId);
     const order = await Order.findById(shipment.orderId).lean();
     const vendor = await Vendor.findById(shipment.vendorId).lean();
@@ -821,6 +802,93 @@ export const downloadAdminShippingLabel = async (req, res, next) => {
     res.setHeader('Content-Type', pdfResult.contentType || 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${pdfResult.filename || 'shipping-label.pdf'}"`);
     return res.send(pdfResult.content);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const retryVendorShipment = async (req, res, next) => {
+  try {
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null, status: 'APPROVED' });
+    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Only approved vendors can retry shipments');
+
+    const orderId = req.params.orderId || req.params.id;
+    const vendorOrder = await VendorOrder.findOne({ _id: orderId, vendorId: vendor._id });
+    if (!vendorOrder) throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
+
+    const shipment = await Shipment.findOne({ vendorOrderId: vendorOrder._id });
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found for this order');
+
+    const order = await Order.findById(vendorOrder.parentOrderId).lean();
+
+    const updatedShipment = await shippingService.createShipment({
+      orderId: order?._id || shipment.orderId,
+      orderNumber: order?.orderNumber,
+      vendorOrderId: vendorOrder._id,
+      vendorId: vendor._id,
+      customerId: order?.customerId || shipment.customerId,
+      pickupAddress: shipment.pickupAddress,
+      deliveryAddress: shipment.deliveryAddress,
+      packageInfo: shipment.packageInfo,
+      items: vendorOrder.items,
+      cod: order?.paymentMethod === 'cod',
+    });
+
+    sendSuccess(res, { shipment: updatedShipment.toObject ? updatedShipment.toObject() : updatedShipment, vendorOrder }, 'Shipment fulfillment retried successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const retryAdminFulfillment = async (req, res, next) => {
+  try {
+    const shipment = await Shipment.findById(req.params.id);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+
+    const vendorOrder = await VendorOrder.findById(shipment.vendorOrderId);
+    const order = await Order.findById(shipment.orderId).lean();
+
+    const updated = await shippingService.createShipment({
+      orderId: shipment.orderId,
+      orderNumber: order?.orderNumber,
+      vendorOrderId: shipment.vendorOrderId,
+      vendorId: shipment.vendorId,
+      customerId: shipment.customerId,
+      pickupAddress: shipment.pickupAddress,
+      deliveryAddress: shipment.deliveryAddress,
+      packageInfo: shipment.packageInfo,
+      items: vendorOrder?.items || [],
+      cod: order?.paymentMethod === 'cod',
+    });
+
+    sendSuccess(res, updated.toObject ? updated.toObject() : updated, 'Shipment fulfillment completed', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const assignAdminAwb = async (req, res, next) => {
+  try {
+    const shipment = await Shipment.findById(req.params.id);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+
+    const updated = await shippingService.assignAwb({
+      shipmentId: shipment._id,
+      courierId: req.body?.courierId || req.body?.courierCompanyId || null,
+    });
+    sendSuccess(res, updated, 'AWB assigned successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const generateAdminLabel = async (req, res, next) => {
+  try {
+    const shipment = await Shipment.findById(req.params.id);
+    if (!shipment) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found');
+
+    const updated = await shippingService.generateLabel({ shipmentId: shipment._id });
+    sendSuccess(res, updated, 'Label generated successfully', String(req.headers['x-request-id'] ?? ''));
   } catch (error) {
     next(error);
   }

@@ -95,7 +95,13 @@ export class VendorService {
     if (!vendor) {
       throw new AppError(404, 'VENDOR_NOT_FOUND', 'Vendor record not found');
     }
-    return (vendor.pickupAddress && vendor.pickupAddress.pincode) ? vendor.pickupAddress : null;
+    if (!vendor.pickupAddress || !vendor.pickupAddress.pincode) return null;
+    const effectiveAdminStatus = vendor.pickupAddress.adminStatus ||
+      (vendor.pickupAddress.registrationStatus === 'REGISTERED' ? 'APPROVED' : 'PENDING');
+    return {
+      ...vendor.pickupAddress,
+      adminStatus: effectiveAdminStatus,
+    };
   }
 
   async updatePickupAddress(ownerUserId, payload) {
@@ -129,6 +135,7 @@ export class VendorService {
         registrationStatus: 'REGISTERED',
         registeredAt: new Date(),
         registrationError: null,
+        adminStatus: 'PENDING',
       };
       await vendor.save();
       return typeof vendor.toObject === 'function' ? vendor.toObject() : vendor;
@@ -139,6 +146,7 @@ export class VendorService {
         registrationStatus: 'FAILED',
         registeredAt: null,
         registrationError: regError.message || 'Pickup location registration failed',
+        adminStatus: 'PENDING',
       };
       await vendor.save().catch(() => null);
       throw regError;
