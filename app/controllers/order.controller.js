@@ -43,15 +43,76 @@ export const listOrders = async (req, res, next) => {
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
     const status = String(req.query.status || '').toUpperCase();
-    const statusMap = { PENDING: ['PENDING_PAYMENT', 'PAID', 'PROCESSING', 'PACKED', 'OUT_FOR_DELIVERY'], CONFIRMED: ['CONFIRMED'], CANCELLED: ['CANCELLED'], SHIPPED: ['SHIPPED'], DELIVERED: ['DELIVERED'] };
-    const filter = { customerId: req.user.sub, ...(statusMap[status] ? { status: { $in: statusMap[status] } } : {}) };
+    const statusMap = {
+      PENDING: ['PENDING_PAYMENT', 'PAID', 'PROCESSING', 'PACKED', 'READY_TO_SHIP'],
+      CONFIRMED: ['CONFIRMED'],
+      SHIPPED: ['SHIPPED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY'],
+      DELIVERED: ['DELIVERED'],
+      CANCELLED: ['CANCELLED', 'FAILED'],
+    };
+
+    const filter = { customerId: req.user.sub };
+
+    if (status && status !== 'ALL') {
+      if (statusMap[status]) {
+        filter.status = { $in: statusMap[status] };
+      } else {
+        filter.status = status;
+      }
+    }
+
+    const search = String(req.query.search || req.query.q || '').trim();
+    if (search) {
+      const searchRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [
+        { orderNumber: searchRegex },
+        { 'items.productName': searchRegex },
+        { 'items.sku': searchRegex },
+      ];
+    }
+
+    const timeframe = String(req.query.timeframe || '').toLowerCase();
+    const from = req.query.from ? new Date(req.query.from) : null;
+    const to = req.query.to ? new Date(req.query.to) : null;
+
+    if (from || to) {
+      filter.createdAt = {};
+      if (from && !isNaN(from.getTime())) filter.createdAt.$gte = from;
+      if (to && !isNaN(to.getTime())) filter.createdAt.$lte = to;
+    } else if (timeframe && timeframe !== 'all') {
+      const now = new Date();
+      if (timeframe === '30days' || timeframe === 'last30days') {
+        filter.createdAt = { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) };
+      } else if (timeframe === '3months' || timeframe === 'last3months' || timeframe === '90days') {
+        filter.createdAt = { $gte: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000) };
+      } else if (timeframe === '6months' || timeframe === 'last6months' || timeframe === '180days') {
+        filter.createdAt = { $gte: new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000) };
+      } else if (timeframe === 'year' || timeframe === 'lastyear' || timeframe === '1year') {
+        filter.createdAt = { $gte: new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000) };
+      } else if (/^\d{4}$/.test(timeframe)) {
+        const year = parseInt(timeframe, 10);
+        filter.createdAt = {
+          $gte: new Date(year, 0, 1),
+          $lte: new Date(year, 11, 31, 23, 59, 59, 999),
+        };
+      }
+    }
+
     const [orders, total] = await Promise.all([
       Order.find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       Order.countDocuments(filter),
     ]);
     res.status(200).json({
       success: true,
-      data: { items: orders, page, limit, total, totalPages: total ? Math.ceil(total / limit) : 0, hasNext: page * limit < total, hasPrevious: page > 1 },
+      data: {
+        items: orders,
+        page,
+        limit,
+        total,
+        totalPages: total ? Math.ceil(total / limit) : 0,
+        hasNext: page * limit < total,
+        hasPrevious: page > 1,
+      },
       message: 'Orders loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
