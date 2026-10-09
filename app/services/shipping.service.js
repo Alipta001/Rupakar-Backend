@@ -227,8 +227,15 @@ export class ShippingService {
       cod,
     });
 
-    const activeCarrier = carrier || existing?.carrier || selectedOption.carrier;
-    const activeProvider = provider || (activeCarrier && activeCarrier.includes('mock') ? 'mock' : null) || existing?.provider || env.DELIVERY_PROVIDER || selectedOption.provider;
+    const activeProvider = provider
+      || (carrier && carrier.includes('mock') ? 'mock' : null)
+      || env.DELIVERY_PROVIDER
+      || (existing?.provider && existing.provider !== 'mock' ? existing.provider : null)
+      || selectedOption.provider
+      || 'mock';
+    const activeCarrier = carrier
+      || (existing?.carrier && !existing.carrier.includes('mock') ? existing.carrier : null)
+      || selectedOption.carrier;
     const activeMethod = shippingMethod || existing?.shippingMethod || selectedOption.serviceCode;
     const activeCost = selectedOption.cost || existing?.shippingCost || 0;
 
@@ -244,6 +251,11 @@ export class ShippingService {
       ? existing.packageInfo
       : packageInfo;
 
+    const canReuseProviderShipment = Boolean(
+      existing?.providerShipmentId &&
+      (existing.provider === activeProvider || (!existing.provider && activeProvider === 'mock'))
+    );
+
     const activeDeliveryProvider = activeProvider ? getDeliveryProvider(activeProvider) : deliveryProvider;
     const providerShipment = await activeDeliveryProvider.createShipment({
       shipmentNumber,
@@ -256,24 +268,27 @@ export class ShippingService {
       items,
       cod,
       serviceOption: selectedOption,
-      existingShipmentId: existing?.providerShipmentId || null,
-      existingAwb: hasValidAwb ? existing.trackingNumber : null,
-      existingLabelUrl: existing?.labelUrl && !existing.labelUrl.includes('/api/v1/vendors/orders/') ? existing.labelUrl : null,
-      existingPickupStatus: existing?.pickupStatus || null,
-      existingCourierCompanyId: existing?.metadata?.courierCompanyId || null,
-      existingCourierName: existing?.carrier || null,
+      existingShipmentId: canReuseProviderShipment ? existing.providerShipmentId : null,
+      existingOrderId: canReuseProviderShipment ? (existing?.providerOrderId || existing?.metadata?.shiprocketOrderId || null) : null,
+      existingAwb: hasValidAwb && canReuseProviderShipment ? existing.trackingNumber : null,
+      existingLabelUrl: canReuseProviderShipment && existing?.labelUrl && !existing.labelUrl.includes('/api/v1/vendors/orders/') ? existing.labelUrl : null,
+      existingPickupStatus: canReuseProviderShipment ? existing?.pickupStatus || null : null,
+      existingCourierCompanyId: canReuseProviderShipment ? (existing?.metadata?.courierCompanyId || null) : null,
+      existingCourierName: canReuseProviderShipment ? (existing?.carrier || null) : null,
     });
 
-    const providerShipmentId = providerShipment.providerShipmentId || providerShipment.shipmentId || existing?.providerShipmentId || null;
+    const providerShipmentId = providerShipment.providerShipmentId || providerShipment.shipmentId || (canReuseProviderShipment ? existing?.providerShipmentId : null) || null;
+    const providerOrderId = providerShipment.providerOrderId || (canReuseProviderShipment ? (existing?.providerOrderId || existing?.metadata?.shiprocketOrderId) : null) || null;
     const trackingNumber = isAuthenticAwb(providerShipment.trackingNumber, providerShipmentId)
       ? providerShipment.trackingNumber
-      : (hasValidAwb ? existing.trackingNumber : null);
+      : (hasValidAwb && canReuseProviderShipment ? existing.trackingNumber : null);
+    const providerAwb = providerShipment.providerAwb || (isAuthenticAwb(trackingNumber, providerShipmentId) ? trackingNumber : null);
     const trackingUrl = providerShipment.trackingUrl || (trackingNumber ? `https://shiprocket.co/tracking/${trackingNumber}` : null);
     const labelUrl = providerShipment.labelUrl || existing?.labelUrl || `/api/v1/vendors/orders/${vendorOrderId}/shipping-label`;
 
-    let pickupStatus = providerShipment.pickupStatus || existing?.pickupStatus || 'PENDING';
-    let pickupToken = providerShipment.pickupToken || existing?.pickupToken || null;
-    let pickupScheduledAt = providerShipment.pickupScheduledAt || existing?.pickupScheduledAt || null;
+    let pickupStatus = providerShipment.pickupStatus || (canReuseProviderShipment ? existing?.pickupStatus : null) || 'PENDING';
+    let pickupToken = providerShipment.pickupToken || (canReuseProviderShipment ? existing?.pickupToken : null) || null;
+    let pickupScheduledAt = providerShipment.pickupScheduledAt || (canReuseProviderShipment ? existing?.pickupScheduledAt : null) || null;
 
     const currentAwbValid = isAuthenticAwb(trackingNumber, providerShipmentId);
     if (pickupStatus === 'PENDING' && providerShipmentId && currentAwbValid) {
@@ -306,6 +321,8 @@ export class ShippingService {
       existing.trackingNumber = trackingNumber;
       existing.trackingUrl = trackingUrl;
       existing.providerShipmentId = providerShipmentId;
+      existing.providerOrderId = providerOrderId;
+      existing.providerAwb = providerAwb;
       existing.labelUrl = labelUrl;
       existing.pickupStatus = pickupStatus;
       if (pickupToken) existing.pickupToken = pickupToken;
@@ -338,6 +355,8 @@ export class ShippingService {
       deliveryAddress: effectiveDelivery,
       packageInfo: effectivePackageInfo,
       providerShipmentId,
+      providerOrderId,
+      providerAwb,
       labelUrl,
       pickupStatus,
       pickupToken,

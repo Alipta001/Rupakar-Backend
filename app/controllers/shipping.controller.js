@@ -177,7 +177,6 @@ export const packVendorOrder = async (req, res, next) => {
         vendorId: vendor._id,
         customerId: order.customerId,
         shippingMethod: 'standard',
-        carrier: 'mock-carrier',
         packageInfo: packageInfo || {},
         pickupAddress: vendor.pickupAddress || vendor.registeredAddress || {},
         deliveryAddress: order.shippingAddressSnapshot || order.shippingAddress || {},
@@ -265,7 +264,6 @@ export const shipVendorOrder = async (req, res, next) => {
         vendorId: vendor._id,
         customerId: order.customerId,
         shippingMethod: 'standard',
-        carrier: 'mock-carrier',
       });
     }
 

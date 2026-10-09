@@ -1116,6 +1116,7 @@ export class ShiprocketProvider extends DeliveryProvider {
     const cod = Boolean(payload.cod || payload.payment?.method === 'COD');
     const serviceOption = payload.serviceOption || null;
     let existingShipmentId = payload.existingShipmentId || null;
+    let existingOrderId = payload.existingOrderId || payload.existingProviderOrderId || null;
     let existingAwb = payload.existingAwb || null;
     let existingLabelUrl = payload.existingLabelUrl || null;
     let existingPickupStatus = payload.existingPickupStatus || null;
@@ -1124,7 +1125,7 @@ export class ShiprocketProvider extends DeliveryProvider {
 
     const stagesCompleted = [];
     let srShipmentId = existingShipmentId ? Number(existingShipmentId) || existingShipmentId : null;
-    let srOrderId = null;
+    let srOrderId = existingOrderId ? Number(existingOrderId) || existingOrderId : null;
 
     const finalShipmentNumber = shipmentNumber || `SHIP-${Date.now().toString(36).toUpperCase()}`;
     const weightKg = Math.max(0.1, Number(packageInfo?.weight) || 0.5);
@@ -1135,6 +1136,16 @@ export class ShiprocketProvider extends DeliveryProvider {
     // Stage 1: Order Creation & Shipment Recovery
     if (srShipmentId) {
       stagesCompleted.push('ORDER_CREATED');
+      if (!srOrderId) {
+        try {
+          const remote = await this.getShipmentDetails(srShipmentId);
+          if (remote?.orderId) {
+            srOrderId = remote.orderId;
+          }
+        } catch {
+          // ignore lookup failure
+        }
+      }
     } else {
       const orderItems = (Array.isArray(items) && items.length > 0
         ? items
@@ -1418,6 +1429,7 @@ export class ShiprocketProvider extends DeliveryProvider {
       providerShipmentId: String(srShipmentId),
       shipmentId: srShipmentId,
       providerOrderId: srOrderId,
+      providerAwb: awbCode || null,
       carrier: courierName || 'Shiprocket Courier',
       shippingMethod: serviceOption?.serviceCode || String(courierCompanyId || 'standard'),
       shippingCost: courierRate,

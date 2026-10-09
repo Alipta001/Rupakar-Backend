@@ -44,6 +44,8 @@ const shipmentSchema = new Schema(
     deliveryAddress: { type: Object, default: {} },
     packageInfo: { type: Object, default: {} },
     providerShipmentId: { type: String, default: null },
+    providerOrderId: { type: Schema.Types.Mixed, default: null },
+    providerAwb: { type: String, default: null },
     labelUrl: { type: String, default: null },
     pickupStatus: {
       type: String,
