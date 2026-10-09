@@ -82,5 +82,6 @@ export const publicProductQuerySchema = z.object({
     return val;
   }, z.boolean().optional()),
   limit: z.coerce.number().int().min(1).max(50).optional(),
+  page: z.coerce.number().int().min(1).optional(),
   cursor: z.string().trim().max(64).optional(),
 }).strict();

@@ -672,7 +672,7 @@ export class ProductService {
     return product.toObject();
   }
 
-  async listPublicCatalog({ q, category, brand, vendor, minPrice, maxPrice, status = 'PUBLISHED', sort = 'newest', featured, limit = 20, cursor = null } = {}) {
+  async listPublicCatalog({ q, category, brand, vendor, minPrice, maxPrice, status = 'PUBLISHED', sort = 'newest', featured, page = 1, limit = 20, cursor = null } = {}) {
     const query = { status: status || 'PUBLISHED', deletedAt: null };
 
     if (featured !== undefined) {
@@ -848,8 +848,10 @@ export class ProductService {
         });
       }
 
+      const pageNumber = Math.max(Number(page) || 1, 1);
       const total = scored.length;
-      let startIndex = 0;
+      const totalPages = Math.max(Math.ceil(total / pageLimit), 1);
+      let startIndex = (pageNumber - 1) * pageLimit;
       if (cursor && String(cursor).trim()) {
         const targetId = String(cursor).trim();
         const foundIdx = scored.findIndex((s) => String(s.item._id ?? s.item.id) === targetId);
@@ -860,13 +862,17 @@ export class ProductService {
 
       const paged = scored.slice(startIndex, startIndex + pageLimit);
       const data = paged.map((s) => formatPublicProduct(s.item));
-      const hasNextPage = total > startIndex + pageLimit;
+      const hasNextPage = pageNumber < totalPages;
+      const hasPreviousPage = pageNumber > 1;
       const nextCursor = data.length > 0 ? String(data[data.length - 1]._id) : null;
 
       return {
         data,
         total,
-        pagination: { hasNextPage, nextCursor },
+        page: pageNumber,
+        limit: pageLimit,
+        totalPages,
+        pagination: { hasNextPage, hasPreviousPage, nextCursor, total, page: pageNumber, limit: pageLimit, totalPages },
       };
     }
 
@@ -885,6 +891,8 @@ export class ProductService {
       relevance: { createdAt: -1, _id: -1 },
     };
 
+    const pageNumber = Math.max(Number(page) || 1, 1);
+    const skip = (pageNumber - 1) * pageLimit;
     const filter = cursor && String(cursor).trim() ? { ...query, _id: { $lt: cursor } } : query;
 
     let queryBuilder = Product.find(filter);
@@ -899,6 +907,9 @@ export class ProductService {
     if (typeof queryBuilder.sort === 'function') {
       queryBuilder = queryBuilder.sort(sortMap[sort] ?? sortMap.newest);
     }
+    if (!cursor) {
+      queryBuilder = queryBuilder.skip(skip);
+    }
     if (typeof queryBuilder.limit === 'function') {
       queryBuilder = queryBuilder.limit(pageLimit);
     }
@@ -906,13 +917,18 @@ export class ProductService {
     const data = (Array.isArray(rawData) ? rawData : []).map(formatPublicProduct);
 
     const total = await Product.countDocuments(query);
-    const hasNextPage = total > pageLimit || (data.length > 0 && data.length >= pageLimit && total > data.length);
+    const totalPages = Math.max(Math.ceil(total / pageLimit), 1);
+    const hasNextPage = pageNumber < totalPages;
+    const hasPreviousPage = pageNumber > 1;
     const nextCursor = data.length > 0 ? String(data[data.length - 1]._id) : null;
 
     return {
       data,
       total,
-      pagination: { hasNextPage, nextCursor },
+      page: pageNumber,
+      limit: pageLimit,
+      totalPages,
+      pagination: { hasNextPage, hasPreviousPage, nextCursor, total, page: pageNumber, limit: pageLimit, totalPages },
     };
   }
 
