@@ -1236,7 +1236,9 @@ export class ShiprocketProvider extends DeliveryProvider {
         const isDuplicateOrder =
           createRes.status === 409 ||
           /already\s+(?:been\s+)?(?:taken|exist)/i.test(safeError) ||
-          /order\s+id\s+already/i.test(safeError);
+          /order\s*id\s*already/i.test(safeError) ||
+          /already\s+exist/i.test(safeError) ||
+          (Boolean(createData?.errors?.order_id) && /already|taken|exist/i.test(String(createData?.errors?.order_id)));
 
         if (isDuplicateOrder) {
           try {
@@ -1244,13 +1246,13 @@ export class ShiprocketProvider extends DeliveryProvider {
             if (listRes.ok) {
               const listData = await listRes.json().catch(() => ({}));
               const existingOrder = Array.isArray(listData?.data)
-                ? listData.data.find((o) => o.channel_order_id === srOrderIdCustom || String(o.order_id) === srOrderIdCustom)
+                ? listData.data.find((o) => o.channel_order_id === srOrderIdCustom || String(o.channel_order_id) === String(srOrderIdCustom) || String(o.order_id) === String(srOrderIdCustom) || String(o.id) === String(srOrderIdCustom))
                 : null;
               const foundShipmentId = extractShiprocketShipmentId(existingOrder);
               if (foundShipmentId) {
                 srShipmentId = foundShipmentId;
                 srOrderId = extractShiprocketOrderId(existingOrder) || existingOrder?.id || srOrderId;
-                const recoveredAwb = existingOrder?.shipments?.[0]?.awb || existingOrder?.awb_code || existingOrder?.awb || null;
+                const recoveredAwb = existingOrder?.shipments?.[0]?.awb_code || existingOrder?.shipments?.[0]?.awb || existingOrder?.awb_code || existingOrder?.awb || null;
                 if (recoveredAwb && !existingAwb) {
                   existingAwb = recoveredAwb;
                 }

@@ -66,6 +66,12 @@ const shipmentSchema = new Schema(
 
 shipmentSchema.index({ vendorOrderId: 1, createdAt: -1 });
 shipmentSchema.index({ vendorId: 1, createdAt: -1 });
-shipmentSchema.index({ trackingNumber: 1 }, { unique: true, sparse: true });
+shipmentSchema.index(
+  { trackingNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { trackingNumber: { $type: 'string', $gt: '' } },
+  },
+);
 
 export const Shipment = model('Shipment', shipmentSchema);
