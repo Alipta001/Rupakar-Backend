@@ -5,6 +5,8 @@ import { ReturnItem } from '../models/return-item.model.js';
 import { ReturnShipment } from '../models/return-shipment.model.js';
 import { Order } from '../models/order.model.js';
 import { Vendor } from '../models/vendor.model.js';
+import { Shipment } from '../models/shipment.model.js';
+import { ProductVariant } from '../models/product-variant.model.js';
 import { returnEligibilityService } from './return-eligibility.service.js';
 import { packageInfoSchema } from '../validators/return.validators.js';
 import { deliveryProvider, isAuthenticAwb, SHIPROCKET_REVERSE_STATUS_MAP } from './delivery-provider.service.js';
@@ -79,7 +81,8 @@ export class ReturnShipmentService {
     // Check if vendor
     let vendor = null;
     if (isQueryable(Vendor)) {
-      vendor = await Vendor.findOne({ ownerUserId: userIdStr, deletedAt: null }).lean();
+      const vQuery = Vendor.findOne({ ownerUserId: userIdStr, deletedAt: null });
+      vendor = vQuery && typeof vQuery.lean === 'function' ? await vQuery.lean() : await vQuery;
     }
     const vendorIdFromProfile = vendor?._id ? String(vendor._id) : null;
     const vendorIdFromToken = user.vendorId ? String(user.vendorId) : null;
@@ -1157,6 +1160,260 @@ export class ReturnShipmentService {
       nextExpectedStep: getNextExpectedStep(raw.status),
       createdAt: raw.createdAt,
       updatedAt: raw.updatedAt,
+    };
+  }
+
+  async resolveAuthoritativePackageInfo({ returnDoc, packageInfo = null }) {
+    if (!returnDoc) {
+      return { packageInfo: null, source: 'NONE' };
+    }
+
+    // 1. Explicit seller/user provided packageInfo
+    if (packageInfo && typeof packageInfo === 'object') {
+      const parsed = packageInfoSchema.safeParse(packageInfo);
+      if (parsed.success) {
+        return { packageInfo: parsed.data, source: 'SELLER_PROVIDED' };
+      }
+    }
+
+    // 2. Existing forward Shipment
+    if (isQueryable(Shipment)) {
+      try {
+        let forwardShipment = null;
+        if (returnDoc.orderId && returnDoc.vendorOrderId) {
+          forwardShipment = await Shipment.findOne({
+            orderId: returnDoc.orderId,
+            vendorOrderId: returnDoc.vendorOrderId,
+          });
+        }
+        if (!forwardShipment && returnDoc.orderId && returnDoc.vendorId) {
+          forwardShipment = await Shipment.findOne({
+            orderId: returnDoc.orderId,
+            vendorId: returnDoc.vendorId,
+          });
+        }
+        if (!forwardShipment && returnDoc.orderId) {
+          forwardShipment = await Shipment.findOne({ orderId: returnDoc.orderId });
+        }
+
+        if (forwardShipment?.packageInfo) {
+          const fPkg = forwardShipment.packageInfo;
+          const w = Number(fPkg.weight);
+          const l = Number(fPkg.length);
+          const wi = Number(fPkg.width);
+          const h = Number(fPkg.height);
+          if (w > 0 && l > 0 && wi > 0 && h > 0) {
+            return {
+              packageInfo: {
+                weight: w,
+                length: l,
+                width: wi,
+                height: h,
+                unit: fPkg.unit || 'kg',
+                dimensionUnit: fPkg.dimensionUnit || 'cm',
+              },
+              source: 'FORWARD_SHIPMENT',
+            };
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 3. Product / Variant authoritative data
+    if (isQueryable(ReturnItem)) {
+      try {
+        const itemIds = Array.isArray(returnDoc.items) ? returnDoc.items : [];
+        if (itemIds.length > 0) {
+          const returnItems = await ReturnItem.find({ _id: { $in: itemIds } });
+          if (Array.isArray(returnItems) && returnItems.length > 0) {
+            let totalWeight = 0;
+            let maxLength = 0;
+            let maxWidth = 0;
+            let totalHeight = 0;
+            let allResolved = true;
+
+            for (const item of returnItems) {
+              let variant = null;
+              if (isQueryable(ProductVariant) && item.variantId) {
+                variant = await ProductVariant.findById(item.variantId);
+              }
+              const qty = Number(item.quantity) || 1;
+              const vWeight = Number(variant?.weight);
+              const vDims = variant?.dimensions || {};
+              const vL = Number(vDims.length);
+              const vW = Number(vDims.width);
+              const vH = Number(vDims.height);
+
+              if (vWeight > 0 && vL > 0 && vW > 0 && vH > 0) {
+                totalWeight += vWeight * qty;
+                maxLength = Math.max(maxLength, vL);
+                maxWidth = Math.max(maxWidth, vW);
+                totalHeight += vH * qty;
+              } else {
+                allResolved = false;
+                break;
+              }
+            }
+
+            if (allResolved && totalWeight > 0 && maxLength > 0 && maxWidth > 0 && totalHeight > 0) {
+              return {
+                packageInfo: {
+                  weight: Number(totalWeight.toFixed(2)),
+                  length: Number(maxLength.toFixed(1)),
+                  width: Number(maxWidth.toFixed(1)),
+                  height: Number(totalHeight.toFixed(1)),
+                  unit: 'kg',
+                  dimensionUnit: 'cm',
+                },
+                source: 'PRODUCT_VARIANT',
+              };
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    return { packageInfo: null, source: 'NONE' };
+  }
+
+  async autoProcessReverseShipment({ returnId, returnDoc = null, user = null, packageInfo = null, metadata = {} }) {
+    if (!returnId) {
+      throw new AppError(400, 'INVALID_REQUEST', 'returnId is required');
+    }
+
+    let doc = returnDoc;
+    if (!doc && isQueryable(Return)) {
+      doc = await Return.findById(returnId);
+    }
+    if (!doc) {
+      throw new AppError(404, 'RETURN_NOT_FOUND', 'Return not found');
+    }
+
+    // Defensive actor resolution for background/system triggers
+    const effectiveUser = user || {
+      sub: String(doc.approvedBy || doc.vendorId || 'SYSTEM'),
+      role: 'VENDOR',
+      vendorId: doc.vendorId,
+    };
+
+    // Resolve authoritative package information
+    let effectivePackageInfo = packageInfo;
+    let pkgSource = metadata?.packageInfoSource || 'EXPLICIT';
+    if (!effectivePackageInfo) {
+      const resolved = await this.resolveAuthoritativePackageInfo({ returnDoc: doc, packageInfo });
+      effectivePackageInfo = resolved.packageInfo;
+      pkgSource = resolved.source;
+    }
+
+    if (!effectivePackageInfo) {
+      auditService.log('REVERSE_AUTO_PROCESS_AWAITING_PACKAGE_INFO', {
+        returnId: doc._id?.toString(),
+        reason: 'Authoritative package information could not be resolved from seller payload, forward shipment, or product catalog',
+      });
+      return {
+        shipment: null,
+        success: false,
+        stage: 'PACKAGE_INFO_REQUIRED',
+        error: 'Authoritative package information is required before reverse shipment can be created',
+      };
+    }
+
+    let shipment = null;
+
+    // Step 1: Prepare reverse shipment (creates ReturnShipment & Shiprocket reverse order)
+    try {
+      shipment = await this.prepareReturnShipment({
+        returnId,
+        packageInfo: effectivePackageInfo,
+        user: effectiveUser,
+        metadata: { ...metadata, packageInfoSource: pkgSource },
+      });
+    } catch (err) {
+      auditService.log('REVERSE_AUTO_PREPARE_FAILED', {
+        returnId: doc._id?.toString(),
+        error: err.message,
+      });
+      return {
+        shipment: null,
+        success: false,
+        stage: 'PREPARE_FAILED',
+        error: err.message,
+      };
+    }
+
+    // If shipment is already in a terminal/transit stage, do not re-orchestrate
+    if (['IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'].includes(shipment?.status)) {
+      return {
+        shipment,
+        success: true,
+        stage: shipment.status,
+      };
+    }
+
+    // Step 2: Assign Authentic AWB
+    if (!shipment.providerAwb || !isAuthenticAwb(shipment.providerAwb, shipment.providerShipmentId)) {
+      try {
+        shipment = await this.assignShipmentAwb({
+          returnId,
+          user: effectiveUser,
+        });
+      } catch (err) {
+        // AWB assignment failed:
+        // preserve ReturnShipment, preserve provider order/shipment IDs, do NOT request pickup, persist safe error, do NOT generate fake AWB
+        return {
+          shipment,
+          success: false,
+          stage: 'AWB_FAILED',
+          error: err.message,
+        };
+      }
+    }
+
+    // Step 3: Generate Shipping Label
+    if (!shipment.labelUrl || shipment.labelUrl.includes('/mock/')) {
+      try {
+        shipment = await this.generateShipmentLabel({
+          returnId,
+          user: effectiveUser,
+        });
+      } catch (err) {
+        // Label generation failed:
+        // preserve authentic AWB, do NOT request pickup, persist label error
+        return {
+          shipment,
+          success: false,
+          stage: 'LABEL_FAILED',
+          error: err.message,
+        };
+      }
+    }
+
+    // Step 4: Request Carrier Pickup
+    if (
+      !['PICKUP_REQUESTED', 'PICKUP_SCHEDULED', 'PICKED_UP'].includes(shipment.status) &&
+      !['REQUESTED', 'SCHEDULED', 'PICKED_UP'].includes(shipment.pickupStatus)
+    ) {
+      try {
+        shipment = await this.requestShipmentPickup({
+          returnId,
+          user: effectiveUser,
+        });
+      } catch (err) {
+        // Pickup failed:
+        // preserve authentic AWB and label, persist pickup error, allow safe retry
+        return {
+          shipment,
+          success: false,
+          stage: 'PICKUP_FAILED',
+          error: err.message,
+        };
+      }
+    }
+
+    return {
+      shipment,
+      success: true,
+      stage: shipment.status,
     };
   }
 }

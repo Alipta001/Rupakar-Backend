@@ -172,11 +172,23 @@ const buildReturnDto = async (doc) => {
     return safeItem;
   });
 
+  let reverseShipment = null;
+  if (isQueryable(ReturnShipment)) {
+    try {
+      const revShip = await ReturnShipment.findOne({ returnId: returnDoc._id, status: { $ne: 'CANCELLED' } }) ||
+                      await ReturnShipment.findOne({ returnId: returnDoc._id }).sort({ createdAt: -1 });
+      if (revShip) {
+        reverseShipment = returnShipmentService.buildShipmentDto(revShip, 'CUSTOMER');
+      }
+    } catch (_) {}
+  }
+
   return {
     ...returnDoc,
     items: sanitizedItems,
     payoutDetails,
     replacement,
+    reverseShipment,
     inspection: sanitizedInspection,
     disposition: sanitizedDisposition,
   };
@@ -468,6 +480,16 @@ export const buildVendorReturnDto = async (doc) => {
     } catch (_) {}
   }
 
+  if (isQueryable(ReturnShipment)) {
+    try {
+      const revShip = await ReturnShipment.findOne({ returnId: returnDoc._id, status: { $ne: 'CANCELLED' } }) ||
+                      await ReturnShipment.findOne({ returnId: returnDoc._id }).sort({ createdAt: -1 });
+      if (revShip) {
+        resultDto.reverseShipment = returnShipmentService.buildShipmentDto(revShip, 'VENDOR');
+      }
+    } catch (_) {}
+  }
+
   return resultDto;
 };
 
@@ -635,6 +657,22 @@ export const sellerApproveReturn = async (req, res, next) => {
     returnNotificationService.emitCustomerReturnEvent({ eventType: 'RETURN_APPROVED', returnDoc }).catch(() => null);
     returnNotificationService.emitSellerReturnEvent({ eventType: 'RETURN_APPROVED', returnDoc }).catch(() => null);
 
+    // Auto-process reverse logistics (creates ReturnShipment, assigns authentic AWB, generates label, requests pickup)
+    try {
+      await returnShipmentService.autoProcessReverseShipment({
+        returnId: returnDoc._id,
+        returnDoc,
+        user: req.user,
+        packageInfo: payload.packageInfo,
+      });
+    } catch (reverseError) {
+      // Seller approval itself must not be rolled back if reverse logistics encounters provider failure
+      auditService.log('REVERSE_AUTO_PROCESS_ERROR', {
+        returnId: returnDoc._id?.toString(),
+        error: reverseError.message,
+      });
+    }
+
     sendSuccess(
       res,
       await buildVendorReturnDto(returnDoc),
@@ -656,6 +694,21 @@ export const sellerMarkReturnReceived = async (req, res, next) => {
       const otherReturn = await Return.findById(req.params.id).lean();
       if (otherReturn) throw new AppError(403, 'FORBIDDEN', 'Access denied to this return');
       throw new AppError(404, 'RETURN_NOT_FOUND', 'Return not found');
+    }
+
+    // Guard: Carrier-managed returns cannot be manually marked received before carrier delivery
+    if (isQueryable(ReturnShipment)) {
+      const activeShipment = await ReturnShipment.findOne({
+        returnId: returnDoc._id,
+        status: { $nin: ['CANCELLED', 'DELIVERED'] },
+      });
+      if (activeShipment) {
+        throw new AppError(
+          400,
+          'CARRIER_DELIVERY_REQUIRED',
+          `Cannot manually mark return as received. Active reverse shipment ${activeShipment.shipmentNumber} is managed by carrier and is currently ${activeShipment.status}. Receipt will be recorded automatically upon carrier delivery.`
+        );
+      }
     }
 
     const payload = sellerReceiveReturnSchema.parse(req.body ?? {});
@@ -1274,6 +1327,16 @@ export const buildAdminReturnDto = async (doc) => {
           approvedAt: rep.approvedAt,
           completedAt: rep.completedAt,
         };
+      }
+    } catch (_) {}
+  }
+
+  if (isQueryable(ReturnShipment)) {
+    try {
+      const revShip = await ReturnShipment.findOne({ returnId: returnDoc._id, status: { $ne: 'CANCELLED' } }) ||
+                      await ReturnShipment.findOne({ returnId: returnDoc._id }).sort({ createdAt: -1 });
+      if (revShip) {
+        adminResultDto.reverseShipment = returnShipmentService.buildShipmentDto(revShip, 'ADMIN');
       }
     } catch (_) {}
   }

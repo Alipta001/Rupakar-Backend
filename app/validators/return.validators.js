@@ -36,8 +36,20 @@ export const sellerReviewReturnSchema = z.object({
   notes: z.string().trim().max(1000).optional(),
 }).strict();
 
+export const packageInfoSchema = z
+  .object({
+    weight: z.coerce.number().positive({ message: 'Weight must be greater than 0' }),
+    length: z.coerce.number().positive({ message: 'Length must be greater than 0' }),
+    width: z.coerce.number().positive({ message: 'Width must be greater than 0' }),
+    height: z.coerce.number().positive({ message: 'Height must be greater than 0' }),
+    unit: z.string().trim().default('kg').optional(),
+    dimensionUnit: z.string().trim().default('cm').optional(),
+  })
+  .strict();
+
 export const sellerApproveReturnSchema = z.object({
   notes: z.string().trim().max(1000).optional(),
+  packageInfo: packageInfoSchema.optional(),
 }).strict();
 
 export const sellerReceiveReturnSchema = z.object({
@@ -221,17 +233,6 @@ export const createReplacementSchema = z
   .object({
     idempotencyKey: z.string().trim().max(128).optional(),
     notes: z.string().trim().max(1000).optional(),
-  })
-  .strict();
-
-export const packageInfoSchema = z
-  .object({
-    weight: z.coerce.number().positive({ message: 'Weight must be greater than 0' }),
-    length: z.coerce.number().positive({ message: 'Length must be greater than 0' }),
-    width: z.coerce.number().positive({ message: 'Width must be greater than 0' }),
-    height: z.coerce.number().positive({ message: 'Height must be greater than 0' }),
-    unit: z.string().trim().default('kg').optional(),
-    dimensionUnit: z.string().trim().default('cm').optional(),
   })
   .strict();
 
