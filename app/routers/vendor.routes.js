@@ -55,6 +55,7 @@ import {
   listVendorReturns,
   getVendorReturn,
   sellerReviewReturn,
+  sellerApproveReturn,
   sellerMarkReturnReceived,
   sellerReadyForInspection,
   sellerSubmitInspection,
@@ -104,6 +105,7 @@ router.get('/returns/:id/replacement', vendorGetReplacement);
 router.get('/returns/:id/reverse-shipment', vendorGetReverseShipment);
 router.post('/returns/:id/review', sellerReviewReturn);
 router.post('/returns/:id/acknowledge', sellerReviewReturn);
+router.post('/returns/:id/approve', sellerApproveReturn);
 router.post('/returns/:id/receive', sellerMarkReturnReceived);
 router.post('/returns/:id/ready-for-inspection', sellerReadyForInspection);
 router.post('/returns/:id/start-inspection', sellerReadyForInspection);

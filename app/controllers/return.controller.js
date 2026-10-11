@@ -18,6 +18,7 @@ import {
   adminReturnDecisionSchema,
   returnListQuerySchema,
   sellerReviewReturnSchema,
+  sellerApproveReturnSchema,
   sellerReceiveReturnSchema,
   sellerInspectionSchema,
   sellerDisputeSchema,
@@ -404,6 +405,7 @@ export const buildVendorReturnDto = async (doc) => {
     reviewedAt: returnDoc.reviewedAt,
     reviewedBy: returnDoc.reviewedBy,
     approvedAt: returnDoc.approvedAt,
+    approvedBy: returnDoc.approvedBy || null,
     receivedAt: returnDoc.receivedAt,
     receivedBy: returnDoc.receivedBy,
     completedAt: returnDoc.completedAt,
@@ -573,6 +575,72 @@ export const sellerReviewReturn = async (req, res, next) => {
     await returnDoc.save();
 
     sendSuccess(res, await buildVendorReturnDto(returnDoc), 'Return marked under review', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const sellerApproveReturn = async (req, res, next) => {
+  try {
+    const vendor = await Vendor.findOne({ ownerUserId: req.user.sub, deletedAt: null });
+    if (!vendor) throw new AppError(403, 'VENDOR_ACCESS_DENIED', 'Vendor profile is required');
+
+    const returnDoc = await Return.findOne({ _id: req.params.id, vendorId: vendor._id });
+    if (!returnDoc) {
+      const otherReturn = await Return.findById(req.params.id).lean();
+      if (otherReturn) throw new AppError(403, 'FORBIDDEN', 'Access denied to this return');
+      throw new AppError(404, 'RETURN_NOT_FOUND', 'Return not found');
+    }
+
+    const payload = sellerApproveReturnSchema.parse(req.body ?? {});
+
+    // Idempotency: if already approved, safely return existing state
+    if (returnDoc.status === 'APPROVED') {
+      return sendSuccess(
+        res,
+        await buildVendorReturnDto(returnDoc),
+        'Return already approved',
+        String(req.headers['x-request-id'] ?? '')
+      );
+    }
+
+    if (returnDoc.status !== 'UNDER_REVIEW') {
+      throw new AppError(
+        400,
+        'INVALID_RETURN_TRANSITION',
+        `Cannot approve return with status ${returnDoc.status}. Only UNDER_REVIEW returns can be approved by seller.`
+      );
+    }
+
+    await returnStateService.transitionReturnStatus(returnDoc.status, 'APPROVED', {
+      returnId: returnDoc._id,
+      actorType: 'VENDOR',
+      actorId: req.user.sub,
+      reason: payload.notes || 'Seller approved return request',
+    });
+
+    returnDoc.status = 'APPROVED';
+    returnDoc.approvedAt = new Date();
+    returnDoc.approvedBy = req.user.sub;
+    if (!returnDoc.statusHistory) returnDoc.statusHistory = [];
+    returnDoc.statusHistory.push({
+      status: 'APPROVED',
+      changedAt: new Date(),
+      changedBy: req.user.sub,
+      actorType: 'VENDOR',
+      notes: payload.notes || 'Seller approved return request',
+    });
+    await returnDoc.save();
+
+    returnNotificationService.emitCustomerReturnEvent({ eventType: 'RETURN_APPROVED', returnDoc }).catch(() => null);
+    returnNotificationService.emitSellerReturnEvent({ eventType: 'RETURN_APPROVED', returnDoc }).catch(() => null);
+
+    sendSuccess(
+      res,
+      await buildVendorReturnDto(returnDoc),
+      'Return approved by seller',
+      String(req.headers['x-request-id'] ?? '')
+    );
   } catch (error) {
     next(error);
   }

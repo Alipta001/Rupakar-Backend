@@ -36,6 +36,10 @@ export const sellerReviewReturnSchema = z.object({
   notes: z.string().trim().max(1000).optional(),
 }).strict();
 
+export const sellerApproveReturnSchema = z.object({
+  notes: z.string().trim().max(1000).optional(),
+}).strict();
+
 export const sellerReceiveReturnSchema = z.object({
   notes: z.string().trim().max(1000).optional(),
 }).strict();

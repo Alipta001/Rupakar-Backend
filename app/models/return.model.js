@@ -82,6 +82,7 @@ const returnSchema = new Schema(
     idempotencyKey: { type: String, default: null, index: true },
     requestedAt: { type: Date, default: Date.now },
     approvedAt: { type: Date, default: null },
+    approvedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     rejectedAt: { type: Date, default: null },
     receivedAt: { type: Date, default: null },
     receivedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },

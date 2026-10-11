@@ -11,6 +11,7 @@ import {
   listVendorReturns,
   getVendorReturn,
   sellerReviewReturn,
+  sellerApproveReturn,
   sellerMarkReturnReceived,
   sellerReadyForInspection,
   sellerSubmitInspection,
@@ -539,5 +540,170 @@ describe('Phase 3: Seller Returns + Inspection + Dispute Backend Tests', () => {
     expect(state.nextStatus).toBe('UNDER_REVIEW');
     const stateApprove = await returnStateService.transitionReturnStatus('UNDER_REVIEW', 'APPROVED');
     expect(stateApprove.nextStatus).toBe('APPROVED');
+  });
+
+  // 19. Seller can approve own UNDER_REVIEW return
+  it('19. Seller can approve own UNDER_REVIEW return', async () => {
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorAId, ownerUserId: sellerAUserId });
+    const mockDoc = {
+      _id: returnAId,
+      status: 'UNDER_REVIEW',
+      vendorId: vendorAId,
+      statusHistory: [],
+      save: jest.fn().mockResolvedValue(true),
+      toObject: function () {
+        return { ...this };
+      },
+    };
+    jest.spyOn(Return, 'findOne').mockResolvedValue(mockDoc);
+    jest.spyOn(ReturnItem, 'find').mockReturnValue({ lean: jest.fn().mockResolvedValue([]) });
+    jest.spyOn(Order, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
+    jest.spyOn(VendorOrder, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
+
+    const req = mockReq(sellerAUserId, { id: returnAId }, { notes: 'Return looks valid, approved' });
+    const res = mockRes();
+    const next = jest.fn();
+
+    await sellerApproveReturn(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(mockDoc.status).toBe('APPROVED');
+    expect(mockDoc.approvedBy).toBe(sellerAUserId);
+    expect(mockDoc.approvedAt).toBeInstanceOf(Date);
+    expect(mockDoc.statusHistory).toHaveLength(1);
+    expect(mockDoc.statusHistory[0].status).toBe('APPROVED');
+    expect(mockDoc.statusHistory[0].actorType).toBe('VENDOR');
+    expect(mockDoc.statusHistory[0].changedBy).toBe(sellerAUserId);
+    expect(mockDoc.statusHistory[0].notes).toBe('Return looks valid, approved');
+    expect(mockDoc.save).toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalled();
+  });
+
+  // 20. Wrong seller receives 403
+  it('20. Wrong seller receives 403 when trying to approve another seller return', async () => {
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorAId, ownerUserId: sellerAUserId });
+    jest.spyOn(Return, 'findOne').mockResolvedValue(null);
+    jest.spyOn(Return, 'findById').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ _id: returnBId, vendorId: vendorBId }),
+    });
+
+    const req = mockReq(sellerAUserId, { id: returnBId }, {});
+    const res = mockRes();
+    const next = jest.fn();
+
+    await sellerApproveReturn(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    const error = next.mock.calls[0][0];
+    expect(error.statusCode).toBe(403);
+    expect(error.code).toBe('FORBIDDEN');
+  });
+
+  // 21. REQUESTED cannot be approved directly by seller
+  it('21. REQUESTED return cannot be approved directly by seller', async () => {
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorAId, ownerUserId: sellerAUserId });
+    const mockDoc = {
+      _id: returnAId,
+      status: 'REQUESTED',
+      vendorId: vendorAId,
+      statusHistory: [],
+      save: jest.fn().mockResolvedValue(true),
+    };
+    jest.spyOn(Return, 'findOne').mockResolvedValue(mockDoc);
+
+    const req = mockReq(sellerAUserId, { id: returnAId }, {});
+    const res = mockRes();
+    const next = jest.fn();
+
+    await sellerApproveReturn(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    const error = next.mock.calls[0][0];
+    expect(error.statusCode).toBe(400);
+    expect(error.code).toBe('INVALID_RETURN_TRANSITION');
+    expect(mockDoc.save).not.toHaveBeenCalled();
+  });
+
+  // 22. APPROVED return cannot be approved again / idempotent safe behavior
+  it('22. APPROVED return returns idempotent 200 without duplicate save', async () => {
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorAId, ownerUserId: sellerAUserId });
+    const mockDoc = {
+      _id: returnAId,
+      status: 'APPROVED',
+      vendorId: vendorAId,
+      statusHistory: [],
+      save: jest.fn().mockResolvedValue(true),
+      toObject: function () {
+        return { ...this };
+      },
+    };
+    jest.spyOn(Return, 'findOne').mockResolvedValue(mockDoc);
+    jest.spyOn(ReturnItem, 'find').mockReturnValue({ lean: jest.fn().mockResolvedValue([]) });
+    jest.spyOn(Order, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
+    jest.spyOn(VendorOrder, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
+
+    const req = mockReq(sellerAUserId, { id: returnAId }, {});
+    const res = mockRes();
+    const next = jest.fn();
+
+    await sellerApproveReturn(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(mockDoc.save).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalled();
+    const jsonOutput = res.json.mock.calls[0][0];
+    expect(jsonOutput.message).toBe('Return already approved');
+  });
+
+  // 23. Payment, refund, and inventory remain untouched on seller approve
+  it('23. Payment, refund, and inventory remain unchanged during seller approval', async () => {
+    jest.spyOn(Vendor, 'findOne').mockResolvedValue({ _id: vendorAId, ownerUserId: sellerAUserId });
+    const mockDoc = {
+      _id: returnAId,
+      status: 'UNDER_REVIEW',
+      vendorId: vendorAId,
+      statusHistory: [],
+      save: jest.fn().mockResolvedValue(true),
+      toObject: function () {
+        return { ...this };
+      },
+    };
+    jest.spyOn(Return, 'findOne').mockResolvedValue(mockDoc);
+    jest.spyOn(ReturnItem, 'find').mockReturnValue({ lean: jest.fn().mockResolvedValue([]) });
+    jest.spyOn(Order, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
+    jest.spyOn(VendorOrder, 'findById').mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
+    const inventorySpy = jest.spyOn(Inventory, 'updateOne');
+
+    const req = mockReq(sellerAUserId, { id: returnAId }, {});
+    const res = mockRes();
+    const next = jest.fn();
+
+    await sellerApproveReturn(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(inventorySpy).not.toHaveBeenCalled();
+    expect(mockDoc.status).toBe('APPROVED');
+  });
+
+  // 24. Seller cannot reject (vendor restriction on REJECTED preserved)
+  it('24. Seller cannot transition return to REJECTED (vendor restriction preserved)', async () => {
+    await expect(
+      returnStateService.transitionReturnStatus('UNDER_REVIEW', 'REJECTED', { actorType: 'VENDOR' })
+    ).rejects.toThrow('Vendors are not permitted to transition return to REJECTED');
+  });
+
+  // 25. Existing admin approve and reject behavior remains unchanged
+  it('25. Existing admin approve and reject transitions remain intact', async () => {
+    const adminApproveState = await returnStateService.transitionReturnStatus('UNDER_REVIEW', 'APPROVED', {
+      actorType: 'ADMIN',
+      actorId: 'admin-user-id',
+    });
+    expect(adminApproveState.nextStatus).toBe('APPROVED');
+
+    const adminRejectState = await returnStateService.transitionReturnStatus('UNDER_REVIEW', 'REJECTED', {
+      actorType: 'ADMIN',
+      actorId: 'admin-user-id',
+    });
+    expect(adminRejectState.nextStatus).toBe('REJECTED');
   });
 });
