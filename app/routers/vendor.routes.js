@@ -51,7 +51,19 @@ const handleDocumentUpload = (req, res, next) => {
   return next();
 };
 import { listVendorOrders, getVendorOrder } from '../controllers/order.controller.js';
-import { listVendorReturns, getVendorReturn } from '../controllers/return.controller.js';
+import {
+  listVendorReturns,
+  getVendorReturn,
+  sellerReviewReturn,
+  sellerMarkReturnReceived,
+  sellerReadyForInspection,
+  sellerSubmitInspection,
+  sellerRaiseDispute,
+  sellerResolveDispute,
+  sellerSubmitDisposition,
+  vendorGetReplacement,
+  vendorGetReverseShipment,
+} from '../controllers/return.controller.js';
 import { packVendorOrder, processVendorOrder, readyVendorOrder, retryVendorShipment, shipVendorOrder, downloadVendorShippingLabel } from '../controllers/shipping.controller.js';
 import { listVendorInvoices, downloadVendorOrderInvoice, downloadVendorPackingSlip } from '../controllers/invoice.controller.js';
 import {
@@ -88,6 +100,17 @@ router.post('/orders/:id/retry-shipment', retryVendorShipment);
 router.post('/orders/:id/ship', shipVendorOrder);
 router.get('/returns', listVendorReturns);
 router.get('/returns/:id', getVendorReturn);
+router.get('/returns/:id/replacement', vendorGetReplacement);
+router.get('/returns/:id/reverse-shipment', vendorGetReverseShipment);
+router.post('/returns/:id/review', sellerReviewReturn);
+router.post('/returns/:id/acknowledge', sellerReviewReturn);
+router.post('/returns/:id/receive', sellerMarkReturnReceived);
+router.post('/returns/:id/ready-for-inspection', sellerReadyForInspection);
+router.post('/returns/:id/start-inspection', sellerReadyForInspection);
+router.post('/returns/:id/inspect', sellerSubmitInspection);
+router.post('/returns/:id/dispute', sellerRaiseDispute);
+router.post('/returns/:id/resolve-dispute', sellerResolveDispute);
+router.post('/returns/:id/disposition', sellerSubmitDisposition);
 router.get('/cancellation-requests', listVendorCancellationRequests);
 router.post('/cancellation-requests/:id/approve', approveVendorCancellationRequest);
 router.post('/cancellation-requests/:id/reject', rejectVendorCancellationRequest);

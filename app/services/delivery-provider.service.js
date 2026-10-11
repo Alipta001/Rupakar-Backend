@@ -16,6 +16,20 @@ const hasRealDeliveryConfig = (url, token) => {
   );
 };
 
+export const isAuthenticAwb = (val, shipmentId = null) => {
+  if (!val || typeof val !== 'string') return false;
+  const s = val.trim();
+  if (!s) return false;
+  if (s.startsWith('TRK-')) return false;
+  if (s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') return false;
+  if (shipmentId) {
+    const rawShipmentId = String(shipmentId).trim();
+    if (s === `SR${rawShipmentId}` || s === rawShipmentId) return false;
+  }
+  if (/^SR\d+$/i.test(s)) return false;
+  return true;
+};
+
 export const selectDeterministicCourier = (availableCouriers, { cod = false, recommendedCourierId = null } = {}) => {
   if (!Array.isArray(availableCouriers) || availableCouriers.length === 0) return null;
 
@@ -114,6 +128,24 @@ export class DeliveryProvider {
       pickupLocation: _params?.pickupLocationName || 'Primary',
       pickupId: null,
     };
+  }
+  async createReturnShipment(_params) {
+    throw new Error('createReturnShipment must be implemented by provider');
+  }
+  async assignReturnAwb(_params) {
+    throw new Error('assignReturnAwb must be implemented by provider');
+  }
+  async generateReturnLabel(_params) {
+    throw new Error('generateReturnLabel must be implemented by provider');
+  }
+  async requestReturnPickup(_params) {
+    throw new Error('requestReturnPickup must be implemented by provider');
+  }
+  async trackReturnShipment(_params) {
+    throw new Error('trackReturnShipment must be implemented by provider');
+  }
+  async getReturnTracking(_params) {
+    return this.trackReturnShipment(_params);
   }
 }
 
@@ -242,10 +274,14 @@ export class MockDeliveryProvider extends DeliveryProvider {
     const pickupStatus = existingPickupStatus === 'SCHEDULED' ? 'SCHEDULED' : 'SCHEDULED';
     const pickupToken = `PKP-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
 
+    const providerOrderId = payload.existingOrderId || `MORD-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+
     return {
       shipmentNumber: finalShipmentNumber,
       trackingNumber,
       providerShipmentId,
+      providerOrderId,
+      providerAwb: trackingNumber,
       carrier,
       shippingMethod,
       shippingCost,
@@ -371,6 +407,137 @@ export class MockDeliveryProvider extends DeliveryProvider {
       pickupLocation: nickname,
       pickupId: createdId,
     };
+  }
+
+  async createReturnShipment(payload = {}) {
+    if (payload.direction && payload.direction !== 'RETURN') {
+      throw new AppError(400, 'INVALID_DIRECTION', 'Direction must be RETURN for reverse shipment');
+    }
+
+    const rawCustomerPhone = payload.pickupAddress?.phone || payload.pickupAddress?.phoneNumber || payload.pickupAddress?.mobile || '';
+    const normalizedCustomerPhone = normalizeIndianPhone10(rawCustomerPhone);
+    if (!normalizedCustomerPhone) {
+      throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Customer phone number must be a valid 10-digit Indian mobile number');
+    }
+
+    const rawSellerPhone = payload.returnAddress?.phone || payload.returnAddress?.phoneNumber || payload.returnAddress?.mobile || '';
+    const normalizedSellerPhone = normalizeIndianPhone10(rawSellerPhone);
+    if (!normalizedSellerPhone) {
+      throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Seller return phone number must be a valid 10-digit Indian mobile number');
+    }
+
+    const pkg = payload.packageInfo || {};
+    if (
+      !pkg.weight || Number(pkg.weight) <= 0 ||
+      !pkg.length || Number(pkg.length) <= 0 ||
+      !pkg.width || Number(pkg.width) <= 0 ||
+      !pkg.height || Number(pkg.height) <= 0
+    ) {
+      throw new AppError(400, 'INVALID_PACKAGE_INFO', 'Package weight, length, width, and height must be greater than 0');
+    }
+
+    const providerOrderId = payload.existingOrderId || `MORD-REV-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const providerShipmentId = payload.existingShipmentId || `MSHP-REV-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const rawAwb = payload.mockAwb || payload.existingAwb || payload.awb || null;
+    const trackingNumber = (rawAwb && isAuthenticAwb(String(rawAwb), providerShipmentId)) ? String(rawAwb) : null;
+    const carrier = payload.carrier || 'Rupakar Express Logistics';
+
+    return {
+      provider: 'mock',
+      providerOrderId,
+      providerShipmentId,
+      providerAwb: trackingNumber,
+      carrier,
+      trackingNumber,
+      trackingUrl: null,
+      labelUrl: payload.existingLabelUrl || payload.labelUrl || null,
+      pickupStatus: 'PENDING',
+      direction: 'RETURN',
+      cod: false,
+      recovered: Boolean(payload.existingShipmentId || payload.existingOrderId),
+      raw: {},
+    };
+  }
+
+  async assignReturnAwb({ shipmentId, courierId = null, mockAwb = null } = {}) {
+    let awbCode = mockAwb;
+    if (awbCode) {
+      if (!isAuthenticAwb(String(awbCode), shipmentId)) {
+        throw new AppError(502, 'INVALID_AWB', 'Synthetic or invalid AWB rejected');
+      }
+    } else {
+      awbCode = await this.generateAwb({ count: 1 });
+    }
+
+    return {
+      awb: String(awbCode),
+      awbCode: String(awbCode),
+      courierName: courierId === 102 ? 'Rupakar Air Priority' : 'Rupakar Express Logistics',
+      courierCompanyId: courierId || 101,
+      reused: false,
+      provider: 'mock',
+    };
+  }
+
+  async generateReturnLabel({ shipmentId } = {}) {
+    return {
+      labelUrl: `/api/v1/returns/mock/shipping-label?shipmentId=${shipmentId || ''}`,
+      labelCreated: true,
+      provider: 'mock',
+      raw: {},
+    };
+  }
+
+  async requestReturnPickup({ shipmentId, trackingNumber, pickupDate = null, pickupAddress = {} } = {}) {
+    if (!trackingNumber || !isAuthenticAwb(String(trackingNumber), shipmentId)) {
+      throw new AppError(400, 'AUTHENTIC_AWB_REQUIRED', 'Authentic AWB required for reverse pickup request');
+    }
+
+    const pickupToken = `PKP-REV-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+    const scheduledDate = new Date(pickupDate || Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    return {
+      scheduled: true,
+      pickupToken,
+      pickupDate: scheduledDate,
+      status: 'SCHEDULED',
+      trackingNumber: String(trackingNumber),
+      message: 'Reverse pickup requested successfully with mock carrier',
+      provider: 'mock',
+    };
+  }
+
+  async trackReturnShipment({ trackingNumber, shipmentId = null, targetStatus = null } = {}) {
+    if (!trackingNumber) {
+      throw new AppError(400, 'TRACKING_NUMBER_REQUIRED', 'Tracking number is required');
+    }
+
+    const status = targetStatus || 'IN_TRANSIT';
+    return {
+      trackingNumber: String(trackingNumber),
+      shipmentId,
+      carrier: 'Rupakar Express Logistics',
+      status,
+      events: [
+        {
+          status: 'PICKUP_SCHEDULED',
+          description: 'Pickup scheduled with carrier',
+          location: 'Origin Customer Hub',
+          timestamp: new Date(Date.now() - 3600000).toISOString(),
+        },
+        {
+          status,
+          description: `Reverse shipment ${status}`,
+          location: 'In Transit Hub',
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      provider: 'mock',
+    };
+  }
+
+  async getReturnTracking(params) {
+    return this.trackReturnShipment(params);
   }
 }
 
@@ -697,6 +864,49 @@ export const SHIPROCKET_STATUS_MAP = {
   CANCELLED: 'CANCELLED',
 };
 
+export const SHIPROCKET_REVERSE_STATUS_MAP = {
+  // Pickup requested
+  'PICKUP REQUESTED': 'PICKUP_REQUESTED',
+  PICKUP_REQUESTED: 'PICKUP_REQUESTED',
+  'PICKUP GENERATED': 'PICKUP_REQUESTED',
+  'PICKUP QUEUED': 'PICKUP_REQUESTED',
+  'PICKUP RESCHEDULED': 'PICKUP_REQUESTED',
+  // Pickup scheduled
+  'PICKUP SCHEDULED': 'PICKUP_SCHEDULED',
+  PICKUP_SCHEDULED: 'PICKUP_SCHEDULED',
+  // Pickup failed / error
+  'PICKUP ERROR': 'PICKUP_FAILED',
+  'PICKUP FAILED': 'PICKUP_FAILED',
+  PICKUP_ERROR: 'PICKUP_FAILED',
+  PICKUP_FAILED: 'PICKUP_FAILED',
+  'PICKUP CANCELLED': 'PICKUP_FAILED',
+  // Picked up
+  'PICKED UP': 'PICKED_UP',
+  PICKED_UP: 'PICKED_UP',
+  'PICKED-UP': 'PICKED_UP',
+  COLLECTED: 'PICKED_UP',
+  // In transit
+  'IN TRANSIT': 'IN_TRANSIT',
+  IN_TRANSIT: 'IN_TRANSIT',
+  SHIPPED: 'IN_TRANSIT',
+  'REACHED AT DESTINATION': 'IN_TRANSIT',
+  'REACHED AT HUB': 'IN_TRANSIT',
+  // Out for delivery
+  'OUT FOR DELIVERY': 'OUT_FOR_DELIVERY',
+  OUT_FOR_DELIVERY: 'OUT_FOR_DELIVERY',
+  // Delivered
+  DELIVERED: 'DELIVERED',
+  'RETURN DELIVERED': 'DELIVERED',
+  RETURN_DELIVERED: 'DELIVERED',
+  // Delivery failed / undelivered
+  UNDELIVERED: 'DELIVERY_FAILED',
+  'DELIVERY FAILED': 'DELIVERY_FAILED',
+  DELIVERY_FAILED: 'DELIVERY_FAILED',
+  'RTO INITIATED': 'DELIVERY_FAILED',
+  'RTO IN TRANSIT': 'DELIVERY_FAILED',
+  'RTO DELIVERED': 'DELIVERY_FAILED',
+};
+
 const sanitizeSafeErrorMessage = (rawMessage) => {
   if (!rawMessage || typeof rawMessage !== 'string') return '';
   return rawMessage
@@ -809,20 +1019,6 @@ const isShiprocketResponseRejection = (data) => {
   }
 
   return false;
-};
-
-export const isAuthenticAwb = (val, shipmentId = null) => {
-  if (!val || typeof val !== 'string') return false;
-  const s = val.trim();
-  if (!s) return false;
-  if (s.startsWith('TRK-')) return false;
-  if (s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') return false;
-  if (shipmentId) {
-    const rawShipmentId = String(shipmentId).trim();
-    if (s === `SR${rawShipmentId}` || s === rawShipmentId) return false;
-  }
-  if (/^SR\d+$/i.test(s)) return false;
-  return true;
 };
 
 export class ShiprocketProvider extends DeliveryProvider {
@@ -1134,6 +1330,26 @@ export class ShiprocketProvider extends DeliveryProvider {
     const heightCm = Math.max(1, Number(packageInfo?.height) || 5);
 
     // Stage 1: Order Creation & Shipment Recovery
+    if (!srShipmentId && srOrderId) {
+      try {
+        const showRes = await this.request(`/v1/external/orders/show/${encodeURIComponent(srOrderId)}`);
+        if (showRes.ok) {
+          const showData = await showRes.json().catch(() => ({}));
+          const foundOrder = showData?.data || showData;
+          const foundShipmentId = extractShiprocketShipmentId(foundOrder);
+          if (foundShipmentId) {
+            srShipmentId = foundShipmentId;
+            const recoveredAwb = foundOrder?.shipments?.[0]?.awb_code || foundOrder?.shipments?.[0]?.awb || foundOrder?.awb_code || foundOrder?.awb || null;
+            if (recoveredAwb && !existingAwb) {
+              existingAwb = recoveredAwb;
+            }
+          }
+        }
+      } catch {
+        // ignore lookup failure
+      }
+    }
+
     if (srShipmentId) {
       stagesCompleted.push('ORDER_CREATED');
       if (!srOrderId) {
@@ -1739,6 +1955,401 @@ export class ShiprocketProvider extends DeliveryProvider {
       pickupId: createdId || null,
       message: `Pickup location "${nickname}" registered successfully with Shiprocket`,
     };
+  }
+
+  async createReturnShipment(payload = {}) {
+    if (payload.direction && payload.direction !== 'RETURN') {
+      throw new AppError(400, 'INVALID_DIRECTION', 'Direction must be RETURN for reverse shipment');
+    }
+
+    const pickupAddress = payload.pickupAddress || {};
+    const returnAddress = payload.returnAddress || {};
+    const packageInfo = payload.packageInfo || {};
+    const items = payload.items || [];
+    let existingShipmentId = payload.existingShipmentId ? (Number(payload.existingShipmentId) || payload.existingShipmentId) : null;
+    let existingOrderId = payload.existingOrderId ? (Number(payload.existingOrderId) || payload.existingOrderId) : null;
+    let existingAwb = payload.existingAwb || null;
+    let existingLabelUrl = payload.existingLabelUrl || null;
+
+    // Validate customer pickup phone
+    const rawCustomerPhone = pickupAddress.phone || pickupAddress.phoneNumber || pickupAddress.mobile || '';
+    const normalizedCustomerPhone = normalizeIndianPhone10(rawCustomerPhone);
+    if (!normalizedCustomerPhone) {
+      throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Customer phone number must be a valid 10-digit Indian mobile number');
+    }
+
+    // Validate seller phone
+    const rawSellerPhone = returnAddress.phone || returnAddress.phoneNumber || returnAddress.mobile || '';
+    const normalizedSellerPhone = normalizeIndianPhone10(rawSellerPhone);
+    if (!normalizedSellerPhone) {
+      throw new AppError(400, 'INVALID_PHONE_NUMBER', 'Seller return phone number must be a valid 10-digit Indian mobile number');
+    }
+
+    // Validate package dimensions
+    if (
+      !packageInfo.weight || Number(packageInfo.weight) <= 0 ||
+      !packageInfo.length || Number(packageInfo.length) <= 0 ||
+      !packageInfo.width || Number(packageInfo.width) <= 0 ||
+      !packageInfo.height || Number(packageInfo.height) <= 0
+    ) {
+      throw new AppError(400, 'INVALID_PACKAGE_INFO', 'Package weight, length, width, and height must be greater than 0');
+    }
+
+    const weightKg = Number(packageInfo.weight);
+    const lengthCm = Number(packageInfo.length);
+    const widthCm = Number(packageInfo.width);
+    const heightCm = Number(packageInfo.height);
+
+    let srShipmentId = existingShipmentId;
+    let srOrderId = existingOrderId;
+    let recovered = false;
+    const stagesCompleted = [];
+
+    // Stage 1: Recovery if orderId exists but shipmentId is missing
+    if (!srShipmentId && srOrderId) {
+      try {
+        const showRes = await this.request(`/v1/external/orders/show/${encodeURIComponent(srOrderId)}`);
+        if (showRes.ok) {
+          const showData = await showRes.json().catch(() => ({}));
+          const foundOrder = showData?.data || showData;
+          const foundShipmentId = extractShiprocketShipmentId(foundOrder);
+          if (foundShipmentId) {
+            srShipmentId = foundShipmentId;
+            recovered = true;
+            const recoveredAwb = foundOrder?.shipments?.[0]?.awb_code || foundOrder?.shipments?.[0]?.awb || foundOrder?.awb_code || foundOrder?.awb || null;
+            if (recoveredAwb && !existingAwb) {
+              existingAwb = recoveredAwb;
+            }
+          }
+        }
+      } catch {
+        // ignore lookup failure
+      }
+    }
+
+    if (srShipmentId) {
+      stagesCompleted.push('ORDER_CREATED');
+      if (!srOrderId) {
+        try {
+          const remote = await this.getShipmentDetails(srShipmentId);
+          if (remote?.orderId) {
+            srOrderId = remote.orderId;
+          }
+        } catch {
+          // ignore lookup failure
+        }
+      }
+    } else {
+      const stableChannelOrderId = String(payload.channelOrderId || payload.shipmentNumber);
+
+      const orderItems = (Array.isArray(items) && items.length > 0
+        ? items
+        : [{ name: 'Return Item', quantity: 1, unitPrice: 100 }]
+      ).map((it, idx) => ({
+        name: it.productName || it.title || it.name || `Return Item ${idx + 1}`,
+        sku: it.sku || `SKU-${it.variantId || idx + 1}`,
+        units: Number(it.quantity || it.units) || 1,
+        selling_price: Number(it.unitPrice || it.price || it.sellingPrice || it.selling_price) || 0,
+        discount: 0,
+        qc_enable: false,
+      }));
+
+      const subTotal = orderItems.reduce((acc, it) => acc + (it.units * it.selling_price), 0);
+
+      const returnPayload = {
+        order_id: stableChannelOrderId,
+        order_date: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        channel_id: '',
+        pickup_customer_name: pickupAddress.fullName || pickupAddress.name || 'Customer',
+        pickup_last_name: pickupAddress.lastName || '',
+        pickup_address: [pickupAddress.addressLine1 || pickupAddress.address, pickupAddress.addressLine2].filter(Boolean).join(', ') || 'Customer Pickup Address',
+        pickup_address_2: pickupAddress.addressLine2 || '',
+        pickup_city: pickupAddress.city || 'Kolkata',
+        pickup_state: pickupAddress.state || 'West Bengal',
+        pickup_country: pickupAddress.country || 'India',
+        pickup_pincode: pickupAddress.pincode || pickupAddress.postalCode || '700001',
+        pickup_email: pickupAddress.email || 'customer@rupakar.com',
+        pickup_phone: normalizedCustomerPhone,
+        shipping_customer_name: returnAddress.contactPerson || returnAddress.businessName || returnAddress.name || 'Seller',
+        shipping_last_name: '',
+        shipping_address: [returnAddress.addressLine1 || returnAddress.address, returnAddress.addressLine2].filter(Boolean).join(', ') || 'Seller Return Address',
+        shipping_address_2: returnAddress.addressLine2 || '',
+        shipping_city: returnAddress.city || 'Kolkata',
+        shipping_state: returnAddress.state || 'West Bengal',
+        shipping_country: returnAddress.country || 'India',
+        shipping_pincode: returnAddress.pincode || '700001',
+        shipping_email: returnAddress.email || 'vendor@rupakar.com',
+        shipping_phone: normalizedSellerPhone,
+        order_items: orderItems,
+        payment_method: 'PREPAID',
+        total_discount: 0,
+        sub_total: subTotal,
+        length: lengthCm,
+        breadth: widthCm,
+        height: heightCm,
+        weight: weightKg,
+      };
+
+      const createRes = await this.request('/v1/external/orders/create/return', {
+        method: 'POST',
+        body: JSON.stringify(returnPayload),
+      });
+
+      const createData = await createRes.json().catch(() => ({}));
+      srShipmentId = extractShiprocketShipmentId(createData);
+      srOrderId = extractShiprocketOrderId(createData);
+
+      if (!createRes.ok || isShiprocketResponseRejection(createData) || (!srShipmentId && (createData.message || createData.error || createData.errors))) {
+        const safeError = extractSafeShiprocketErrorMessage(createData, createRes.status);
+        const isDuplicateOrder =
+          createRes.status === 409 ||
+          /already\s+(?:been\s+)?(?:taken|exist)/i.test(safeError) ||
+          /order\s*id\s*already/i.test(safeError) ||
+          /already\s+exist/i.test(safeError) ||
+          (Boolean(createData?.errors?.order_id) && /already|taken|exist/i.test(String(createData?.errors?.order_id)));
+
+        if (isDuplicateOrder) {
+          try {
+            const listRes = await this.request(`/v1/external/orders?channel_order_id=${encodeURIComponent(stableChannelOrderId)}`);
+            if (listRes.ok) {
+              const listData = await listRes.json().catch(() => ({}));
+              const existingOrder = Array.isArray(listData?.data)
+                ? listData.data.find((o) => o.channel_order_id === stableChannelOrderId || String(o.channel_order_id) === String(stableChannelOrderId) || String(o.order_id) === String(stableChannelOrderId) || String(o.id) === String(stableChannelOrderId))
+                : null;
+              const foundShipmentId = extractShiprocketShipmentId(existingOrder);
+              if (foundShipmentId) {
+                srShipmentId = foundShipmentId;
+                srOrderId = extractShiprocketOrderId(existingOrder) || existingOrder?.id || srOrderId;
+                recovered = true;
+                const recoveredAwb = existingOrder?.shipments?.[0]?.awb_code || existingOrder?.shipments?.[0]?.awb || existingOrder?.awb_code || existingOrder?.awb || null;
+                if (recoveredAwb && !existingAwb) {
+                  existingAwb = recoveredAwb;
+                }
+              }
+            }
+          } catch {
+            // ignore recovery error
+          }
+        }
+
+        if (!srShipmentId) {
+          const errorStatusCode = createRes.status >= 400
+            ? createRes.status
+            : (Number(createData?.status_code) >= 400 && Number(createData?.status_code) < 600
+              ? Number(createData.status_code)
+              : 422);
+
+          throw new AppError(errorStatusCode, 'SHIPROCKET_RETURN_ORDER_FAILED', safeError || 'Shiprocket reverse order creation failed');
+        }
+      }
+
+      stagesCompleted.push('ORDER_CREATED');
+    }
+
+    const rawAwb = existingAwb || null;
+    const authenticAwb = (rawAwb && isAuthenticAwb(String(rawAwb), srShipmentId)) ? String(rawAwb) : null;
+
+    return {
+      provider: 'shiprocket',
+      providerOrderId: srOrderId,
+      providerShipmentId: srShipmentId,
+      providerAwb: authenticAwb,
+      carrier: null,
+      trackingNumber: authenticAwb,
+      trackingUrl: null,
+      labelUrl: existingLabelUrl || null,
+      pickupStatus: 'PENDING',
+      direction: 'RETURN',
+      cod: false,
+      stagesCompleted,
+      recovered,
+      raw: {},
+    };
+  }
+
+  async assignReturnAwb({ shipmentId, courierId = null } = {}) {
+    if (!shipmentId) {
+      throw new AppError(400, 'SHIPMENT_ID_REQUIRED', 'Shipment ID required to assign Shiprocket reverse AWB');
+    }
+
+    const res = await this.request('/v1/external/courier/assign/awb', {
+      method: 'POST',
+      body: JSON.stringify({
+        shipment_id: shipmentId,
+        ...(courierId ? { courier_id: Number(courierId) } : {}),
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || isShiprocketResponseRejection(data)) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status);
+
+      if (/wallet|recharge|insufficient/i.test(safeError)) {
+        throw new AppError(402, 'SHIPROCKET_WALLET_INSUFFICIENT', safeError || 'Please recharge your ShipRocket wallet to assign AWB');
+      }
+
+      const alreadyAssigned = /already\s+(?:been\s+)?(?:assigned|generated)/i.test(safeError);
+      const extractedAwb = data?.response?.data?.awb_code || data?.awb_code || null;
+      if (alreadyAssigned && extractedAwb && isAuthenticAwb(extractedAwb, shipmentId)) {
+        return {
+          awb: extractedAwb,
+          awbCode: extractedAwb,
+          courierName: data?.response?.data?.courier_name || null,
+          courierCompanyId: data?.response?.data?.courier_company_id || courierId || null,
+          reused: true,
+          provider: 'shiprocket',
+          raw: data,
+        };
+      }
+
+      throw new AppError(
+        res.status >= 400 && res.status < 600 ? res.status : 502,
+        'SHIPROCKET_AWB_FAILED',
+        safeError || 'Shiprocket reverse AWB assignment failed',
+      );
+    }
+
+    const rawAwb = data?.response?.data?.awb_code || data?.awb_code || null;
+    const awbCode = (rawAwb && isAuthenticAwb(rawAwb, shipmentId)) ? rawAwb : null;
+    if (!awbCode) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status) || 'Shiprocket did not return a valid AWB';
+      throw new AppError(502, 'SHIPROCKET_AWB_FAILED', safeError);
+    }
+
+    return {
+      awb: awbCode,
+      awbCode,
+      courierName: data?.response?.data?.courier_name || null,
+      courierCompanyId: data?.response?.data?.courier_company_id || courierId || null,
+      reused: false,
+      provider: 'shiprocket',
+      raw: data,
+    };
+  }
+
+  async generateReturnLabel({ shipmentId } = {}) {
+    if (!shipmentId) {
+      throw new AppError(400, 'SHIPMENT_ID_REQUIRED', 'Shipment ID required to generate Shiprocket return label');
+    }
+
+    const numericId = Number(shipmentId);
+    const idToSend = !isNaN(numericId) ? numericId : String(shipmentId);
+    const res = await this.request('/v1/external/courier/generate/label', {
+      method: 'POST',
+      body: JSON.stringify({ shipment_id: [idToSend] }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || isShiprocketResponseRejection(data)) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status);
+      throw new AppError(
+        res.status >= 400 && res.status < 600 ? res.status : 502,
+        'SHIPROCKET_LABEL_FAILED',
+        safeError || 'Shiprocket return label generation failed',
+      );
+    }
+
+    const labelUrl = data?.label_url || null;
+    if (!labelUrl) {
+      throw new AppError(502, 'SHIPROCKET_LABEL_FAILED', 'Shiprocket did not return a valid label URL');
+    }
+
+    return {
+      labelUrl,
+      labelCreated: Boolean(data?.label_created ?? true),
+      provider: 'shiprocket',
+      raw: data,
+    };
+  }
+
+  async requestReturnPickup({ shipmentId, trackingNumber, pickupDate = null, pickupAddress = {} } = {}) {
+    if (!shipmentId) {
+      throw new AppError(400, 'SHIPMENT_ID_REQUIRED', 'Shipment ID required for Shiprocket return pickup');
+    }
+
+    if (!trackingNumber || !isAuthenticAwb(String(trackingNumber), shipmentId)) {
+      throw new AppError(400, 'AUTHENTIC_AWB_REQUIRED', 'Authentic AWB required for reverse pickup request');
+    }
+
+    const numericId = Number(shipmentId);
+    const idToSend = !isNaN(numericId) ? numericId : String(shipmentId);
+    const payload = { shipment_id: [idToSend] };
+    if (pickupDate) {
+      payload.pickup_date = typeof pickupDate === 'string' ? pickupDate.slice(0, 10) : new Date(pickupDate).toISOString().slice(0, 10);
+    }
+
+    const res = await this.request('/v1/external/courier/generate/pickup', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || isShiprocketResponseRejection(data)) {
+      const safeError = extractSafeShiprocketErrorMessage(data, res.status);
+      throw new AppError(
+        res.status >= 400 && res.status < 600 ? res.status : 502,
+        'SHIPROCKET_PICKUP_FAILED',
+        safeError || 'Shiprocket return pickup request failed',
+      );
+    }
+
+    const pickupToken = String(data?.response?.pickup_token_number || data?.pickup_token_number || `PKP-SR-${shipmentId}`);
+    const scheduledDate = data?.response?.pickup_scheduled_date || data?.pickup_scheduled_date || (pickupDate ? new Date(pickupDate).toISOString() : new Date().toISOString());
+
+    return {
+      scheduled: true,
+      pickupToken,
+      pickupDate: scheduledDate,
+      status: 'SCHEDULED',
+      trackingNumber: String(trackingNumber),
+      message: 'Shiprocket return pickup scheduled successfully',
+      provider: 'shiprocket',
+      raw: data,
+    };
+  }
+
+  async trackReturnShipment({ trackingNumber, shipmentId = null } = {}) {
+    if (!trackingNumber) {
+      throw new AppError(400, 'TRACKING_NUMBER_REQUIRED', 'Tracking number is required');
+    }
+
+    const res = await this.request(`/v1/external/courier/track/awb/${encodeURIComponent(trackingNumber)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const safeMsg = extractSafeShiprocketErrorMessage(err, res.status);
+      throw new AppError(res.status, 'SHIPROCKET_TRACKING_FAILED', safeMsg || 'Shiprocket tracking lookup failed');
+    }
+
+    const data = await res.json();
+    const trackData = data?.tracking_data || {};
+    const trackDetails = Array.isArray(trackData.shipment_track) ? trackData.shipment_track[0] : {};
+    const activities = Array.isArray(trackData.shipment_track_activities) ? trackData.shipment_track_activities : [];
+
+    const rawStatus = String(trackDetails?.current_status || trackData.shipment_status || '').toUpperCase().trim();
+    const normalizedStatus = SHIPROCKET_REVERSE_STATUS_MAP[rawStatus] || null;
+
+    return {
+      trackingNumber: String(trackingNumber),
+      shipmentId,
+      carrier: trackDetails?.courier_name || 'Shiprocket',
+      status: normalizedStatus,
+      rawStatus,
+      estimatedDeliveryAt: trackDetails?.edd ? new Date(trackDetails.edd).toISOString() : null,
+      events: activities.map((act) => ({
+        status: SHIPROCKET_REVERSE_STATUS_MAP[String(act.status || '').toUpperCase().trim()] || null,
+        rawStatus: act.status,
+        description: act.activity || 'Status update',
+        location: act.location || 'In Transit',
+        timestamp: act.date ? new Date(act.date).toISOString() : new Date().toISOString(),
+      })),
+      provider: 'shiprocket',
+      raw: data,
+    };
+  }
+
+  async getReturnTracking(params) {
+    return this.trackReturnShipment(params);
   }
 }
 

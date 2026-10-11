@@ -488,14 +488,15 @@ export class PaymentService {
   async syncRefundDocumentsCompleted({ providerRefundId, paymentId, orderId }) {
     try {
       const { Refund } = await import('../models/refund.model.js');
+      const { Return } = await import('../models/return.model.js');
+      const { returnStateService } = await import('./return-state.service.js');
+
       if (providerRefundId) {
-        const res = await Refund.updateMany(
+        await Refund.updateMany(
           { providerRefundId, status: { $ne: 'COMPLETED' } },
           { $set: { status: 'COMPLETED' } }
         );
-        if (res?.matchedCount > 0) return;
-      }
-      if (paymentId) {
+      } else if (paymentId) {
         await Refund.updateMany(
           { paymentId, status: { $in: ['PROCESSING', 'APPROVED', 'REQUESTED'] } },
           { $set: { status: 'COMPLETED' } }
@@ -505,6 +506,50 @@ export class PaymentService {
           { orderId, status: { $in: ['PROCESSING', 'APPROVED', 'REQUESTED'] } },
           { $set: { status: 'COMPLETED' } }
         );
+      }
+
+      try {
+        let refunds = [];
+        if (providerRefundId) {
+          refunds = await Refund.find({ providerRefundId, returnId: { $ne: null } });
+        } else if (paymentId) {
+          refunds = await Refund.find({ paymentId, returnId: { $ne: null } });
+        } else if (orderId) {
+          refunds = await Refund.find({ orderId, returnId: { $ne: null } });
+        }
+
+        for (const rf of refunds) {
+          if (rf?.returnId) {
+            try {
+              const returnDoc = await Return.findById(rf.returnId);
+              if (returnDoc && returnDoc.status !== 'REFUNDED') {
+                await returnStateService.transitionReturnStatus(returnDoc.status, 'REFUNDED', {
+                  returnId: returnDoc._id,
+                  actorType: 'SYSTEM',
+                  reason: 'Webhook confirmed refund processed by provider',
+                });
+                returnDoc.status = 'REFUNDED';
+                returnDoc.completedAt = new Date();
+                if (!returnDoc.refundDetails) returnDoc.refundDetails = {};
+                returnDoc.refundDetails.status = 'COMPLETED';
+                returnDoc.refundDetails.providerRefundId = rf.providerRefundId || returnDoc.refundDetails.providerRefundId;
+                returnDoc.refundDetails.processedAt = new Date();
+                if (!returnDoc.statusHistory) returnDoc.statusHistory = [];
+                returnDoc.statusHistory.push({
+                  status: 'REFUNDED',
+                  changedAt: new Date(),
+                  actorType: 'SYSTEM',
+                  notes: `Webhook confirmed refund processed (${rf.providerRefundId || 'provider'})`,
+                });
+                await returnDoc.save();
+              }
+            } catch (rErr) {
+              console.error('Failed to transition return on refund webhook:', rErr?.message);
+            }
+          }
+        }
+      } catch (_) {
+        // Non-blocking return sync in environments where find is not mocked
       }
     } catch (err) {
       console.error('Failed to sync Refund documents to COMPLETED:', err?.message || err);

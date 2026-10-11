@@ -25,7 +25,7 @@ export class RefundService {
     return true;
   }
 
-  calculateRefund({ order, returnItems = [] }) {
+  calculateRefund({ order, vendorOrder = null, returnItems = [], proportional = false }) {
     if (!order) {
       throw new AppError(400, 'INVALID_REFUND_ORDER', 'Order is required');
     }
@@ -35,16 +35,63 @@ export class RefundService {
       throw new AppError(400, 'INVALID_REFUND_ITEMS', 'Refund items are required');
     }
 
-    const total = items.reduce((sum, item) => sum + (Number(item.lineTotal ?? 0) || 0), 0);
+    const targetSource = vendorOrder || order;
+    const sourceSubtotal = Number(targetSource?.subtotal ?? 0);
+    const sourceDiscount = Number(targetSource?.discount ?? 0);
+    const sourceTax = Number(targetSource?.tax ?? 0);
+    const sourceTotal = Number(targetSource?.total ?? 0);
+
+    let itemSubtotal = 0;
+    for (const item of items) {
+      const qty = Number(item.quantity ?? 1);
+      const unitPrice = Number(item.unitPrice ?? 0);
+      const lineTotal = Number(item.lineTotal ?? (unitPrice * qty));
+      itemSubtotal += lineTotal > 0 && unitPrice === 0 ? lineTotal : (unitPrice * qty || lineTotal);
+    }
+
+    const shouldApplyProportional = Boolean(vendorOrder || proportional);
+
+    let discountAdjustment = 0;
+    let taxAdjustment = 0;
+
+    if (shouldApplyProportional && sourceSubtotal > 0) {
+      if (sourceDiscount > 0) {
+        discountAdjustment = Math.round((itemSubtotal / sourceSubtotal) * sourceDiscount * 100) / 100;
+      }
+      if (sourceTax > 0) {
+        const netBase = Math.max(0, itemSubtotal - discountAdjustment);
+        const sourceNet = Math.max(1, sourceSubtotal - sourceDiscount);
+        taxAdjustment = Math.round((netBase / sourceNet) * sourceTax * 100) / 100;
+      }
+    }
+
+    const shippingAdjustment = 0;
+    let refundAmount = shouldApplyProportional
+      ? Math.max(0, itemSubtotal - discountAdjustment + taxAdjustment)
+      : itemSubtotal;
+
+    if (sourceTotal > 0 && refundAmount > sourceTotal) {
+      refundAmount = sourceTotal;
+    }
+    refundAmount = Number(refundAmount.toFixed(2));
+
     return {
-      amount: Number(total || 0),
-      currency: order.currency || 'INR',
+      amount: refundAmount,
+      currency: targetSource?.currency || order?.currency || 'INR',
       reason: 'RETURN_APPROVED',
+      breakdown: {
+        itemSubtotal: Number(itemSubtotal.toFixed(2)),
+        discountAdjustment: Number(discountAdjustment.toFixed(2)),
+        taxAdjustment: Number(taxAdjustment.toFixed(2)),
+        shippingAdjustment,
+        refundAmount,
+      },
       refundSnapshot: {
-        orderTotal: Number(order.total ?? 0),
-        subtotal: Number(order.subtotal ?? 0),
-        discount: Number(order.discount ?? 0),
-        tax: Number(order.tax ?? 0),
+        orderTotal: Number(order?.total ?? 0),
+        vendorOrderTotal: vendorOrder ? Number(vendorOrder?.total ?? 0) : null,
+        subtotal: sourceSubtotal,
+        discount: sourceDiscount,
+        tax: sourceTax,
       },
     };
   }
@@ -113,6 +160,7 @@ export class RefundService {
       } else if (mongoose.isValidObjectId(payment._id)) {
         await Payment.findByIdAndUpdate(payment._id, { $set: { status: 'REFUND_PENDING' } });
       }
+    if (!refundData.returnId) {
       const refundStatus = 'REFUND_PENDING';
       const orderToUpdate = mongoose.isValidObjectId(refundData.orderId)
         ? await Order.findById(refundData.orderId)
@@ -139,6 +187,7 @@ export class RefundService {
           { $set: { status: refundStatus } }
         );
       }
+    }
     }
 
     const refundNumber = `RF-${Date.now().toString(36).toUpperCase()}`;

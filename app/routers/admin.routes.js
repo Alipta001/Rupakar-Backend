@@ -12,7 +12,26 @@ import {
   assignAdminAwb,
   generateAdminLabel,
 } from '../controllers/shipping.controller.js';
-import { listAdminReturns, getAdminReturn, approveReturn, rejectReturn } from '../controllers/return.controller.js';
+import {
+  listAdminReturns,
+  getAdminReturn,
+  approveReturn,
+  rejectReturn,
+  adminDisputeDecision,
+  adminResolveReturn,
+  adminExecutePrepaidRefund,
+  adminHandleCodPayout,
+  adminCreateReplacement,
+  adminGetReplacement,
+  adminGetReverseShipment,
+  adminPrepareReverseShipment,
+  adminAssignReturnAwb,
+  adminGenerateReturnLabel,
+  adminRequestReturnPickup,
+  adminSyncReturnTracking,
+  adminSubmitInspection,
+  adminSubmitDisposition,
+} from '../controllers/return.controller.js';
 import { listAdminInvoices, getAdminInvoiceDetail } from '../controllers/invoice.controller.js';
 import { listAdminNotifications } from '../controllers/notification.controller.js';
 import { listAdminSupportTickets, getAdminSupportTicket, updateAdminSupportTicket } from '../controllers/support.controller.js';
@@ -107,9 +126,23 @@ router.post('/shipments/:id/assign-awb', assignAdminAwb);
 router.post('/shipments/:id/generate-label', generateAdminLabel);
 router.patch('/shipments/:id/status', updateAdminShipmentStatus);
 
-// Returns (existing)
+// Returns (existing & Phase 4 & Phase 5)
 router.get('/returns', listAdminReturns);
 router.get('/returns/:id', getAdminReturn);
+router.post('/returns/:id/dispute-decision', adminDisputeDecision);
+router.post('/returns/:id/resolve', adminResolveReturn);
+router.post('/returns/:id/refund', adminExecutePrepaidRefund);
+router.post('/returns/:id/cod-payout', adminHandleCodPayout);
+router.post('/returns/:id/replacement', adminCreateReplacement);
+router.get('/returns/:id/replacement', adminGetReplacement);
+router.post('/returns/:id/reverse-shipment/prepare', adminPrepareReverseShipment);
+router.get('/returns/:id/reverse-shipment', adminGetReverseShipment);
+router.post('/returns/:id/reverse-shipment/assign-awb', adminAssignReturnAwb);
+router.post('/returns/:id/reverse-shipment/label', adminGenerateReturnLabel);
+router.post('/returns/:id/reverse-shipment/pickup', adminRequestReturnPickup);
+router.post('/returns/:id/reverse-shipment/sync-tracking', adminSyncReturnTracking);
+router.post('/returns/:id/inspect', adminSubmitInspection);
+router.post('/returns/:id/disposition', adminSubmitDisposition);
 router.patch('/returns/:id/approve', approveReturn);
 router.patch('/returns/:id/reject', rejectReturn);
 

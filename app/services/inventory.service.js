@@ -308,6 +308,81 @@ export class InventoryService {
     if (!inventory) return 0;
     return Math.max(0, inventory.availableQuantity);
   }
+
+  async restockReturnedItem({
+    productId,
+    variantId,
+    quantity,
+    returnId,
+    returnItemId,
+    vendorId,
+    actorId = 'system',
+    reason = 'RETURN_RESTOCK',
+  }) {
+    const normalized = Number(quantity);
+    if (!Number.isInteger(normalized) || normalized <= 0) {
+      throw new AppError(400, 'INVALID_QUANTITY', 'Restock quantity must be a positive integer');
+    }
+
+    // 1. Verify product and vendor ownership
+    const product = await Product.findOne({ _id: productId, deletedAt: null });
+    if (!product) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
+    if (vendorId && String(product.vendorId) !== String(vendorId)) {
+      throw new AppError(403, 'VENDOR_INVENTORY_MISMATCH', 'Product does not belong to the authorized vendor');
+    }
+
+    // 2. Verify variant belongs to product
+    const variant = await ProductVariant.findOne({ _id: variantId, productId: product._id });
+    if (!variant) throw new AppError(404, 'VARIANT_NOT_FOUND', 'Variant not found for product');
+
+    // 3. Prevent duplicate ledger entry / idempotency check
+    const refId = `RETURN_RESTOCK:${returnId}:${returnItemId}`;
+    const existingMovement = await InventoryMovement.findOne({
+      referenceType: 'RETURN',
+      referenceId: refId,
+    });
+    if (existingMovement) {
+      const existingInventory = await Inventory.findOne({ productId: product._id, variantId: variant._id, deletedAt: null });
+      return {
+        inventory: existingInventory?.toObject ? existingInventory.toObject() : existingInventory,
+        movement: existingMovement,
+        skipped: true,
+      };
+    }
+
+    // 4. Atomic update of availableQuantity
+    const inventory = await Inventory.findOneAndUpdate(
+      { productId: product._id, variantId: variant._id, deletedAt: null },
+      { $inc: { availableQuantity: normalized } },
+      { new: true, runValidators: true },
+    );
+    if (!inventory) throw new AppError(404, 'INVENTORY_NOT_FOUND', 'Inventory record not found');
+
+    inventory.status = inventoryStatus(inventory.availableQuantity, inventory.lowStockThreshold);
+    if (typeof inventory.save === 'function') await inventory.save();
+
+    // 5. Create InventoryMovement ledger entry
+    const movement = await InventoryMovement.create({
+      productId: product._id,
+      variantId: variant._id,
+      inventoryId: inventory._id,
+      type: 'RETURN',
+      quantity: normalized,
+      previousAvailableQuantity: Math.max(0, inventory.availableQuantity - normalized),
+      newAvailableQuantity: inventory.availableQuantity,
+      referenceType: 'RETURN',
+      referenceId: refId,
+      reason,
+      actorId,
+    });
+
+    return {
+      inventory: inventory.toObject ? inventory.toObject() : inventory,
+      movement,
+      skipped: false,
+    };
+  }
 }
 
 export const inventoryService = new InventoryService();
+

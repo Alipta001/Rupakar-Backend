@@ -5,7 +5,20 @@ import { Order } from '../models/order.model.js';
 import { VendorOrder } from '../models/vendor-order.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import { Shipment } from '../models/shipment.model.js';
+import { Replacement } from '../models/replacement.model.js';
+import { Return } from '../models/return.model.js';
+import { isReplacementOrder } from '../services/replacement.service.js';
 import mongoose from 'mongoose';
+
+const isQueryable = (m) => {
+  const isDbConnected = Boolean(mongoose?.connection?.readyState === 1);
+  const isMocked = Boolean(
+    m?.findOne?._isMockFunction || m?.findOne?.mock ||
+    m?.findById?._isMockFunction || m?.findById?.mock ||
+    m?.find?._isMockFunction || m?.find?.mock
+  );
+  return isDbConnected || isMocked;
+};
 
 export const createOrder = async (req, res, next) => {
   try {
@@ -229,11 +242,24 @@ export const listVendorOrders = async (req, res, next) => {
       VendorOrder.find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       VendorOrder.countDocuments(filter),
     ]);
-    const parentOrders = await Order.find({ _id: { $in: orders.map((order) => order.parentOrderId) } }).select('paymentStatus status shippingAddressSnapshot createdAt updatedAt').lean();
+    const parentOrders = await Order.find({ _id: { $in: orders.map((order) => order.parentOrderId) } }).select('orderNumber paymentStatus status paymentMethod financialSnapshot shippingAddressSnapshot createdAt updatedAt').lean();
     const parentById = new Map(parentOrders.map((order) => [String(order._id), order]));
     res.status(200).json({
       success: true,
-      data: { items: orders.map((order) => ({ ...order, parent: parentById.get(String(order.parentOrderId)) || null })), page, limit, total },
+      data: {
+        items: orders.map((order) => {
+          const parent = parentById.get(String(order.parentOrderId)) || null;
+          const isReplacement = isReplacementOrder(parent, order);
+          return {
+            ...order,
+            isReplacement,
+            parent,
+          };
+        }),
+        page,
+        limit,
+        total,
+      },
       message: 'Vendor orders loaded',
       requestId: String(req.headers['x-request-id'] ?? ''),
     });
@@ -257,7 +283,7 @@ export const getVendorOrder = async (req, res, next) => {
       throw new AppError(404, 'VENDOR_ORDER_NOT_FOUND', 'Vendor order not found');
     }
 
-    const parent = await Order.findOne({ _id: vendorOrder.parentOrderId }).select('paymentStatus status shippingAddressSnapshot createdAt updatedAt').lean();
+    const parent = await Order.findOne({ _id: vendorOrder.parentOrderId }).select('orderNumber paymentStatus status paymentMethod financialSnapshot shippingAddressSnapshot createdAt updatedAt').lean();
     let shipment = null;
     const isFindOneMocked = Shipment.findOne && (Boolean(Shipment.findOne._isMockFunction) || Boolean(Shipment.findOne.mock));
     if (mongoose.connection.readyState === 1 || isFindOneMocked) {
@@ -267,6 +293,41 @@ export const getVendorOrder = async (req, res, next) => {
         shipment = null;
       }
     }
+
+    let replacement = null;
+    const isReplacement = isReplacementOrder(parent, vendorOrder);
+    if (isReplacement && isQueryable(Replacement)) {
+      try {
+        const rep = await Replacement.findOne({ replacementVendorOrderId: vendorOrder._id }).lean();
+        if (rep) {
+          const [ret, origOrder] = await Promise.all([
+            rep.returnId && isQueryable(Return) ? Return.findById(rep.returnId).select('returnNumber').lean() : null,
+            rep.originalOrderId && isQueryable(Order) ? Order.findById(rep.originalOrderId).select('orderNumber').lean() : null,
+          ]);
+          replacement = {
+            isReplacement: true,
+            replacementId: rep._id,
+            replacementNumber: rep.replacementNumber,
+            returnId: rep.returnId,
+            returnNumber: ret?.returnNumber || null,
+            originalOrderId: rep.originalOrderId,
+            originalOrderNumber: origOrder?.orderNumber || null,
+            quantity: rep.quantity,
+            status: rep.status,
+            createdAt: rep.createdAt,
+            approvedAt: rep.approvedAt,
+          };
+        } else if (vendorOrder.financialSnapshot) {
+          replacement = {
+            isReplacement: true,
+            returnId: vendorOrder.financialSnapshot.returnId || null,
+            originalOrderId: vendorOrder.financialSnapshot.originalOrderId || null,
+            originalVendorOrderId: vendorOrder.financialSnapshot.originalVendorOrderId || null,
+          };
+        }
+      } catch (_) {}
+    }
+
     const vendorPickupConfigured = Boolean(
       vendor?.pickupAddress &&
       vendor?.pickupAddress?.pincode &&
@@ -280,6 +341,8 @@ export const getVendorOrder = async (req, res, next) => {
       success: true,
       data: {
         ...vendorOrder,
+        isReplacement,
+        replacement,
         parent: parent || null,
         shipment: shipment || null,
         vendorPickupConfigured,

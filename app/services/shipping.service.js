@@ -252,9 +252,12 @@ export class ShippingService {
       : packageInfo;
 
     const canReuseProviderShipment = Boolean(
-      existing?.providerShipmentId &&
-      (existing.provider === activeProvider || (!existing.provider && activeProvider === 'mock'))
+      (existing?.providerShipmentId || existing?.providerOrderId) &&
+      (existing.provider === activeProvider || (!existing.provider && activeProvider === 'mock') || !existing.provider)
     );
+
+    const isReplacement = Boolean(metadata?.isReplacement || existing?.metadata?.isReplacement);
+    const effectiveCod = isReplacement ? false : Boolean(cod);
 
     const activeDeliveryProvider = activeProvider ? getDeliveryProvider(activeProvider) : deliveryProvider;
     const providerShipment = await activeDeliveryProvider.createShipment({
@@ -266,9 +269,9 @@ export class ShippingService {
       deliveryAddress: effectiveDelivery,
       packageInfo: effectivePackageInfo,
       items,
-      cod,
+      cod: effectiveCod,
       serviceOption: selectedOption,
-      existingShipmentId: canReuseProviderShipment ? existing.providerShipmentId : null,
+      existingShipmentId: canReuseProviderShipment ? existing?.providerShipmentId : null,
       existingOrderId: canReuseProviderShipment ? (existing?.providerOrderId || existing?.metadata?.shiprocketOrderId || null) : null,
       existingAwb: hasValidAwb && canReuseProviderShipment ? existing.trackingNumber : null,
       existingLabelUrl: canReuseProviderShipment && existing?.labelUrl && !existing.labelUrl.includes('/api/v1/vendors/orders/') ? existing.labelUrl : null,
@@ -330,6 +333,7 @@ export class ShippingService {
       if (estimatedDeliveryAt) existing.estimatedDeliveryAt = estimatedDeliveryAt;
       existing.metadata = {
         ...existing.metadata,
+        ...metadata,
         ...providerShipment.metadata,
         serviceName: selectedOption.serviceName,
         carrierOption: selectedOption,
