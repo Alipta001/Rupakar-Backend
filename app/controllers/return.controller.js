@@ -1184,6 +1184,7 @@ export const buildAdminReturnDto = async (doc) => {
     reviewedAt: returnDoc.reviewedAt,
     reviewedBy: returnDoc.reviewedBy,
     approvedAt: returnDoc.approvedAt,
+    approvedBy: returnDoc.approvedBy || null,
     rejectedAt: returnDoc.rejectedAt,
     receivedAt: returnDoc.receivedAt,
     receivedBy: returnDoc.receivedBy,
