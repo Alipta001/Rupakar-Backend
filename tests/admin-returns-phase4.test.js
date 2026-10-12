@@ -274,6 +274,36 @@ describe('Phase 4: Admin Returns + Dispute Arbitration + Final Resolution Backen
     await expect(
       returnStateService.transitionReturnStatus('CLOSED', 'APPROVED', { actorType: 'ADMIN' })
     ).rejects.toThrow();
+
+    // APPROVED return cannot transition to APPROVED_FOR_REFUND (must undergo reverse logistics & inspection first)
+    await expect(
+      returnStateService.transitionReturnStatus('APPROVED', 'APPROVED_FOR_REFUND', { actorType: 'ADMIN' })
+    ).rejects.toThrow();
+
+    // adminResolveReturn on an APPROVED return must be rejected with 400 INVALID_RETURN_TRANSITION
+    const mockApprovedReturnDoc = {
+      _id: returnId1,
+      status: 'APPROVED',
+      statusHistory: [],
+      save: jest.fn().mockResolvedValue(true),
+      toObject: function () { return { ...this }; },
+    };
+    jest.spyOn(Return, 'findById').mockResolvedValue(mockApprovedReturnDoc);
+
+    const req = mockReq(adminUserId, 'admin', { id: returnId1 }, {
+      resolution: 'RETURN_REFUND',
+      notes: 'Attempting invalid resolution on APPROVED return',
+    });
+    const res = mockRes();
+    const next = jest.fn();
+
+    await adminResolveReturn(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    const error = next.mock.calls[0][0];
+    expect(error.statusCode).toBe(400);
+    expect(error.code).toBe('INVALID_RETURN_TRANSITION');
+    expect(error.message).toContain('Cannot transition from APPROVED to APPROVED_FOR_REFUND');
   });
 
   // 9. Admin cannot arbitrarily set refund amount.
