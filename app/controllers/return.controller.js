@@ -31,6 +31,7 @@ import {
   adminCodPayoutSchema,
   createReplacementSchema,
   prepareReverseShipmentSchema,
+  retryReverseShipmentSchema,
   returnDispositionSchema,
 } from '../validators/return.validators.js';
 import { Replacement } from '../models/replacement.model.js';
@@ -2265,6 +2266,64 @@ export const adminPrepareReverseShipment = async (req, res, next) => {
 
     const dto = returnShipmentService.buildShipmentDto(shipment, 'ADMIN');
     sendSuccess(res, dto, 'Reverse shipment prepared successfully', String(req.headers['x-request-id'] ?? ''));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const adminRetryReverseShipment = async (req, res, next) => {
+  try {
+    const payload = retryReverseShipmentSchema.parse(req.body ?? {});
+    const returnDoc = await Return.findById(req.params.id);
+    if (!returnDoc) {
+      throw new AppError(404, 'RETURN_NOT_FOUND', 'Return not found');
+    }
+
+    // Validate reverse shipment eligibility (ensures return is in an eligible status like APPROVED)
+    await returnShipmentService.validateReverseShipmentEligibility({
+      returnDoc,
+      user: { ...req.user, role: 'ADMIN' },
+    });
+
+    auditService.log('ADMIN_REVERSE_SHIPMENT_RETRY_INITIATED', {
+      returnId: returnDoc._id?.toString(),
+      returnNumber: returnDoc.returnNumber,
+      adminId: req.user?.sub || req.user?._id,
+    });
+
+    const result = await returnShipmentService.autoProcessReverseShipment({
+      returnId: returnDoc._id,
+      returnDoc,
+      user: { ...req.user, role: 'ADMIN' },
+      packageInfo: payload.packageInfo || null,
+      metadata: {
+        ...(payload.metadata || {}),
+        ...(payload.idempotencyKey ? { idempotencyKey: payload.idempotencyKey } : {}),
+      },
+    });
+
+    const shipmentDto = result.shipment
+      ? returnShipmentService.buildShipmentDto(result.shipment, 'ADMIN')
+      : null;
+
+    const responseData = {
+      returnId: returnDoc._id,
+      returnNumber: returnDoc.returnNumber,
+      returnStatus: returnDoc.status,
+      success: Boolean(result.success),
+      stage: result.stage,
+      error: result.error || null,
+      shipment: shipmentDto,
+    };
+
+    sendSuccess(
+      res,
+      responseData,
+      result.success
+        ? 'Reverse shipment orchestration processed successfully'
+        : `Reverse shipment paused at stage: ${result.stage}`,
+      String(req.headers['x-request-id'] ?? '')
+    );
   } catch (error) {
     next(error);
   }

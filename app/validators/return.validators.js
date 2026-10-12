@@ -244,6 +244,14 @@ export const prepareReverseShipmentSchema = z
   })
   .strict();
 
+export const retryReverseShipmentSchema = z
+  .object({
+    packageInfo: packageInfoSchema.optional(),
+    idempotencyKey: z.string().trim().max(128).optional(),
+    metadata: z.record(z.any()).optional(),
+  })
+  .strict();
+
 export const dispositionItemSchema = z
   .object({
     returnItemId: z.string().trim().min(1),

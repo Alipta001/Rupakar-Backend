@@ -1196,24 +1196,35 @@ export class ReturnShipmentService {
           forwardShipment = await Shipment.findOne({ orderId: returnDoc.orderId });
         }
 
-        if (forwardShipment?.packageInfo) {
-          const fPkg = forwardShipment.packageInfo;
+        const isAbsent = (pkg) => !pkg || typeof pkg !== 'object' || Object.keys(pkg).length === 0;
+
+        const fPkg = !isAbsent(forwardShipment?.packageInfo)
+          ? forwardShipment.packageInfo
+          : !isAbsent(forwardShipment?.metadata?.packageInfo)
+            ? forwardShipment.metadata.packageInfo
+            : null;
+
+        if (fPkg && typeof fPkg === 'object') {
           const w = Number(fPkg.weight);
           const l = Number(fPkg.length);
           const wi = Number(fPkg.width);
           const h = Number(fPkg.height);
           if (w > 0 && l > 0 && wi > 0 && h > 0) {
-            return {
-              packageInfo: {
-                weight: w,
-                length: l,
-                width: wi,
-                height: h,
-                unit: fPkg.unit || 'kg',
-                dimensionUnit: fPkg.dimensionUnit || 'cm',
-              },
-              source: 'FORWARD_SHIPMENT',
+            const candidate = {
+              weight: w,
+              length: l,
+              width: wi,
+              height: h,
+              unit: typeof fPkg.unit === 'string' && fPkg.unit.trim() ? fPkg.unit.trim() : 'kg',
+              dimensionUnit: typeof fPkg.dimensionUnit === 'string' && fPkg.dimensionUnit.trim() ? fPkg.dimensionUnit.trim() : 'cm',
             };
+            const parsed = packageInfoSchema.safeParse(candidate);
+            if (parsed.success) {
+              return {
+                packageInfo: parsed.data,
+                source: 'FORWARD_SHIPMENT',
+              };
+            }
           }
         }
       } catch (_) {}

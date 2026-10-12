@@ -25,6 +25,7 @@ import {
   adminGetReplacement,
   adminGetReverseShipment,
   adminPrepareReverseShipment,
+  adminRetryReverseShipment,
   adminAssignReturnAwb,
   adminGenerateReturnLabel,
   adminRequestReturnPickup,
@@ -136,6 +137,7 @@ router.post('/returns/:id/cod-payout', adminHandleCodPayout);
 router.post('/returns/:id/replacement', adminCreateReplacement);
 router.get('/returns/:id/replacement', adminGetReplacement);
 router.post('/returns/:id/reverse-shipment/prepare', adminPrepareReverseShipment);
+router.post('/returns/:id/reverse-shipment/retry', adminRetryReverseShipment);
 router.get('/returns/:id/reverse-shipment', adminGetReverseShipment);
 router.post('/returns/:id/reverse-shipment/assign-awb', adminAssignReturnAwb);
 router.post('/returns/:id/reverse-shipment/label', adminGenerateReturnLabel);

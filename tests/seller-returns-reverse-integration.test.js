@@ -596,4 +596,258 @@ describe('Seller Return Approval to Reverse Logistics Integration Tests', () => 
     expect(r3.packageInfo.weight).toBe(0.8); // 0.4 * 2
     expect(r3.packageInfo.length).toBe(15);
   });
+
+  describe('Authoritative Package Info Resolution & Production Reverse Logistics', () => {
+    it('1. Seller provides valid packageInfo → seller packageInfo wins', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        packageInfo: { weight: 2, length: 20, width: 20, height: 20, unit: 'kg', dimensionUnit: 'cm' },
+        metadata: {
+          packageInfo: { weight: 0.5, length: 15, width: 10, height: 5, unit: 'kg', dimensionUnit: 'cm' },
+        },
+      });
+
+      const explicitPkg = { weight: 1.5, length: 30, width: 25, height: 15, unit: 'kg', dimensionUnit: 'cm' };
+      const res = await returnShipmentService.resolveAuthoritativePackageInfo({
+        returnDoc: mockReturn,
+        packageInfo: explicitPkg,
+      });
+
+      expect(res.source).toBe('SELLER_PROVIDED');
+      expect(res.packageInfo.weight).toBe(1.5);
+      expect(res.packageInfo.length).toBe(30);
+    });
+
+    it('2. Seller does not provide packageInfo and forwardShipment.packageInfo exists → uses top-level packageInfo', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        packageInfo: { weight: 3.2, length: 40, width: 30, height: 20, unit: 'kg', dimensionUnit: 'cm' },
+        metadata: {
+          packageInfo: { weight: 0.5, length: 15, width: 10, height: 5, unit: 'kg', dimensionUnit: 'cm' },
+        },
+      });
+
+      const res = await returnShipmentService.resolveAuthoritativePackageInfo({
+        returnDoc: mockReturn,
+        packageInfo: null,
+      });
+
+      expect(res.source).toBe('FORWARD_SHIPMENT');
+      expect(res.packageInfo.weight).toBe(3.2);
+      expect(res.packageInfo.length).toBe(40);
+    });
+
+    it('3. Seller does not provide packageInfo and forwardShipment.packageInfo is absent, metadata.packageInfo exists → uses metadata.packageInfo', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        packageInfo: {},
+        metadata: {
+          packageInfo: { weight: 0.8, length: 18, width: 12, height: 6, unit: 'kg', dimensionUnit: 'cm' },
+        },
+      });
+
+      const res = await returnShipmentService.resolveAuthoritativePackageInfo({
+        returnDoc: mockReturn,
+        packageInfo: null,
+      });
+
+      expect(res.source).toBe('FORWARD_SHIPMENT');
+      expect(res.packageInfo.weight).toBe(0.8);
+      expect(res.packageInfo.length).toBe(18);
+    });
+
+    it('4. Neither Shipment package location exists but valid Product Variant package data exists → uses variant fallback', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        packageInfo: {},
+        metadata: {},
+      });
+      jest.spyOn(ReturnItem, 'find').mockResolvedValue([
+        { variantId, quantity: 2 },
+      ]);
+      jest.spyOn(ProductVariant, 'findById').mockResolvedValue({
+        weight: 0.4,
+        dimensions: { length: 15, width: 12, height: 8 },
+      });
+
+      const res = await returnShipmentService.resolveAuthoritativePackageInfo({
+        returnDoc: mockReturn,
+        packageInfo: null,
+      });
+
+      expect(res.source).toBe('PRODUCT_VARIANT');
+      expect(res.packageInfo.weight).toBe(0.8); // 0.4 * 2
+      expect(res.packageInfo.length).toBe(15);
+    });
+
+    it('5. No valid package information anywhere → returns PACKAGE_INFO_REQUIRED', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        packageInfo: null,
+        metadata: {},
+      });
+      jest.spyOn(ReturnItem, 'find').mockResolvedValue([
+        { variantId, quantity: 1 },
+      ]);
+      jest.spyOn(ProductVariant, 'findById').mockResolvedValue({
+        weight: null,
+        dimensions: null,
+      });
+
+      const res = await returnShipmentService.resolveAuthoritativePackageInfo({
+        returnDoc: mockReturn,
+        packageInfo: null,
+      });
+
+      expect(res.source).toBe('NONE');
+      expect(res.packageInfo).toBeNull();
+
+      jest.spyOn(Return, 'findById').mockResolvedValue(mockReturn);
+      const autoRes = await returnShipmentService.autoProcessReverseShipment({
+        returnId: mockReturn._id,
+        returnDoc: mockReturn,
+        user: { sub: sellerUserId, role: 'VENDOR', vendorId },
+        packageInfo: null,
+      });
+      expect(autoRes.success).toBe(false);
+      expect(autoRes.stage).toBe('PACKAGE_INFO_REQUIRED');
+    });
+
+    it('6. Invalid metadata.packageInfo must NOT bypass validation → remains PACKAGE_INFO_REQUIRED / validation failure', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        packageInfo: undefined,
+        metadata: {
+          packageInfo: { weight: -1, length: 15, width: 10, height: 5 },
+        },
+      });
+      jest.spyOn(ReturnItem, 'find').mockResolvedValue([
+        { variantId, quantity: 1 },
+      ]);
+      jest.spyOn(ProductVariant, 'findById').mockResolvedValue({
+        weight: null,
+        dimensions: undefined,
+      });
+
+      const res = await returnShipmentService.resolveAuthoritativePackageInfo({
+        returnDoc: mockReturn,
+        packageInfo: null,
+      });
+
+      expect(res.source).toBe('NONE');
+      expect(res.packageInfo).toBeNull();
+
+      jest.spyOn(Return, 'findById').mockResolvedValue(mockReturn);
+      const autoRes = await returnShipmentService.autoProcessReverseShipment({
+        returnId: mockReturn._id,
+        returnDoc: mockReturn,
+        user: { sub: sellerUserId, role: 'VENDOR', vendorId },
+        packageInfo: null,
+      });
+      expect(autoRes.success).toBe(false);
+      expect(autoRes.stage).toBe('PACKAGE_INFO_REQUIRED');
+    });
+
+    it('7. Exact production structure in metadata.packageInfo → package resolution succeeds', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        vendorOrderId,
+        metadata: {
+          packageInfo: {
+            weight: 0.5,
+            length: 15,
+            width: 10,
+            height: 5,
+            unit: 'kg',
+            dimensionUnit: 'cm',
+          },
+        },
+      });
+
+      const res = await returnShipmentService.resolveAuthoritativePackageInfo({
+        returnDoc: mockReturn,
+        packageInfo: null,
+      });
+
+      expect(res.source).toBe('FORWARD_SHIPMENT');
+      expect(res.packageInfo).toEqual({
+        weight: 0.5,
+        length: 15,
+        width: 10,
+        height: 5,
+        unit: 'kg',
+        dimensionUnit: 'cm',
+      });
+    });
+
+    it('8. autoProcessReverseShipment() proceeds past package resolution and calls prepareReturnShipment() when valid package data exists', async () => {
+      const mockReturn = createMockReturn();
+      jest.spyOn(Return, 'findById').mockResolvedValue(mockReturn);
+      jest.spyOn(Shipment, 'findOne').mockResolvedValue({
+        orderId,
+        metadata: {
+          packageInfo: {
+            weight: 0.5,
+            length: 15,
+            width: 10,
+            height: 5,
+            unit: 'kg',
+            dimensionUnit: 'cm',
+          },
+        },
+      });
+
+      const prepareSpy = jest.spyOn(returnShipmentService, 'prepareReturnShipment').mockResolvedValue({
+        _id: 'rev-shipment-prod-123',
+        status: 'PENDING',
+        packageInfo: { weight: 0.5, length: 15, width: 10, height: 5, unit: 'kg', dimensionUnit: 'cm' },
+      });
+
+      jest.spyOn(returnShipmentService, 'assignShipmentAwb').mockResolvedValue({
+        status: 'AWB_ASSIGNED',
+        providerAwb: '987654321098',
+        providerShipmentId: 'MSHP-123',
+      });
+      jest.spyOn(returnShipmentService, 'generateShipmentLabel').mockResolvedValue({
+        status: 'LABEL_GENERATED',
+        labelUrl: 'https://shiprocket.co/label/123.pdf',
+      });
+      jest.spyOn(returnShipmentService, 'requestShipmentPickup').mockResolvedValue({
+        status: 'PICKUP_SCHEDULED',
+        pickupStatus: 'SCHEDULED',
+      });
+
+      const autoRes = await returnShipmentService.autoProcessReverseShipment({
+        returnId: mockReturn._id,
+        returnDoc: mockReturn,
+        user: { sub: sellerUserId, role: 'VENDOR', vendorId },
+        packageInfo: null,
+      });
+
+      expect(prepareSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          returnId: mockReturn._id,
+          packageInfo: expect.objectContaining({
+            weight: 0.5,
+            length: 15,
+            width: 10,
+            height: 5,
+            unit: 'kg',
+            dimensionUnit: 'cm',
+          }),
+          metadata: expect.objectContaining({
+            packageInfoSource: 'FORWARD_SHIPMENT',
+          }),
+        })
+      );
+      expect(autoRes.success).toBe(true);
+    });
+  });
 });
