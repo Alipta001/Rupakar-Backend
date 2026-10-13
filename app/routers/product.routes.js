@@ -24,6 +24,14 @@ import {
   deleteVendorProductImage,
   updateVendorProductImage,
 } from '../controllers/product.controller.js';
+import {
+  downloadTemplate,
+  validateBatch,
+  submitBatch,
+  getBatch,
+  listBatches,
+  downloadErrorReport,
+} from '../controllers/bulk-product.controller.js';
 
 const router = Router();
 const upload = multer({
@@ -39,10 +47,44 @@ const upload = multer({
   },
 });
 
+const bulkUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 55 * 1024 * 1024, files: 2 },
+  fileFilter: (_req, file, cb) => {
+    const ext = (file.originalname || '').toLowerCase();
+    const allowedExts = ['.csv', '.xlsx', '.xls', '.zip'];
+    const hasValidExt = allowedExts.some((e) => ext.endsWith(e));
+    if (hasValidExt) {
+      cb(null, true);
+      return;
+    }
+    cb(new AppError(400, 'INVALID_BULK_FILE', 'Only .csv, .xlsx spreadsheets and .zip archives are allowed'));
+  },
+});
+
 router.get('/products', publicProductList);
 router.get('/products/:slug', publicProductDetail);
 
 router.use('/vendor', requireAuth);
+
+// Bulk product endpoints (placed before /vendor/products/:id to avoid parameter collisions)
+router.get('/vendor/products/bulk/template', downloadTemplate);
+router.post(
+  '/vendor/products/bulk/validate',
+  requireRole('vendor'),
+  bulkUpload.fields([
+    { name: 'spreadsheet', maxCount: 1 },
+    { name: 'zip', maxCount: 1 },
+    { name: 'file', maxCount: 1 },
+    { name: 'images', maxCount: 1 },
+  ]),
+  validateBatch,
+);
+router.post('/vendor/products/bulk/submit', requireRole('vendor'), submitBatch);
+router.get('/vendor/products/bulk/batches', requireRole('vendor'), listBatches);
+router.get('/vendor/products/bulk/batches/:batchId', requireRole('vendor'), getBatch);
+router.get('/vendor/products/bulk/batches/:batchId/errors', requireRole('vendor'), downloadErrorReport);
+
 router.get('/vendor/products', listVendorProducts);
 router.post('/vendor/products', createVendorProduct);
 router.get('/vendor/products/:id', getVendorProduct);
